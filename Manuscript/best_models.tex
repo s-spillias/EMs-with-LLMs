@@ -1,0 +1,2175 @@
+\section{Best Performing Models for CoTS Case Study}
+\label{sec:best_models}
+This section presents the 5 best performing models from different configurations for the Crown of Thorns Starfish case study.
+
+\subsection{o3 mini Model}
+This model achieved an objective value of 0.5606.
+
+\subsubsection{Model Intention}
+\begin{lstlisting}
+Model Assessment and Ecological Improvement Rationale:
+
+Assessment:
+- The current model captures boom-bust cycles but the logistic outbreak trigger appears too smooth.
+- Residual analysis indicates that the model underestimates rapid outbreak escalation when coral resource availability is high.
+- While the resource limitation function accounts for saturation, it may not fully capture synergistic effects at high coral cover.
+
+Chosen Improvement:
+- Introduce a quadratic adjustment factor to the outbreak trigger. When the resource availability (reflected by coral coverage) exceeds the threshold, the quadratic term amplifies the outbreak growth.
+- This additional term (scaled by the new parameter poly_coeff) is ecologically justified by the abrupt and intense outbreak episodes observed in the Great Barrier Reef.
+\end{lstlisting}
+
+\subsubsection{Model Implementation}
+\begin{lstlisting}
+#include <TMB.hpp>
+
+// 1. Data:
+//    - Year: Time steps from the data file.
+//    - sst_dat: Sea Surface Temperature data (°C).
+//    - cotsimm_dat: Crown-of-thorns larval immigration rate (individuals/m2/year).
+//    - cots_dat: Adult COTS abundance (individuals/m2).
+//    - fast_dat: Fast-growing coral cover (Acropora spp.) in %.
+//    - slow_dat: Slow-growing coral cover (Faviidae spp. and Porities spp.) in %.
+//
+// 2. Parameters and equations:
+//    (1) COTS outbreak dynamics:
+//        cots_pred[t] = cots_pred[t-1] +
+//          [ growth_rate * cots_pred[t-1] * ( (fast_dat[t-1]+slow_dat[t-1])/(fast_dat[t-1]+slow_dat[t-1]+saturation) ) 
+//            - decline_rate * cots_pred[t-1] ] * dt
+//    (2) Environmental modification through sea surface temperature is embedded in the outbreak growth.
+//    (3) Smooth transitions and small constants (e.g., 1e-8) are used to avoid division by zero.
+//    (4) Only previous time step values are used in predictions to avoid data leakage.
+//
+// 3. Likelihood:
+//    - Observations (cots_dat) are assumed to follow a lognormal distribution around the predictions.
+//    - A fixed minimum standard deviation is used for numerical stability.
+template<class Type>
+Type objective_function<Type>::operator() ()
+{
+  // Data inputs from file
+  DATA_VECTOR(Year);                // Time (years)
+  DATA_VECTOR(sst_dat);             // Sea Surface Temperature (°C)
+  DATA_VECTOR(cotsimm_dat);         // COTS larval immigration rate (individuals/m2/year)
+  DATA_VECTOR(cots_dat);            // Adult COTS abundance (individuals/m2)
+  DATA_VECTOR(fast_dat);            // Fast-growing coral cover (Acropora spp.) in %
+  DATA_VECTOR(slow_dat);            // Slow-growing coral cover (Faviidae spp. and Porities spp.) in %
+
+  int n = Year.size();              // Number of time steps
+
+  // Parameters (log-scale parameters ensure positivity)
+  PARAMETER(log_growth_rate);       // Log of intrinsic outbreak growth rate (log(year^-1))
+  PARAMETER(log_decline_rate);      // Log of outbreak decline rate (log(year^-1))
+  PARAMETER(log_threshold);         // Log of threshold resource level triggering outbreak (log(units))
+  PARAMETER(efficiency_fast);       // Efficiency factor for predation on fast-growing corals (unitless)
+  PARAMETER(efficiency_slow);       // Efficiency factor for predation on slow-growing corals (unitless)
+  PARAMETER(temp_mod_eff_slow);     // Temperature modifier for predation efficiency on slow-growing coral (unitless)
+  PARAMETER(effect_sst);            // Effect of sea surface temperature on outbreak progression (per °C)
+  PARAMETER(log_saturation);        // Log of saturation constant for resource limitation (log(units))
+  PARAMETER(log_outbreak_steepness);  // Log of outbreak steepness coefficient controlling outbreak trigger sensitivity
+  PARAMETER(poly_coeff);            // Quadratic adjustment parameter for outbreak triggering
+
+  // Parameter transformations to ensure positivity where applicable
+  Type growth_rate = exp(log_growth_rate);    // Intrinsic growth rate (year^-1)
+  Type decline_rate = exp(log_decline_rate);    // Decline rate during bust (year^-1)
+  Type threshold    = exp(log_threshold);       // Threshold resource level (units)
+  Type saturation   = exp(log_saturation);      // Saturation constant (units)
+  Type outbreak_steepness = exp(log_outbreak_steepness);
+
+  // Likelihood accumulation
+  Type nll = 0.0;
+
+  // Predicted state vectors for adult COTS numbers and coral covers
+  vector<Type> cots_pred(n);
+  vector<Type> fast_pred(n);
+  vector<Type> slow_pred(n);
+  cots_pred[0] = cots_dat(0);   // Initialize COTS with first observed value
+  fast_pred[0] = fast_dat(0);    // Initialize fast-growing coral with first observed value
+  slow_pred[0] = slow_dat(0);    // Initialize slow-growing coral with first observed value
+
+  for(int t = 1; t < n; t++){
+    // 1. Calculate total coral cover from previous time step with a small constant to prevent division by zero.
+    Type coral_total = fast_dat(t-1) + slow_dat(t-1) + Type(1e-8);
+    // 2. Resource limitation modeled as a saturating function.
+    Type resource_limitation = coral_total / (coral_total + saturation);
+
+    // 3. Time difference between measurements
+    Type dt = Year(t) - Year(t-1);
+    // Introduce environmental modification: Sea Surface Temperature effect modulates outbreak growth rate.
+    Type temperature_factor = 1 + effect_sst * sst_dat(t-1);
+
+    // 4. COTS outbreak dynamics with non-linear outbreak threshold:
+    //    Growth is modified by a logistic outbreak factor that captures triggering of outbreak events when
+    //    resource availability (reflected by resource_limitation) exceeds the threshold. The steepness of this trigger
+    //    is controlled by outbreak_steepness. The temperature_factor further modulates the growth rate.
+    {
+      Type logistic_factor = 1 / (Type(1) + exp(-outbreak_steepness * (resource_limitation - threshold)));
+      Type quadratic_adjustment = CppAD::CondExpGt(
+          resource_limitation,
+          threshold,
+          Type(1) + poly_coeff * pow(resource_limitation - threshold, 2),
+          Type(1)
+      );
+      Type outbreak_factor = logistic_factor * quadratic_adjustment;
+      cots_pred[t] = cots_pred[t-1] +
+                     (growth_rate * cots_pred[t-1] * outbreak_factor * temperature_factor - decline_rate * cots_pred[t-1]) * dt;
+    }
+
+    // 5. Ensure numerical stability by preventing negative predictions:
+    cots_pred[t] = CppAD::CondExpGt(cots_pred[t], Type(1e-8), cots_pred[t], Type(1e-8));
+    
+    // 5a. Coral dynamics:
+    // Fast-growing coral dynamics
+    Type fast_growth_rate = Type(0.2);  // (year^-1), assumed constant growth rate
+    Type fast_cap = Type(100.0);        // (%) maximum coral cover
+    fast_pred[t] = fast_pred[t-1] + dt * ( fast_growth_rate * fast_pred[t-1] * (1 - fast_pred[t-1] / fast_cap)
+                         - efficiency_fast * cots_pred[t-1] * fast_pred[t-1] );
+                         
+    // Slow-growing coral dynamics
+    Type slow_growth_rate = Type(0.1);  // (year^-1), assumed constant growth rate
+    Type slow_cap = Type(100.0);        // (%) maximum coral cover
+    Type mod_eff_slow = efficiency_slow * (1 + temp_mod_eff_slow * sst_dat(t-1));
+    slow_pred[t] = slow_pred[t-1] + dt * ( slow_growth_rate * slow_pred[t-1] * (1 - slow_pred[t-1] / slow_cap)
+                         - mod_eff_slow * cots_pred[t-1] * slow_pred[t-1] );
+
+    // 6. Likelihood contribution:
+    //    Observations cots_dat are assumed lognormally distributed about predictions.
+    //    A fixed standard deviation sigma = 0.1 is used for numerical robustness.
+    Type sigma = 0.1;
+    nll -= dnorm(log(cots_dat(t) + Type(1e-8)), log(cots_pred[t] + Type(1e-8)), sigma, true);
+    
+    // Likelihood contributions for coral observations
+    Type sigma_coral = 0.1;
+    nll -= dnorm(log(fast_dat(t) + Type(1e-8)), log(fast_pred[t] + Type(1e-8)), sigma_coral, true);
+    nll -= dnorm(log(slow_dat(t) + Type(1e-8)), log(slow_pred[t] + Type(1e-8)), sigma_coral, true);
+  }
+
+  // Report predictions for external diagnostics.
+  REPORT(cots_pred);
+  REPORT(fast_pred);
+  REPORT(slow_pred);
+
+  return nll;
+}
+\end{lstlisting}
+
+\subsubsection{Model Parameters}
+\begin{lstlisting}
+{
+    "parameters": [
+        {
+            "parameter": "log_growth_rate",
+            "value": 0.0,
+            "description": "Logarithm of the intrinsic growth rate of COTS outbreaks (log(year^-1)).",
+            "source": "initial estimate",
+            "import_type": "PARAMETER",
+            "priority": 1,
+            "enhanced_semantic_description": "Crown-of-thorns starfish population exponential growth potential rate",
+            "processed": true
+        },
+        {
+            "parameter": "log_decline_rate",
+            "value": 0.0,
+            "description": "Logarithm of the outbreak decline rate (log(year^-1)).",
+            "source": "initial estimate",
+            "import_type": "PARAMETER",
+            "priority": 1,
+            "enhanced_semantic_description": "COTS population decay and mortality dynamics in marine ecosystems",
+            "processed": true
+        },
+        {
+            "parameter": "log_threshold",
+            "value": 0.0,
+            "description": "Logarithm of the threshold resource level triggering outbreak (log(units)).",
+            "source": "initial estimate",
+            "import_type": "PARAMETER",
+            "priority": 2,
+            "enhanced_semantic_description": "Ecological tipping point for triggering massive Crown-of-thorns starfish outbreak",
+            "processed": true
+        },
+        {
+            "parameter": "efficiency_fast",
+            "value": 0.4,
+            "description": "Efficiency factor for predation on fast-growing coral communities (unitless). Lower value indicates higher resilience.",
+            "source": "expert opinion",
+            "import_type": "PARAMETER",
+            "priority": 2,
+            "enhanced_semantic_description": "Predation impact coefficient of starfish on fast-growing Acropora species",
+            "processed": true
+        },
+        {
+            "parameter": "efficiency_slow",
+            "value": 0.6,
+            "description": "Efficiency factor for predation on slow-growing coral communities (unitless). Higher value reflects increased vulnerability.",
+            "source": "expert opinion",
+            "import_type": "PARAMETER",
+            "priority": 2,
+            "enhanced_semantic_description": "Predation impact coefficient of starfish on slow-growing Faviidae and Porites species",
+            "processed": true
+        },
+        {
+            "parameter": "effect_sst",
+            "value": 0.0,
+            "description": "Effect of sea surface temperature on outbreak progression (per \u00b0C).",
+            "source": "expert opinion",
+            "import_type": "PARAMETER",
+            "priority": 3,
+            "enhanced_semantic_description": "Sea surface temperature's influence on marine predator population dynamics",
+            "processed": true
+        },
+        {
+            "parameter": "log_saturation",
+            "value": 0.0,
+            "description": "Logarithm of the saturation constant for resource limitation (log(units)).",
+            "source": "initial estimate",
+            "import_type": "PARAMETER",
+            "priority": 2,
+            "enhanced_semantic_description": "Resource limitation and carrying capacity for marine predator populations",
+            "processed": true
+        },
+        {
+            "parameter": "log_outbreak_steepness",
+            "value": 0.0,
+            "description": "Logarithm of the outbreak steepness coefficient controlling sensitivity of outbreak triggering to resource limitation (log(unitless)).",
+            "source": "model enhancement",
+            "import_type": "PARAMETER",
+            "priority": 3,
+            "enhanced_semantic_description": "Determines how sharply outbreak growth is triggered as coral resource availability exceeds the threshold",
+            "processed": true
+        },
+        {
+            "parameter": "temp_mod_eff_slow",
+            "value": 0.0,
+            "description": "Temperature modifier for predation efficiency on slow-growing coral. Increasing temperatures may amplify predation pressure due to reduced coral resilience.",
+            "source": "model enhancement",
+            "import_type": "PARAMETER",
+            "priority": 3,
+            "enhanced_semantic_description": "Modifies the effectiveness of starfish predation on slow-growing corals in response to sea surface temperature",
+            "processed": true
+        },
+        {
+            "parameter": "poly_coeff",
+            "value": 0.0,
+            "description": "Coefficient for quadratic adjustment to outbreak triggering when coral cover exceeds threshold. A positive value amplifies outbreak growth, enhancing boom dynamics.",
+            "source": "model enhancement",
+            "import_type": "PARAMETER",
+            "priority": 3,
+            "enhanced_semantic_description": "Higher-order response to excess coral resources driving rapid outbreak escalation",
+            "processed": true
+        }
+    ]
+}
+\end{lstlisting}
+\clearpage
+\subsection{Claude 3.6 Sonnet Model}
+This model achieved an objective value of 0.6599.
+
+\subsubsection{Model Intention}
+\begin{lstlisting}
+This model simulates the population dynamics of Crown of Thorns Starfish (COTS) and their interactions with coral communities on the Great Barrier Reef. The model captures:
+
+1. Temperature-dependent COTS larval survival and recruitment
+2. Density-dependent COTS population growth
+3. Differential predation on fast-growing (Acropora) vs slow-growing (Faviidae/Porites) corals
+4. Coral growth and recovery dynamics
+5. Environmental thresholds that trigger outbreak events
+
+Key mechanisms:
+- COTS outbreaks are triggered by enhanced larval survival at optimal temperatures
+- Population growth is limited by coral availability (resource limitation)
+- Coral recovery is modeled with logistic growth, modified by COTS predation
+- System includes feedback loops where coral depletion eventually limits COTS population growth
+
+The model uses time series data of COTS abundance, coral cover (fast/slow-growing), sea surface temperature, and larval immigration rates to predict outbreak dynamics.
+\end{lstlisting}
+
+\subsubsection{Model Implementation}
+\begin{lstlisting}
+#include <TMB.hpp>
+template<class Type>
+Type objective_function<Type>::operator() ()
+{
+  // Data
+  DATA_VECTOR(Year);                  // Time vector (years)
+  DATA_VECTOR(sst_dat);              // Sea surface temperature (°C)
+  DATA_VECTOR(cotsimm_dat);          // COTS larval immigration rate (individuals/m2/year)
+  DATA_VECTOR(cots_dat);             // Observed COTS density (individuals/m2)
+  DATA_VECTOR(fast_dat);             // Observed fast-growing coral cover (%)
+  DATA_VECTOR(slow_dat);             // Observed slow-growing coral cover (%)
+  
+  // Parameters
+  PARAMETER(log_r_cots);             // COTS population growth rate
+  PARAMETER(log_K_cots);             // COTS carrying capacity
+  PARAMETER(log_temp_opt);           // Optimal temperature for COTS survival
+  PARAMETER(log_temp_range);         // Temperature tolerance range
+  PARAMETER(log_grazing_fast);       // Grazing rate on fast corals
+  PARAMETER(log_grazing_slow);       // Grazing rate on slow corals
+  PARAMETER(log_r_fast);             // Fast coral growth rate
+  PARAMETER(log_r_slow);             // Slow coral growth rate
+  PARAMETER(logit_coral_limit);      // Total coral cover limit
+  PARAMETER(log_obs_sd_cots);        // Observation error SD for COTS
+  PARAMETER(log_obs_sd_fast);        // Observation error SD for fast coral
+  PARAMETER(log_obs_sd_slow);        // Observation error SD for slow coral
+  
+  // Transform parameters
+  Type r_cots = exp(log_r_cots);
+  Type K_cots = exp(log_K_cots);
+  Type temp_opt = exp(log_temp_opt);
+  Type temp_range = exp(log_temp_range);
+  Type grazing_fast = exp(log_grazing_fast);
+  Type grazing_slow = exp(log_grazing_slow);
+  Type r_fast = exp(log_r_fast);
+  Type r_slow = exp(log_r_slow);
+  Type coral_limit = invlogit(logit_coral_limit);
+  Type obs_sd_cots = exp(log_obs_sd_cots);
+  Type obs_sd_fast = exp(log_obs_sd_fast);
+  Type obs_sd_slow = exp(log_obs_sd_slow);
+  
+  // Initialize predicted vectors
+  int n = Year.size();
+  vector<Type> cots_pred(n);
+  vector<Type> fast_pred(n);
+  vector<Type> slow_pred(n);
+  
+  // Initialize negative log-likelihood
+  Type nll = 0.0;
+  
+  // Small constant to prevent division by zero
+  Type eps = Type(1e-8);
+  
+  // Set initial conditions
+  cots_pred(0) = cots_dat(0);
+  fast_pred(0) = fast_dat(0);
+  slow_pred(0) = slow_dat(0);
+  
+  // Time series predictions
+  for(int t = 1; t < n; t++) {
+    // 1. Temperature effect on COTS survival (Gaussian response)
+    Type temp_effect = exp(-0.5 * pow((sst_dat(t-1) - temp_opt) / temp_range, 2));
+    
+    // 2. Resource limitation based on total coral cover
+    Type total_coral = (fast_pred(t-1) + slow_pred(t-1)) / 100.0; // Convert to proportion
+    Type resource_limit = total_coral / (total_coral + eps);
+    
+    // 3. COTS population dynamics with temperature-dependent recruitment
+    Type recruitment = cotsimm_dat(t-1) * temp_effect;
+    cots_pred(t) = cots_pred(t-1) * (1 + r_cots * resource_limit * (1 - cots_pred(t-1)/K_cots)) + recruitment;
+    cots_pred(t) = CppAD::CondExpGt(cots_pred(t), Type(0), cots_pred(t), Type(0));
+    
+    // 4. Coral dynamics with COTS predation
+    Type coral_space = (1 - (fast_pred(t-1) + slow_pred(t-1))/100.0/coral_limit);
+    coral_space = CppAD::CondExpGt(coral_space, Type(0), coral_space, Type(0));
+    
+    // Fast-growing coral
+    Type fast_growth = r_fast * fast_pred(t-1) * coral_space;
+    Type fast_pred_loss = grazing_fast * cots_pred(t-1) * fast_pred(t-1);
+    fast_pred(t) = fast_pred(t-1) + fast_growth - fast_pred_loss;
+    fast_pred(t) = CppAD::CondExpGt(fast_pred(t), Type(0), fast_pred(t), Type(0));
+    
+    // Slow-growing coral
+    Type slow_growth = r_slow * slow_pred(t-1) * coral_space;
+    Type slow_pred_loss = grazing_slow * cots_pred(t-1) * slow_pred(t-1);
+    slow_pred(t) = slow_pred(t-1) + slow_growth - slow_pred_loss;
+    slow_pred(t) = CppAD::CondExpGt(slow_pred(t), Type(0), slow_pred(t), Type(0));
+  }
+  
+  // Observation model using log-normal distribution
+  for(int t = 0; t < n; t++) {
+    // Add small constant to prevent log(0)
+    nll -= dnorm(log(cots_dat(t) + eps), log(cots_pred(t) + eps), obs_sd_cots, true);
+    nll -= dnorm(log(fast_dat(t) + eps), log(fast_pred(t) + eps), obs_sd_fast, true);
+    nll -= dnorm(log(slow_dat(t) + eps), log(slow_pred(t) + eps), obs_sd_slow, true);
+  }
+  
+  // Report predictions
+  REPORT(cots_pred);
+  REPORT(fast_pred);
+  REPORT(slow_pred);
+  
+  return nll;
+}
+\end{lstlisting}
+
+\subsubsection{Model Parameters}
+\begin{lstlisting}
+{
+    "parameters": [
+        {
+            "parameter": "log_r_cots",
+            "value": -0.223,
+            "description": "Log of COTS population growth rate (year^-1)",
+            "source": "literature",
+            "import_type": "PARAMETER",
+            "priority": 1,
+            "enhanced_semantic_description": "Crown-of-thorns starfish population exponential growth potential",
+            "citations": [
+                "https://www.mdpi.com/1424-2818/9/1/1",
+                "https://www.nature.com/articles/s41598-023-46749-x",
+                "https://royalsocietypublishing.org/doi/pdf/10.1098/rspb.2020.1052"
+            ],
+            "processed": true
+        },
+        {
+            "parameter": "log_K_cots",
+            "value": 0.693,
+            "description": "Log of COTS carrying capacity (individuals/m2)",
+            "source": "expert opinion",
+            "import_type": "PARAMETER",
+            "priority": 2,
+            "enhanced_semantic_description": "Maximum sustainable Crown-of-thorns starfish population density",
+            "processed": true
+        },
+        {
+            "parameter": "log_temp_opt",
+            "value": 3.332,
+            "description": "Log of optimal temperature for COTS survival (\u00b0C)",
+            "source": "literature",
+            "import_type": "PARAMETER",
+            "priority": 1,
+            "enhanced_semantic_description": "Optimal sea temperature for Crown-of-thorns starfish survival",
+            "citations": [
+                "https://link.springer.com/article/10.1007/s00227-022-04027-w",
+                "https://www.researchgate.net/publication/358986050_Effects_of_elevated_temperature_on_the_performance_and_survival_of_pacific_crown-of-thorns_starfish_Acanthaster_cf_solaris",
+                "https://www.sciencedirect.com/science/article/abs/pii/S0141113620305328"
+            ],
+            "processed": true,
+            "found_value": 1.41,
+            "found_min": 1.38,
+            "found_max": 1.46
+        },
+        {
+            "parameter": "log_temp_range",
+            "value": 1.099,
+            "description": "Log of temperature tolerance range (\u00b0C)",
+            "source": "literature",
+            "import_type": "PARAMETER",
+            "priority": 2,
+            "enhanced_semantic_description": "Thermal tolerance range for Crown-of-thorns starfish population",
+            "citations": [
+                "https://pubmed.ncbi.nlm.nih.gov/29281400/",
+                "https://link.springer.com/article/10.1007/s00338-013-1112-3",
+                "https://link.springer.com/article/10.1007/s00227-022-04027-w"
+            ],
+            "processed": true,
+            "found_value": 1.39,
+            "found_min": 1.26,
+            "found_max": 1.49
+        },
+        {
+            "parameter": "log_grazing_fast",
+            "value": -2.303,
+            "description": "Log of grazing rate on fast-growing corals (m2/individual/year)",
+            "source": "literature",
+            "import_type": "PARAMETER",
+            "priority": 1,
+            "enhanced_semantic_description": "Predation impact on fast-growing coral species by starfish",
+            "citations": [
+                "https://www.sciencedirect.com/science/article/pii/S0048969724028389",
+                "https://pubmed.ncbi.nlm.nih.gov/38663591/",
+                "https://www.aims.gov.au/research-topics/marine-life/crown-thorns-starfish"
+            ],
+            "processed": true
+        },
+        {
+            "parameter": "log_grazing_slow",
+            "value": -2.996,
+            "description": "Log of grazing rate on slow-growing corals (m2/individual/year)",
+            "source": "literature",
+            "import_type": "PARAMETER",
+            "priority": 1,
+            "enhanced_semantic_description": "Predation impact on slow-growing coral species by starfish",
+            "citations": [
+                "https://www.sciencedirect.com/science/article/abs/pii/S0022519384801381",
+                "https://onlinelibrary.wiley.com/doi/10.1111/j.1461-0248.2004.00593.x",
+                "https://www.int-res.com/articles/theme/m512p167.pdf"
+            ],
+            "processed": true
+        },
+        {
+            "parameter": "log_r_fast",
+            "value": -0.916,
+            "description": "Log of fast coral growth rate (year^-1)",
+            "source": "literature",
+            "import_type": "PARAMETER",
+            "priority": 2,
+            "enhanced_semantic_description": "Rapid coral species recovery and regeneration potential",
+            "citations": [
+                "https://www.nature.com/articles/s41598-025-93531-2",
+                "https://www.sciencedirect.com/science/article/pii/S0960982224001519",
+                "https://news.mongabay.com/short-article/corals-recover-faster-on-artificial-structures-than-on-natural-reefs-study-finds/"
+            ],
+            "processed": true
+        },
+        {
+            "parameter": "log_r_slow",
+            "value": -1.609,
+            "description": "Log of slow coral growth rate (year^-1)",
+            "source": "literature",
+            "import_type": "PARAMETER",
+            "priority": 2,
+            "enhanced_semantic_description": "Slow coral species recovery and regeneration potential",
+            "citations": [
+                "https://esajournals.onlinelibrary.wiley.com/doi/10.1002/ecs2.4915",
+                "https://besjournals.onlinelibrary.wiley.com/doi/full/10.1111/1365-2664.13141",
+                "https://www.sciencedirect.com/science/article/pii/S0141113618305002"
+            ],
+            "processed": true
+        },
+        {
+            "parameter": "logit_coral_limit",
+            "value": 1.386,
+            "description": "Logit of maximum total coral cover as proportion",
+            "source": "expert opinion",
+            "import_type": "PARAMETER",
+            "priority": 3,
+            "enhanced_semantic_description": "Maximum ecological carrying capacity for total coral coverage",
+            "processed": true
+        },
+        {
+            "parameter": "log_obs_sd_cots",
+            "value": -1.609,
+            "description": "Log of observation error SD for COTS abundance",
+            "source": "initial estimate",
+            "import_type": "PARAMETER",
+            "priority": 3,
+            "enhanced_semantic_description": "Measurement uncertainty in Crown-of-thorns starfish population estimates",
+            "processed": true
+        },
+        {
+            "parameter": "log_obs_sd_fast",
+            "value": -1.609,
+            "description": "Log of observation error SD for fast coral cover",
+            "source": "initial estimate",
+            "import_type": "PARAMETER",
+            "priority": 3,
+            "enhanced_semantic_description": "Measurement uncertainty in fast-growing coral cover estimates",
+            "processed": true
+        },
+        {
+            "parameter": "log_obs_sd_slow",
+            "value": -1.609,
+            "description": "Log of observation error SD for slow coral cover",
+            "source": "initial estimate",
+            "import_type": "PARAMETER",
+            "priority": 3,
+            "enhanced_semantic_description": "Measurement uncertainty in slow-growing coral cover estimates",
+            "processed": true
+        }
+    ]
+}
+\end{lstlisting}
+\clearpage
+\subsection{Claude 3.7 Sonnet Model}
+This model achieved an objective value of 0.5204.
+
+\subsubsection{Model Intention}
+\begin{lstlisting}
+This model simulates the population dynamics of Crown of Thorns Starfish (COTS) and their impact on coral communities in the Great Barrier Reef. The model captures the characteristic boom-bust cycles of COTS outbreaks while accounting for their selective predation on different coral functional groups.
+
+Key ecological processes included:
+1. COTS population dynamics with density-dependent mortality and recruitment influenced by sea surface temperature
+2. Differential predation by COTS on fast-growing (Acropora spp.) and slow-growing (Faviidae and Porites spp.) corals
+3. Coral growth and recovery dynamics with competition between coral functional groups
+4. Environmental forcing through sea surface temperature effects on COTS recruitment and coral mortality
+5. Episodic COTS larval immigration events that can trigger outbreaks
+
+The model uses a system of coupled differential equations discretized to an annual time step, with parameters estimated from time series data. Functional responses include saturating predation rates, temperature-dependent recruitment, and density-dependent mortality. The model aims to predict the timing, magnitude, and duration of COTS outbreaks and their cascading effects on coral community composition.
+\end{lstlisting}
+
+\subsubsection{Model Implementation}
+\begin{lstlisting}
+#include <TMB.hpp>
+
+template<class Type>
+Type objective_function<Type>::operator() ()
+{
+  // DATA
+  DATA_VECTOR(Year);                  // Years of observation
+  DATA_VECTOR(cots_dat);              // Observed COTS abundance (individuals/m^2)
+  DATA_VECTOR(fast_dat);              // Observed fast-growing coral cover (%)
+  DATA_VECTOR(slow_dat);              // Observed slow-growing coral cover (%)
+  DATA_VECTOR(sst_dat);               // Sea surface temperature (°C)
+  DATA_VECTOR(cotsimm_dat);           // COTS larval immigration rate (individuals/m^2/year)
+  
+  // PARAMETERS
+  PARAMETER(r_cots);                  // Intrinsic growth rate of COTS population (year^-1)
+  PARAMETER(K_cots);                  // Carrying capacity of COTS population (individuals/m^2)
+  PARAMETER(m_cots);                  // Natural mortality rate of COTS (year^-1)
+  PARAMETER(r_fast);                  // Intrinsic growth rate of fast-growing coral (year^-1)
+  PARAMETER(K_fast);                  // Maximum cover of fast-growing coral (%)
+  PARAMETER(r_slow);                  // Intrinsic growth rate of slow-growing coral (year^-1)
+  PARAMETER(K_slow);                  // Maximum cover of slow-growing coral (%)
+  PARAMETER(a_fast);                  // Attack rate of COTS on fast-growing coral (m^2/individual/year)
+  PARAMETER(a_slow);                  // Attack rate of COTS on slow-growing coral (m^2/individual/year)
+  PARAMETER(h_fast);                  // Handling time for COTS feeding on fast-growing coral (% cover)
+  PARAMETER(h_slow);                  // Handling time for COTS feeding on slow-growing coral (% cover)
+  PARAMETER(temp_opt);                // Optimal temperature for COTS recruitment (°C)
+  PARAMETER(temp_width);              // Temperature range width for COTS recruitment (°C)
+  PARAMETER(imm_effect);              // Effect of larval immigration on COTS recruitment (dimensionless)
+  PARAMETER(competition);             // Competition coefficient between coral types (dimensionless)
+  PARAMETER(bleach_threshold);        // Temperature threshold for coral bleaching (°C)
+  PARAMETER(bleach_mortality_fast);   // Mortality rate of fast-growing coral during bleaching (year^-1)
+  PARAMETER(bleach_mortality_slow);   // Mortality rate of slow-growing coral during bleaching (year^-1)
+  PARAMETER(sigma_cots);              // Observation error standard deviation for COTS abundance (log scale)
+  PARAMETER(sigma_fast);              // Observation error standard deviation for fast-growing coral cover (log scale)
+  PARAMETER(sigma_slow);              // Observation error standard deviation for slow-growing coral cover (log scale)
+  
+  // Initialize negative log-likelihood
+  Type nll = 0.0;
+  
+  // Small constant to prevent division by zero
+  Type eps = Type(1e-8);
+  
+  // Number of time steps
+  int n_years = Year.size();
+  
+  // Vectors to store model predictions
+  vector<Type> cots_pred(n_years);
+  vector<Type> fast_pred(n_years);
+  vector<Type> slow_pred(n_years);
+  
+  // Initialize with first year's data
+  cots_pred(0) = cots_dat(0);
+  fast_pred(0) = fast_dat(0);
+  slow_pred(0) = slow_dat(0);
+  
+  // Minimum standard deviations to prevent numerical issues
+  Type min_sigma = Type(0.01);
+  Type sigma_cots_adj = sigma_cots + min_sigma;
+  Type sigma_fast_adj = sigma_fast + min_sigma;
+  Type sigma_slow_adj = sigma_slow + min_sigma;
+  
+  // Time series simulation
+  for (int t = 1; t < n_years; t++) {
+    // Previous time step values
+    Type cots_t0 = cots_pred(t-1);
+    Type fast_t0 = fast_pred(t-1);
+    Type slow_t0 = slow_pred(t-1);
+    Type sst = sst_dat(t-1);
+    Type cotsimm = cotsimm_dat(t-1);
+    
+    // 1. Temperature effect on COTS recruitment
+    // Gaussian response curve for temperature effect on COTS recruitment
+    Type temp_effect = exp(-0.5 * pow((sst - temp_opt) / temp_width, 2));
+    
+    // 2. COTS functional response (Type II) for predation on corals
+    // Holling Type II functional response for COTS predation on fast-growing coral
+    Type pred_fast = (a_fast * fast_t0 * cots_t0) / (1.0 + a_fast * h_fast * fast_t0 + a_slow * h_slow * slow_t0 + eps);
+    
+    // Holling Type II functional response for COTS predation on slow-growing coral
+    Type pred_slow = (a_slow * slow_t0 * cots_t0) / (1.0 + a_fast * h_fast * fast_t0 + a_slow * h_slow * slow_t0 + eps);
+    
+    // 3. Bleaching effect on corals
+    // Smooth transition function for bleaching effect
+    Type bleach_effect = 1.0 / (1.0 + exp(-2.0 * (sst - bleach_threshold)));
+    
+    // 4. COTS population dynamics
+    // COTS population growth with density dependence, temperature effect on recruitment, and immigration
+    Type cots_growth = r_cots * cots_t0 * (1.0 - cots_t0 / K_cots) * temp_effect;
+    
+    // Immigration effect with smooth transition
+    Type imm_term = imm_effect * cotsimm / (1.0 + cotsimm + eps);
+    
+    // Food limitation effect (COTS mortality increases when coral cover is low)
+    Type food_limitation = m_cots * (1.0 + 1.0 / (fast_t0 + slow_t0 + eps));
+    
+    // Update COTS abundance
+    cots_pred(t) = cots_t0 + cots_growth - food_limitation * cots_t0 + imm_term;
+    cots_pred(t) = cots_pred(t) < eps ? eps : cots_pred(t); // Ensure positive values
+    
+    // 5. Coral dynamics
+    // Fast-growing coral dynamics with logistic growth, competition, predation, and bleaching
+    Type fast_growth = r_fast * fast_t0 * (1.0 - (fast_t0 + competition * slow_t0) / K_fast);
+    Type fast_bleaching = bleach_mortality_fast * bleach_effect * fast_t0;
+    
+    // Update fast-growing coral cover
+    fast_pred(t) = fast_t0 + fast_growth - pred_fast - fast_bleaching;
+    fast_pred(t) = fast_pred(t) < eps ? eps : fast_pred(t); // Ensure positive values
+    
+    // Slow-growing coral dynamics with logistic growth, competition, predation, and bleaching
+    Type slow_growth = r_slow * slow_t0 * (1.0 - (slow_t0 + competition * fast_t0) / K_slow);
+    Type slow_bleaching = bleach_mortality_slow * bleach_effect * slow_t0;
+    
+    // Update slow-growing coral cover
+    slow_pred(t) = slow_t0 + slow_growth - pred_slow - slow_bleaching;
+    slow_pred(t) = slow_pred(t) < eps ? eps : slow_pred(t); // Ensure positive values
+  }
+  
+  // Calculate negative log-likelihood using lognormal distribution
+  for (int t = 0; t < n_years; t++) {
+    // Add small constant to data and predictions to handle zeros
+    Type cots_obs = cots_dat(t) + eps;
+    Type cots_mod = cots_pred(t) + eps;
+    Type fast_obs = fast_dat(t) + eps;
+    Type fast_mod = fast_pred(t) + eps;
+    Type slow_obs = slow_dat(t) + eps;
+    Type slow_mod = slow_pred(t) + eps;
+    
+    // Log-normal likelihood for COTS abundance
+    nll -= dnorm(log(cots_obs), log(cots_mod), sigma_cots_adj, true);
+    
+    // Log-normal likelihood for fast-growing coral cover
+    nll -= dnorm(log(fast_obs), log(fast_mod), sigma_fast_adj, true);
+    
+    // Log-normal likelihood for slow-growing coral cover
+    nll -= dnorm(log(slow_obs), log(slow_mod), sigma_slow_adj, true);
+  }
+  
+  // Add penalties for biologically implausible parameter values
+  // Smooth penalty for growth rates to be positive
+  nll += Type(10.0) / (Type(1.0) + exp(Type(5.0) * r_cots));
+  nll += Type(10.0) / (Type(1.0) + exp(Type(5.0) * r_fast));
+  nll += Type(10.0) / (Type(1.0) + exp(Type(5.0) * r_slow));
+  
+  // Report predictions
+  REPORT(cots_pred);
+  REPORT(fast_pred);
+  REPORT(slow_pred);
+  
+  return nll;
+}
+\end{lstlisting}
+
+\subsubsection{Model Parameters}
+\begin{lstlisting}
+{
+    "parameters": [
+        {
+            "parameter": "r_cots",
+            "value": 0.8,
+            "description": "Intrinsic growth rate of COTS population (year^-1)",
+            "source": "literature",
+            "import_type": "PARAMETER",
+            "priority": 1,
+            "enhanced_semantic_description": "Crown-of-thorns starfish population exponential growth potential",
+            "citations": [
+                "https://www.mdpi.com/1424-2818/9/1/1",
+                "https://www.nature.com/articles/s41598-023-46749-x",
+                "https://royalsocietypublishing.org/doi/pdf/10.1098/rspb.2020.1052"
+            ],
+            "processed": true
+        },
+        {
+            "parameter": "K_cots",
+            "value": 2.5,
+            "description": "Carrying capacity of COTS population (individuals/m^2)",
+            "source": "literature",
+            "import_type": "PARAMETER",
+            "priority": 2,
+            "enhanced_semantic_description": "Maximum sustainable population density for crown-of-thorns starfish",
+            "citations": [
+                "https://www.nature.com/articles/s41598-023-46749-x",
+                "https://www.sciencedirect.com/science/article/abs/pii/S0964569112002669",
+                "https://researchonline.jcu.edu.au/24119/2/02whole.pdf"
+            ],
+            "processed": true,
+            "found_value": 0.002075,
+            "found_min": 0.00015,
+            "found_max": 0.004
+        },
+        {
+            "parameter": "m_cots",
+            "value": 0.4,
+            "description": "Natural mortality rate of COTS (year^-1)",
+            "source": "literature",
+            "import_type": "PARAMETER",
+            "priority": 3,
+            "enhanced_semantic_description": "Natural death rate of crown-of-thorns starfish population",
+            "citations": [
+                "https://www.sciencedirect.com/science/article/pii/S0048969724054329",
+                "https://www.researchgate.net/publication/324765841_Mortality_rates_of_small_juvenile_crown-of-thorns_starfish_Acanthaster_planci_on_the_Great_Barrier_Reef_Implications_for_population_size_and_larval_settlement_thresholds_for_outbreaks",
+                "https://en.wikipedia.org/wiki/Crown-of-thorns_starfish"
+            ],
+            "processed": true,
+            "found_value": 6.0,
+            "found_min": 2.49,
+            "found_max": 9.49
+        },
+        {
+            "parameter": "r_fast",
+            "value": 0.3,
+            "description": "Intrinsic growth rate of fast-growing coral (year^-1)",
+            "source": "literature",
+            "import_type": "PARAMETER",
+            "priority": 1,
+            "enhanced_semantic_description": "Rapid coral growth rate for fast-colonizing species",
+            "citations": [
+                "https://besjournals.onlinelibrary.wiley.com/doi/full/10.1111/2041-210X.13388",
+                "https://coralcavern.com/how-fast-does-coral-grow-in-colonies/",
+                "https://link.springer.com/article/10.1007/s00227-024-04511-5"
+            ],
+            "processed": true,
+            "found_value": 0.72,
+            "found_min": 0.06,
+            "found_max": 2.0
+        },
+        {
+            "parameter": "K_fast",
+            "value": 50.0,
+            "description": "Maximum cover of fast-growing coral (%)",
+            "source": "literature",
+            "import_type": "PARAMETER",
+            "priority": 2,
+            "enhanced_semantic_description": "Maximum percentage coverage for fast-growing coral species",
+            "citations": [
+                "https://www.researchgate.net/figure/Percentage-coverage-of-coral-families_tbl1_329554775",
+                "https://www.epd.gov.hk/eia/register/report/eiareport/eia_1482008/EIA/html/Text/S11_Marine%20Ecology.htm",
+                "https://link.springer.com/article/10.1007/s00227-024-04511-5"
+            ],
+            "processed": true,
+            "found_value": 41.8,
+            "found_min": 10.3,
+            "found_max": 75.0
+        },
+        {
+            "parameter": "r_slow",
+            "value": 0.1,
+            "description": "Intrinsic growth rate of slow-growing coral (year^-1)",
+            "source": "literature",
+            "import_type": "PARAMETER",
+            "priority": 1,
+            "enhanced_semantic_description": "Gradual coral growth rate for slow-colonizing species",
+            "citations": [
+                "https://www.frontiersin.org/journals/marine-science/articles/10.3389/fmars.2020.00483/full",
+                "https://besjournals.onlinelibrary.wiley.com/doi/full/10.1111/2041-210X.13388",
+                "https://www.int-res.com/articles/meps/126/m126p145.pdf"
+            ],
+            "processed": true
+        },
+        {
+            "parameter": "K_slow",
+            "value": 30.0,
+            "description": "Maximum cover of slow-growing coral (%)",
+            "source": "literature",
+            "import_type": "PARAMETER",
+            "priority": 2,
+            "enhanced_semantic_description": "Maximum percentage coverage for slow-growing coral species",
+            "citations": [
+                "https://www.researchgate.net/figure/Percentage-coverage-of-coral-families_tbl1_329554775",
+                "https://www.sciencedirect.com/science/article/abs/pii/S0006320799000671",
+                "https://link.springer.com/article/10.1007/s00338-024-02602-9"
+            ],
+            "processed": true,
+            "found_value": 15.0,
+            "found_min": 0.0,
+            "found_max": 40.0
+        },
+        {
+            "parameter": "a_fast",
+            "value": 0.2,
+            "description": "Attack rate of COTS on fast-growing coral (m^2/individual/year)",
+            "source": "expert opinion",
+            "import_type": "PARAMETER",
+            "priority": 1,
+            "enhanced_semantic_description": "Predation intensity of starfish on fast-growing coral",
+            "processed": true
+        },
+        {
+            "parameter": "a_slow",
+            "value": 0.05,
+            "description": "Attack rate of COTS on slow-growing coral (m^2/individual/year)",
+            "source": "expert opinion",
+            "import_type": "PARAMETER",
+            "priority": 1,
+            "enhanced_semantic_description": "Predation intensity of starfish on slow-growing coral",
+            "processed": true
+        },
+        {
+            "parameter": "h_fast",
+            "value": 10.0,
+            "description": "Handling time for COTS feeding on fast-growing coral (% cover)",
+            "source": "initial estimate",
+            "import_type": "PARAMETER",
+            "priority": 3,
+            "enhanced_semantic_description": "Feeding consumption time for fast-growing coral species",
+            "processed": true
+        },
+        {
+            "parameter": "h_slow",
+            "value": 15.0,
+            "description": "Handling time for COTS feeding on slow-growing coral (% cover)",
+            "source": "initial estimate",
+            "import_type": "PARAMETER",
+            "priority": 3,
+            "enhanced_semantic_description": "Feeding consumption time for slow-growing coral species",
+            "processed": true
+        },
+        {
+            "parameter": "temp_opt",
+            "value": 28.0,
+            "description": "Optimal temperature for COTS recruitment (\u00b0C)",
+            "source": "literature",
+            "import_type": "PARAMETER",
+            "priority": 2,
+            "enhanced_semantic_description": "Ideal temperature range for crown-of-thorns starfish recruitment",
+            "citations": [
+                "https://www.researchgate.net/publication/358986050_Effects_of_elevated_temperature_on_the_performance_and_survival_of_pacific_crown-of-thorns_starfish_Acanthaster_cf_solaris",
+                "https://www.jcu.edu.au/news/releases/2022/december/coral-eating-starfish-another-victim-of-climate-change",
+                "https://pmc.ncbi.nlm.nih.gov/articles/PMC4325318/"
+            ],
+            "processed": true,
+            "found_value": 28.0,
+            "found_min": 26.0,
+            "found_max": 30.0
+        },
+        {
+            "parameter": "temp_width",
+            "value": 2.0,
+            "description": "Temperature range width for COTS recruitment (\u00b0C)",
+            "source": "literature",
+            "import_type": "PARAMETER",
+            "priority": 3,
+            "enhanced_semantic_description": "Temperature tolerance range for starfish population dynamics",
+            "citations": [
+                "https://link.springer.com/article/10.1007/s00227-022-04027-w",
+                "https://www.sciencedirect.com/science/article/abs/pii/S0022098101002982",
+                "https://www.researchgate.net/publication/358986050_Effects_of_elevated_temperature_on_the_performance_and_survival_of_pacific_crown-of-thorns_starfish_Acanthaster_cf_solaris"
+            ],
+            "processed": true,
+            "found_value": 28.0,
+            "found_min": 26.0,
+            "found_max": 30.0
+        },
+        {
+            "parameter": "imm_effect",
+            "value": 0.8,
+            "description": "Effect of larval immigration on COTS recruitment (dimensionless)",
+            "source": "expert opinion",
+            "import_type": "PARAMETER",
+            "priority": 1,
+            "enhanced_semantic_description": "Larval immigration impact on starfish population recruitment",
+            "processed": true
+        },
+        {
+            "parameter": "competition",
+            "value": 0.3,
+            "description": "Competition coefficient between coral types (dimensionless)",
+            "source": "initial estimate",
+            "import_type": "PARAMETER",
+            "priority": 3,
+            "enhanced_semantic_description": "Inter-species competitive interaction between different coral types",
+            "processed": true
+        },
+        {
+            "parameter": "bleach_threshold",
+            "value": 30.0,
+            "description": "Temperature threshold for coral bleaching (\u00b0C)",
+            "source": "literature",
+            "import_type": "PARAMETER",
+            "priority": 2,
+            "enhanced_semantic_description": "Critical temperature triggering widespread coral bleaching event",
+            "citations": [
+                "https://www.downtoearth.org.in/climate-change/scientists-may-take-at-least-a-year-to-grasp-full-scale-of-worlds-largest-coral-bleaching-event",
+                "https://www.coris.noaa.gov/activities/reef_managers_guide/reef_managers_guide_ch4.pdf",
+                "https://www.nature.com/articles/s43247-025-02195-3"
+            ],
+            "processed": true,
+            "found_value": 1.5,
+            "found_min": 1.0,
+            "found_max": 2.0
+        },
+        {
+            "parameter": "bleach_mortality_fast",
+            "value": 0.8,
+            "description": "Mortality rate of fast-growing coral during bleaching (year^-1)",
+            "source": "literature",
+            "import_type": "PARAMETER",
+            "priority": 2,
+            "enhanced_semantic_description": "Mortality rate of fast-growing corals during bleaching stress",
+            "citations": [
+                "https://journals.plos.org/plosone/article?id=10.1371/journal.pone.0322636",
+                "https://pmc.ncbi.nlm.nih.gov/articles/PMC6899343/",
+                "https://www.sciencedirect.com/science/article/abs/pii/S0025326X17305829"
+            ],
+            "processed": true,
+            "found_value": 0.585,
+            "found_min": 0.114,
+            "found_max": 0.8
+        },
+        {
+            "parameter": "bleach_mortality_slow",
+            "value": 0.3,
+            "description": "Mortality rate of slow-growing coral during bleaching (year^-1)",
+            "source": "literature",
+            "import_type": "PARAMETER",
+            "priority": 2,
+            "enhanced_semantic_description": "Mortality rate of slow-growing corals during bleaching stress",
+            "citations": [
+                "https://www.sciencedirect.com/science/article/abs/pii/S0048969722083310",
+                "https://pmc.ncbi.nlm.nih.gov/articles/PMC6899343/",
+                "https://onlinelibrary.wiley.com/doi/10.1111/eva.13500"
+            ],
+            "processed": true,
+            "found_value": 0.185,
+            "found_min": 0.04,
+            "found_max": 0.415
+        },
+        {
+            "parameter": "sigma_cots",
+            "value": 0.2,
+            "description": "Observation error standard deviation for COTS abundance (log scale)",
+            "source": "initial estimate",
+            "import_type": "PARAMETER",
+            "priority": 3,
+            "enhanced_semantic_description": "Measurement uncertainty for crown-of-thorns starfish population abundance",
+            "processed": true
+        },
+        {
+            "parameter": "sigma_fast",
+            "value": 0.3,
+            "description": "Observation error standard deviation for fast-growing coral cover (log scale)",
+            "source": "initial estimate",
+            "import_type": "PARAMETER",
+            "priority": 3,
+            "enhanced_semantic_description": "Measurement uncertainty for fast-growing coral species coverage",
+            "processed": true
+        },
+        {
+            "parameter": "sigma_slow",
+            "value": 0.3,
+            "description": "Observation error standard deviation for slow-growing coral cover (log scale)",
+            "source": "initial estimate",
+            "import_type": "PARAMETER",
+            "priority": 3,
+            "enhanced_semantic_description": "Measurement uncertainty for slow-growing coral species coverage",
+            "processed": true
+        }
+    ]
+}
+\end{lstlisting}
+\clearpage
+\subsection{o4 mini Model}
+This model achieved an objective value of 0.3486.
+
+\subsubsection{Model Intention}
+\begin{lstlisting}
+\end{lstlisting}
+
+\subsubsection{Model Implementation}
+\begin{lstlisting}
+#include <TMB.hpp> // TMB header: provides templated functions and macros for the model
+
+// Model Overview:
+// 1. COTS Dynamics: Logistic growth modified by a smooth outbreak-triggered decline.
+// 2. Fast-growing Coral (Acropora spp.) Dynamics: Recovery towards full cover minus losses due to COTS predation.
+// 3. Slow-growing Coral (Faviidae spp. and Porites spp.) Dynamics: Similar recovery with slower dynamics and losses by COTS.
+// Each parameter is commented with its units, origin, and role in the ecological processes.
+
+template<class Type>
+Type objective_function<Type>::operator() () {
+    // --- DATA INPUTS ---
+    // time: vector of years (as provided in the first column of the CSV)
+    DATA_VECTOR(time);                   // (years)
+    DATA_VECTOR(cots_dat);               // Observed COTS abundance (individuals/m2)
+    DATA_VECTOR(fast_dat);               // Observed fast-growing coral cover (%) for Acropora spp.
+    DATA_VECTOR(slow_dat);               // Observed slow-growing coral cover (%) for Faviidae spp. & Porites spp.
+    
+    // --- PARAMETERS ---
+    // growth_rate_cots: Intrinsic growth rate of COTS (year^-1)
+    // decay_rate_cots: Decline rate of COTS post-outbreak (year^-1)
+    // coral_predation_efficiency: Efficiency of COTS predation on coral communities (per individual/m2)
+    // carrying_capacity: Ecosystem carrying capacity for COTS (individuals/m2)
+    // observed_sd: Standard deviation for lognormal observation errors
+    PARAMETER(growth_rate_cots);         // (year^-1), literature/expert opinion
+    PARAMETER(decay_rate_cots);          // (year^-1), literature
+    PARAMETER(coral_predation_efficiency); // (m2/individual), expert opinion
+    PARAMETER(carrying_capacity);        // (individuals/m2), literature
+    PARAMETER(observed_sd);              // (log-scale units), initial estimate
+    PARAMETER(outbreak_sharpness);       // (unitless), governs the steepness of the outbreak trigger function
+    PARAMETER(handling_time);             // (time units), handling time for saturating predation response (Holling Type II)
+    PARAMETER(outbreak_threshold);       // (unitless), fraction of carrying capacity for outbreak trigger
+    PARAMETER(outbreak_shape);           // (unitless), exponent controlling non-linear outbreak trigger sensitivity - values >1 increase outbreak threshold sensitivity.
+    PARAMETER(outbreak_hysteresis);      // (unitless), captures hysteresis in outbreak dynamics to model delayed decline post-outbreak.
+    PARAMETER(outbreak_nonlinearity);    // (unitless), additional non-linear amplification factor in the outbreak trigger function.
+    PARAMETER(outbreak_decline_exponent);       // (unitless), exponent for non-linear outbreak decline dynamics. Values > 1 intensify the decline during outbreak.
+    PARAMETER(resource_limitation_strength);       // (unitless), scaling factor representing effect of coral availability on COTS growth
+    PARAMETER(environmental_modifier);
+    PARAMETER(predation_scaler);
+    PARAMETER(coral_recovery_modifier);
+    PARAMETER(coral_recovery_inhibition);
+    PARAMETER(coral_recovery_environmental_modifier);
+    PARAMETER(predation_efficiency_exponent);
+    PARAMETER(extreme_outbreak_modifier);
+    PARAMETER(coral_saturation_coefficient);
+    
+    // --- NUMERICAL STABILITY ---
+    Type eps = Type(1e-8); // small constant to avoid division by zero
+    
+    int n = cots_dat.size();
+    // Vectors to hold predictions (suffix _pred corresponds to observation names)
+    vector<Type> cots_pred(n);
+    vector<Type> fast_pred(n);
+    vector<Type> slow_pred(n);
+    
+    // --- INITIAL CONDITIONS ---
+    cots_pred[0] = cots_dat[0];  // Use first observation as initial state
+    fast_pred[0] = fast_dat[0];
+    slow_pred[0] = slow_dat[0];
+    
+    // --- MODEL EQUATIONS (loop over time steps; t uses previous state only) ---
+    for(int t = 1; t < n; t++){
+        // Equation 1: COTS Dynamics
+        // Incorporate resource limitation by scaling growth with available coral cover (sum of fast and slow predictions).
+        Type coral_availability = (fast_pred[t-1] + slow_pred[t-1]) / Type(200);
+        // Introduce a saturating function with a quadratic term for coral availability to capture diminishing returns.
+        Type resource_factor = (coral_availability + coral_saturation_coefficient * pow(coral_availability, 2))
+                                / (Type(0.5) + coral_availability + coral_saturation_coefficient * pow(coral_availability, 2));
+        Type growth = growth_rate_cots * cots_pred[t-1] * (1 - cots_pred[t-1] / (carrying_capacity + eps)) * (Type(1) + resource_limitation_strength * (resource_factor - Type(0.5)));
+        Type effective_sharpness = outbreak_sharpness * environmental_modifier * (Type(1) + extreme_outbreak_modifier * (environmental_modifier - Type(1)));
+        Type raw_trigger = 1 / (Type(1) + exp(- effective_sharpness * ( pow(cots_pred[t-1], outbreak_shape) + outbreak_nonlinearity * pow(cots_pred[t-1], 2) - pow(outbreak_threshold * carrying_capacity, outbreak_shape) )));
+        Type outbreak_trigger = raw_trigger + outbreak_hysteresis * raw_trigger * (Type(1) - raw_trigger);
+        Type decline = decay_rate_cots * pow(cots_pred[t-1], outbreak_decline_exponent) * outbreak_trigger;
+        cots_pred[t] = cots_pred[t-1] + growth - decline; // Updated COTS population
+        
+        // Equation 2: Fast-growing Coral Dynamics (Acropora spp.)
+        //  - Recovery: Proportional to the gap to maximum cover (assumed 100%) modified by inhibition from high COTS levels
+        //  - Decline: Losses due to predation by COTS with saturation at low coral cover
+        fast_pred[t] = fast_pred[t-1] + Type(0.1) * coral_recovery_modifier * coral_recovery_environmental_modifier * (Type(100) - fast_pred[t-1]) * (Type(1) - coral_recovery_inhibition * cots_pred[t-1] / (carrying_capacity + eps))
+                     - (cots_pred[t-1] * coral_predation_efficiency * fast_pred[t-1] *
+                        pow((fast_pred[t-1] / (fast_pred[t-1] + predation_scaler)), predation_efficiency_exponent)) / (Type(1) + handling_time * fast_pred[t-1]);
+        
+        // Equation 3: Slow-growing Coral Dynamics (Faviidae/Porites spp.)
+        //  - Recovery: Slower than fast-growing coral, modified by inhibition from high COTS levels
+        //  - Decline: Affected by COTS predation with saturation at low coral cover
+        slow_pred[t] = slow_pred[t-1] + Type(0.05) * coral_recovery_environmental_modifier * (Type(100) - slow_pred[t-1]) * (Type(1) - coral_recovery_inhibition * cots_pred[t-1] / (carrying_capacity + eps))
+                     - (cots_pred[t-1] * coral_predation_efficiency * slow_pred[t-1] *
+                        pow((slow_pred[t-1] / (slow_pred[t-1] + predation_scaler)), predation_efficiency_exponent)) / (Type(1) + handling_time * slow_pred[t-1]);
+    }
+    
+    // --- LIKELIHOOD CALCULATION ---
+    // Use lognormal distributions (log-transformed data) for strictly positive observations.
+    // A fixed small standard deviation is enforced via observed_sd.
+    Type jnll = 0.0;
+    for(int t = 0; t < n; t++){
+        jnll -= dnorm(log(cots_dat[t] + eps), log(cots_pred[t] + eps), observed_sd, true);
+        jnll -= dnorm(log(fast_dat[t] + eps), log(fast_pred[t] + eps), observed_sd, true);
+        jnll -= dnorm(log(slow_dat[t] + eps), log(slow_pred[t] + eps), observed_sd, true);
+    }
+    
+    // --- REPORTING ---
+    // Report all predicted variables with the _pred suffix as required.
+    REPORT(cots_pred);  // Predicted COTS
+    REPORT(fast_pred);  // Predicted Fast-growing Coral Cover
+    REPORT(slow_pred);  // Predicted Slow-growing Coral Cover
+    
+    return jnll;
+}
+\end{lstlisting}
+
+\subsubsection{Model Parameters}
+\begin{lstlisting}
+{
+    "parameters": [
+        {
+            "parameter": "growth_rate_cots",
+            "value": 0.5,
+            "description": "Intrinsic outbreak growth rate of COTS (year^-1). Literature/expert estimate.",
+            "source": "literature",
+            "import_type": "PARAMETER",
+            "priority": 1,
+            "enhanced_semantic_description": "Crown-of-thorns starfish population exponential growth dynamics",
+            "citations": [
+                "https://www.mdpi.com/1424-2818/9/1/1",
+                "https://www.nature.com/articles/s41598-023-46749-x",
+                "https://royalsocietypublishing.org/doi/pdf/10.1098/rspb.2020.1052"
+            ],
+            "processed": true
+        },
+        {
+            "parameter": "decay_rate_cots",
+            "value": 0.3,
+            "description": "Decay rate of COTS post-outbreak (year^-1). Influences the bust phase.",
+            "source": "literature",
+            "import_type": "PARAMETER",
+            "priority": 1,
+            "enhanced_semantic_description": "Population collapse mechanism in marine ecosystem outbreak cycles",
+            "citations": [
+                "https://www.sciencedirect.com/science/article/abs/pii/S0169534707003552",
+                "https://royalsocietypublishing.org/doi/10.1098/rspb.2017.2841",
+                "https://esajournals.onlinelibrary.wiley.com/doi/10.1002/ecs2.4580"
+            ],
+            "processed": true
+        },
+        {
+            "parameter": "coral_predation_efficiency",
+            "value": 0.05,
+            "description": "Predation efficiency of COTS on coral species (m2/individual). Based on expert opinion.",
+            "source": "expert opinion",
+            "import_type": "PARAMETER",
+            "priority": 2,
+            "enhanced_semantic_description": "Quantitative measure of starfish destructive impact on coral reefs",
+            "processed": true
+        },
+        {
+            "parameter": "carrying_capacity",
+            "value": 50,
+            "description": "Carrying capacity for COTS (individuals/m2). Determines saturation level in the ecosystem.",
+            "source": "literature",
+            "import_type": "PARAMETER",
+            "priority": 1,
+            "enhanced_semantic_description": "Maximum sustainable population density for marine predator species",
+            "citations": [
+                "https://iopscience.iop.org/article/10.1088/1742-6596/1280/2/022036/pdf",
+                "https://www.sciencedirect.com/science/article/abs/pii/S0303264718304532",
+                "https://www.researchgate.net/publication/238373500_Maximum_sustainable_yield_and_species_extinction_in_ecosystems"
+            ],
+            "processed": true
+        },
+        {
+            "parameter": "observed_sd",
+            "value": 0.1,
+            "description": "Standard deviation for lognormal observation error (log-scale). Fixed minimum to ensure numerical stability.",
+            "source": "initial estimate",
+            "import_type": "PARAMETER",
+            "priority": 1,
+            "enhanced_semantic_description": "Statistical uncertainty and variability in ecological population measurements",
+            "processed": true
+        },
+        {
+            "parameter": "outbreak_sharpness",
+            "value": 100,
+            "description": "Controls outbreak trigger steepness; higher values yield a more threshold-like response capturing outbreak initiation dynamics.",
+            "source": "model refinement based on ecological feedback",
+            "import_type": "PARAMETER",
+            "priority": 2,
+            "enhanced_semantic_description": "Sensitivity of outbreak initiation relative to predator density",
+            "processed": true
+        },
+        {
+            "parameter": "handling_time",
+            "value": 0.01,
+            "description": "Handling time for coral predation: accounts for the saturating functional response in COTS predation on coral. A lower value implies quicker handling, leading to less saturation.",
+            "source": "model refinement based on ecological feedback",
+            "import_type": "PARAMETER",
+            "priority": 2,
+            "enhanced_semantic_description": "Non-linear saturation in predation dynamics due to handling time",
+            "processed": true
+        },
+        {
+            "parameter": "environmental_modifier",
+            "value": 1.0,
+            "description": "Modifier for outbreak trigger steepness representing environmental influences (e.g. temperature anomalies) on outbreak timing.",
+            "source": "model refinement with ecological feedback",
+            "import_type": "PARAMETER",
+            "priority": 2,
+            "enhanced_semantic_description": "Multiplicative factor modulating the outbreak trigger based on environmental conditions",
+            "processed": true
+        },
+        {
+            "parameter": "predation_scaler",
+            "value": 0.5,
+            "description": "Scales coral predation efficiency to reflect reduced effectiveness at low coral cover, representing diminishing returns in prey detection or availability.",
+            "source": "ecological model refinement",
+            "import_type": "PARAMETER",
+            "priority": 2,
+            "enhanced_semantic_description": "Non-linear modulation of coral predation efficiency based on coral cover",
+            "processed": true
+        },
+        {
+            "parameter": "coral_recovery_modifier",
+            "value": 1.0,
+            "description": "Modifier scaling coral recovery rates based on favorable environmental conditions (e.g., water quality, temperature).",
+            "source": "model refinement based on ecological feedback",
+            "import_type": "PARAMETER",
+            "priority": 2,
+            "enhanced_semantic_description": "Environmental influence on coral recovery dynamics, capturing variable ecosystem resilience",
+            "processed": true
+        },
+        {
+            "parameter": "coral_recovery_inhibition",
+            "value": 0.2,
+            "description": "Inhibition factor on coral recovery due to sustained high COTS pressure. This factor reduces the recovery rate of corals when high COTS numbers persist, capturing delayed ecosystem resilience.",
+            "source": "model refinement based on ecological feedback",
+            "import_type": "PARAMETER",
+            "priority": 2,
+            "enhanced_semantic_description": "Modulates coral recovery in response to prolonged high predation pressure",
+            "processed": true
+        },
+        {
+            "parameter": "coral_recovery_environmental_modifier",
+            "value": 1.0,
+            "description": "Scaling factor that modulates coral recovery rates based on environmental conditions (e.g., water temperature, nutrients). It captures how favorable or unfavorable conditions affect coral resilience.",
+            "source": "model refinement based on ecological feedback",
+            "import_type": "PARAMETER",
+            "priority": 2,
+            "enhanced_semantic_description": "Dynamic adjustment of coral recovery rates in response to environmental variability",
+            "processed": true
+        },
+        {
+            "parameter": "outbreak_threshold",
+            "value": 0.5,
+            "description": "Threshold fraction of carrying capacity at which an outbreak is triggered. This parameter allows tuning the outbreak onset in response to variable ecological conditions.",
+            "source": "model refinement with ecological feedback",
+            "import_type": "PARAMETER",
+            "priority": 2,
+            "enhanced_semantic_description": "Flexible threshold for triggering COTS outbreaks based on relative carrying capacity",
+            "processed": true
+        },
+        {
+            "parameter": "resource_limitation_strength",
+            "value": 1.0,
+            "description": "Scaling factor that modulates the effect of coral availability on COTS growth through a saturating functional response, capturing diminishing returns as coral cover increases.",
+            "source": "model refinement based on ecological feedback",
+            "import_type": "PARAMETER",
+            "priority": 3,
+            "enhanced_semantic_description": "Modulates COTS growth via a Michaelis\u2013Menten type resource limitation effect",
+            "processed": true
+        },
+        {
+            "parameter": "outbreak_decline_exponent",
+            "value": 1.0,
+            "description": "Exponent for non-linear outbreak decline. Values > 1 intensify the population collapse during outbreak phases, capturing stronger density-dependent effects.",
+            "source": "model refinement based on ecological feedback",
+            "import_type": "PARAMETER",
+            "priority": 2,
+            "enhanced_semantic_description": "Non-linear amplification of outbreak decline dynamics",
+            "processed": true
+        },
+        {
+            "parameter": "predation_efficiency_exponent",
+            "value": 1.0,
+            "description": "Exponent for non-linear scaling of coral predation efficiency. Values >1 amplify the impact of coral cover, capturing threshold dynamics in COTS predation.",
+            "source": "model refinement with ecological feedback",
+            "import_type": "PARAMETER",
+            "priority": 2,
+            "enhanced_semantic_description": "Modulates the non-linear impact of coral cover on COTS predation rates",
+            "processed": true
+        },
+        {
+            "parameter": "outbreak_shape",
+            "value": 2.0,
+            "description": "Exponent controlling non-linear outbreak trigger sensitivity. Values > 1 increase the sharpness of outbreak onset.",
+            "source": "model refinement with ecological feedback",
+            "import_type": "PARAMETER",
+            "priority": 2,
+            "enhanced_semantic_description": "Reflects the sensitivity of outbreak dynamics to surpassing the critical threshold, leading to a rapid outbreak once exceeded",
+            "processed": true
+        },
+        {
+            "parameter": "extreme_outbreak_modifier",
+            "value": 0.2,
+            "description": "Additional multiplier on outbreak sharpness when environmental conditions are extreme, capturing non-linear amplification of outbreak triggers under atypical conditions.",
+            "source": "model refinement",
+            "import_type": "PARAMETER",
+            "priority": 2,
+            "enhanced_semantic_description": "Multiplier for amplifying outbreak trigger sensitivity during extreme environmental conditions",
+            "processed": true
+        },
+        {
+            "parameter": "coral_saturation_coefficient",
+            "value": 0.1,
+            "description": "Coefficient for the quadratic term in the saturating function of coral availability. This parameter captures the non-linear diminishing returns of increased coral cover on COTS resource uptake.",
+            "source": "model refinement with ecological feedback",
+            "import_type": "PARAMETER",
+            "priority": 2,
+            "enhanced_semantic_description": "Non-linear modulation of resource limitation by coral availability",
+            "processed": true
+        },
+        {
+            "parameter": "outbreak_hysteresis",
+            "value": 0.1,
+            "description": "Hysteresis effect in outbreak dynamics to capture delayed decline post-outbreak by maintaining outbreak conditions longer.",
+            "source": "model refinement incorporating delayed feedback mechanisms",
+            "import_type": "PARAMETER",
+            "priority": 2,
+            "enhanced_semantic_description": "Captures persistence in outbreak conditions due to inertia in system response",
+            "processed": true
+        },
+        {
+            "parameter": "outbreak_nonlinearity",
+            "value": 0.1,
+            "description": "Additional non-linear amplification factor in the outbreak trigger. Captures accelerated outbreak initiation at high COTS densities.",
+            "source": "model improvement",
+            "import_type": "PARAMETER",
+            "priority": 2,
+            "enhanced_semantic_description": "Non-linear acceleration factor for outbreak trigger function modeling abrupt outbreak dynamics",
+            "processed": true
+        }
+    ]
+}
+\end{lstlisting}
+\clearpage
+\subsection{gpt 4.1 Model}
+This model achieved an objective value of 0.3488.
+
+\subsubsection{Model Intention}
+\begin{lstlisting}
+This model simulates the population dynamics of Crown-of-Thorns starfish (COTS) outbreaks on the Great Barrier Reef, with explicit representation of their interactions with fast-growing (Acropora spp.) and slow-growing (Faviidae and Porites spp.) coral communities. The model captures the characteristic boom-bust cycles of COTS by incorporating resource limitation, selective predation, and environmental drivers (e.g., sea-surface temperature, larval immigration). COTS population growth is regulated by coral availability (with saturating functional response), environmental conditions, and density-dependent feedbacks. Outbreaks are triggered by episodic increases in larval supply or favorable environmental conditions, and sustained by high coral cover, but collapse as coral is depleted or other limiting factors intensify. The model predicts the timing, magnitude, and duration of COTS outbreaks, as well as the resulting impacts on coral community structure, by simulating annual time steps and accounting for both direct and indirect ecological feedbacks.
+\end{lstlisting}
+
+\subsubsection{Model Implementation}
+\begin{lstlisting}
+#include <TMB.hpp>
+
+// 1. Model equations are described at the end of this file.
+
+template<class Type>
+Type objective_function<Type>::operator() ()
+{
+  // --- DATA INPUTS ---
+  DATA_VECTOR(Year); // Observation year (integer)
+  DATA_VECTOR(cots_dat); // Observed adult COTS density (indiv/m2)
+  DATA_VECTOR(fast_dat); // Observed fast-growing coral cover (%) (Acropora)
+  DATA_VECTOR(slow_dat); // Observed slow-growing coral cover (%) (Faviidae, Porites)
+  DATA_VECTOR(sst_dat); // Sea-surface temperature (deg C)
+  DATA_VECTOR(cotsimm_dat); // COTS larval immigration (indiv/m2/year)
+
+  int n = Year.size();
+
+  // --- PARAMETERS ---
+  PARAMETER(log_r_cots); // log intrinsic COTS growth rate (year^-1)
+  PARAMETER(log_K_cots); // log COTS carrying capacity (indiv/m2)
+  PARAMETER(log_alpha_fast); // log COTS attack rate on fast coral (m2/indiv/year)
+  PARAMETER(log_alpha_slow); // log COTS attack rate on slow coral (m2/indiv/year)
+  PARAMETER(log_e_fast); // log assimilation efficiency from fast coral (unitless)
+  PARAMETER(log_e_slow); // log assimilation efficiency from slow coral (unitless)
+  PARAMETER(log_m_cots); // log natural mortality rate of COTS (year^-1)
+  PARAMETER(logit_theta_sst); // logit SST sensitivity (unitless, 0-1)
+  PARAMETER(log_sigma_cots); // log SD for COTS obs (lognormal)
+  PARAMETER(log_sigma_fast); // log SD for fast coral obs (lognormal)
+  PARAMETER(log_sigma_slow); // log SD for slow coral obs (lognormal)
+  PARAMETER(log_r_fast); // log growth rate of fast coral (year^-1)
+  PARAMETER(log_r_slow); // log growth rate of slow coral (year^-1)
+  PARAMETER(log_K_fast); // log carrying capacity fast coral (%)
+  PARAMETER(log_K_slow); // log carrying capacity slow coral (%)
+  PARAMETER(log_m_fast); // log background mortality fast coral (year^-1)
+  PARAMETER(log_m_slow); // log background mortality slow coral (year^-1)
+  PARAMETER(logit_phi_outbreak); // logit outbreak threshold (unitless, 0-1)
+  PARAMETER(log_immig_scale); // log scale for larval immigration effect
+
+  // --- TRANSFORM PARAMETERS ---
+  Type r_cots = exp(log_r_cots); // COTS intrinsic growth rate
+  Type K_cots = exp(log_K_cots); // COTS carrying capacity
+  Type alpha_fast = exp(log_alpha_fast); // COTS attack rate on fast coral
+  Type alpha_slow = exp(log_alpha_slow); // COTS attack rate on slow coral
+  Type e_fast = exp(log_e_fast); // Assimilation efficiency fast coral
+  Type e_slow = exp(log_e_slow); // Assimilation efficiency slow coral
+  Type m_cots = exp(log_m_cots); // COTS natural mortality
+  Type theta_sst = Type(1)/(Type(1)+exp(-logit_theta_sst)); // SST sensitivity [0,1]
+  Type sigma_cots = exp(log_sigma_cots); // SD for COTS obs
+  Type sigma_fast = exp(log_sigma_fast); // SD for fast coral obs
+  Type sigma_slow = exp(log_sigma_slow); // SD for slow coral obs
+  Type r_fast = exp(log_r_fast); // Fast coral growth rate
+  Type r_slow = exp(log_r_slow); // Slow coral growth rate
+  Type K_fast = exp(log_K_fast); // Fast coral carrying capacity
+  Type K_slow = exp(log_K_slow); // Slow coral carrying capacity
+  Type m_fast = exp(log_m_fast); // Fast coral background mortality
+  Type m_slow = exp(log_m_slow); // Slow coral background mortality
+  Type phi_outbreak = Type(1)/(Type(1)+exp(-logit_phi_outbreak)); // Outbreak threshold [0,1]
+  Type immig_scale = exp(log_immig_scale); // Immigration effect scale
+
+  // --- INITIAL STATES ---
+  Type cots_prev = cots_dat(0); // Initial COTS density (indiv/m2)
+  Type fast_prev = fast_dat(0); // Initial fast coral cover (%)
+  Type slow_prev = slow_dat(0); // Initial slow coral cover (%)
+
+  // --- SMALL CONSTANTS FOR NUMERICAL STABILITY ---
+  Type eps = Type(1e-8);
+
+  // --- OUTPUT VECTORS ---
+  vector<Type> cots_pred(n);
+  vector<Type> fast_pred(n);
+  vector<Type> slow_pred(n);
+
+  // --- PROCESS MODEL ---
+  for(int t=1; t<n; t++){
+    // 1. Resource limitation: total available coral (sum of fast and slow)
+    Type total_coral_prev = fast_prev + slow_prev + eps;
+
+    // 2. Functional response: COTS predation on coral (Holling Type II)
+    Type pred_fast = alpha_fast * cots_prev * fast_prev / (fast_prev + slow_prev + eps); // predation on fast coral
+    Type pred_slow = alpha_slow * cots_prev * slow_prev / (fast_prev + slow_prev + eps); // predation on slow coral
+
+    // 3. COTS population growth (logistic, modified by coral availability and SST)
+    Type coral_effect = (fast_prev * e_fast + slow_prev * e_slow) / (K_fast * e_fast + K_slow * e_slow + eps); // resource effect (0-1)
+    Type sst_effect = 1.0 + theta_sst * (sst_dat(t) - 27.0); // SST modifies growth (centered at 27C)
+    Type immig_effect = immig_scale * cotsimm_dat(t); // immigration pulse
+
+    // Outbreak trigger: smooth threshold on coral_effect
+    Type outbreak_boost = 1.0 + phi_outbreak * (coral_effect - 0.5);
+
+    Type cots_growth = r_cots * cots_prev * (1.0 - cots_prev / (K_cots + eps)) * coral_effect * sst_effect * outbreak_boost;
+    Type cots_mortality = m_cots * cots_prev;
+
+    Type cots_next = cots_prev + cots_growth - cots_mortality + immig_effect;
+    cots_next = CppAD::CondExpGt(cots_next, eps, cots_next, eps); // Bound to >= eps
+
+    // 4. Coral dynamics (logistic growth minus COTS predation and background mortality)
+    Type fast_growth = r_fast * fast_prev * (1.0 - fast_prev / (K_fast + eps));
+    Type fast_mortality = m_fast * fast_prev;
+    Type fast_next = fast_prev + fast_growth - pred_fast - fast_mortality;
+    fast_next = CppAD::CondExpGt(fast_next, eps, fast_next, eps);
+
+    Type slow_growth = r_slow * slow_prev * (1.0 - slow_prev / (K_slow + eps));
+    Type slow_mortality = m_slow * slow_prev;
+    Type slow_next = slow_prev + slow_growth - pred_slow - slow_mortality;
+    slow_next = CppAD::CondExpGt(slow_next, eps, slow_next, eps);
+
+    // Store predictions
+    cots_pred(t) = cots_next;
+    fast_pred(t) = fast_next;
+    slow_pred(t) = slow_next;
+
+    // Update for next step
+    cots_prev = cots_next;
+    fast_prev = fast_next;
+    slow_prev = slow_next;
+  }
+
+  // Set initial predictions to observed initial values
+  cots_pred(0) = cots_dat(0);
+  fast_pred(0) = fast_dat(0);
+  slow_pred(0) = slow_dat(0);
+
+  // --- LIKELIHOOD ---
+  Type nll = 0.0;
+  for(int t=0; t<n; t++){
+    // Lognormal likelihood for strictly positive data
+    nll -= dnorm(log(cots_dat(t) + eps), log(cots_pred(t) + eps), sigma_cots + eps, true);
+    nll -= dnorm(log(fast_dat(t) + eps), log(fast_pred(t) + eps), sigma_fast + eps, true);
+    nll -= dnorm(log(slow_dat(t) + eps), log(slow_pred(t) + eps), sigma_slow + eps, true);
+  }
+
+  // --- REPORTING ---
+  REPORT(cots_pred);
+  REPORT(fast_pred);
+  REPORT(slow_pred);
+
+  // --- EQUATION DESCRIPTIONS ---
+  /*
+  1. COTS predation on coral: Holling Type II functional response, partitioned by coral type.
+  2. COTS population growth: Logistic, modified by coral availability, SST, and outbreak threshold.
+  3. Coral growth: Logistic, minus COTS predation and background mortality.
+  4. Outbreaks triggered by high coral cover and/or larval immigration.
+  5. All rates and effects are bounded and smoothed for numerical stability.
+  */
+
+  return nll;
+}
+\end{lstlisting}
+
+\subsubsection{Model Parameters}
+\begin{lstlisting}
+{
+    "parameters": [
+        {
+            "parameter": "log_r_cots",
+            "value": -0.7,
+            "description": "Log intrinsic growth rate of COTS (year^-1)",
+            "source": "literature",
+            "import_type": "PARAMETER",
+            "priority": 1,
+            "enhanced_semantic_description": "Crown of Thorns starfish population intrinsic growth potential",
+            "citations": [
+                "https://www.researchgate.net/figure/Intrinsic-growth-rates-following-different-disturbance-types-The-intrinsic-growth-rate-r_fig7_50597254",
+                "https://link.springer.com/article/10.1007/s00338-024-02560-2",
+                "https://www.sciencedirect.com/science/article/pii/S0304380023001746"
+            ],
+            "processed": true
+        },
+        {
+            "parameter": "log_K_cots",
+            "value": -0.5,
+            "description": "Log carrying capacity for COTS (indiv/m2)",
+            "source": "expert opinion",
+            "import_type": "PARAMETER",
+            "priority": 2,
+            "enhanced_semantic_description": "Maximum sustainable Crown of Thorns starfish population density",
+            "processed": true
+        },
+        {
+            "parameter": "log_alpha_fast",
+            "value": -2.0,
+            "description": "Log attack rate of COTS on fast coral (m2/indiv/year)",
+            "source": "literature",
+            "import_type": "PARAMETER",
+            "priority": 2,
+            "enhanced_semantic_description": "Predation rate of COTS on fast-growing branching coral species",
+            "citations": [
+                "https://www.sciencedirect.com/science/article/pii/S0048969724028389",
+                "https://www.sciencedirect.com/science/article/pii/S0141113624003167",
+                "https://link.springer.com/article/10.1007/s00338-024-02560-2"
+            ],
+            "processed": true
+        },
+        {
+            "parameter": "log_alpha_slow",
+            "value": -2.5,
+            "description": "Log attack rate of COTS on slow coral (m2/indiv/year)",
+            "source": "literature",
+            "import_type": "PARAMETER",
+            "priority": 2,
+            "enhanced_semantic_description": "Predation rate of COTS on slow-growing massive coral species",
+            "citations": [
+                "https://www.sciencedirect.com/science/article/pii/S0048969724028389",
+                "https://link.springer.com/article/10.1007/s00338-024-02560-2",
+                "https://www.int-res.com/articles/theme/m512p167.pdf"
+            ],
+            "processed": true
+        },
+        {
+            "parameter": "log_e_fast",
+            "value": -0.1,
+            "description": "Log assimilation efficiency from fast coral (unitless)",
+            "source": "expert opinion",
+            "import_type": "PARAMETER",
+            "priority": 3,
+            "enhanced_semantic_description": "Nutritional efficiency of fast-growing coral for COTS",
+            "processed": true
+        },
+        {
+            "parameter": "log_e_slow",
+            "value": -0.2,
+            "description": "Log assimilation efficiency from slow coral (unitless)",
+            "source": "expert opinion",
+            "import_type": "PARAMETER",
+            "priority": 3,
+            "enhanced_semantic_description": "Nutritional efficiency of slow-growing coral for COTS",
+            "processed": true
+        },
+        {
+            "parameter": "log_m_cots",
+            "value": -1.0,
+            "description": "Log natural mortality rate of COTS (year^-1)",
+            "source": "literature",
+            "import_type": "PARAMETER",
+            "priority": 2,
+            "enhanced_semantic_description": "Natural mortality rate of Crown of Thorns starfish population",
+            "citations": [
+                "https://www.sciencedirect.com/science/article/pii/S0048969724054329",
+                "https://www.researchgate.net/publication/324765841_Mortality_rates_of_small_juvenile_crown-of-thorns_starfish_Acanthaster_planci_on_the_Great_Barrier_Reef_Implications_for_population_size_and_larval_settlement_thresholds_for_outbreaks",
+                "https://pmc.ncbi.nlm.nih.gov/articles/PMC9023020/"
+            ],
+            "processed": true,
+            "found_value": 2.25,
+            "found_min": 2.25,
+            "found_max": 2.25
+        },
+        {
+            "parameter": "logit_theta_sst",
+            "value": 0.0,
+            "description": "Logit SST sensitivity (unitless, 0-1)",
+            "source": "expert opinion",
+            "import_type": "PARAMETER",
+            "priority": 3,
+            "enhanced_semantic_description": "Sea surface temperature sensitivity for COTS population dynamics",
+            "processed": true
+        },
+        {
+            "parameter": "log_sigma_cots",
+            "value": -1.0,
+            "description": "Log SD for COTS obs (lognormal)",
+            "source": "initial estimate",
+            "import_type": "PARAMETER",
+            "priority": 4,
+            "enhanced_semantic_description": "Measurement uncertainty in Crown of Thorns starfish population estimates",
+            "processed": true
+        },
+        {
+            "parameter": "log_sigma_fast",
+            "value": -1.0,
+            "description": "Log SD for fast coral obs (lognormal)",
+            "source": "initial estimate",
+            "import_type": "PARAMETER",
+            "priority": 4,
+            "enhanced_semantic_description": "Measurement uncertainty in fast-growing coral cover estimates",
+            "processed": true
+        },
+        {
+            "parameter": "log_sigma_slow",
+            "value": -1.0,
+            "description": "Log SD for slow coral obs (lognormal)",
+            "source": "initial estimate",
+            "import_type": "PARAMETER",
+            "priority": 4,
+            "enhanced_semantic_description": "Measurement uncertainty in slow-growing coral cover estimates",
+            "processed": true
+        },
+        {
+            "parameter": "log_r_fast",
+            "value": -0.5,
+            "description": "Log growth rate of fast coral (year^-1)",
+            "source": "literature",
+            "import_type": "PARAMETER",
+            "priority": 2,
+            "enhanced_semantic_description": "Growth rate of fast-growing branching coral species",
+            "citations": [
+                "https://coralcavern.com/how-fast-does-coral-grow-in-colonies/",
+                "https://www.nature.com/articles/s41598-017-03085-1",
+                "https://www.sciencedirect.com/science/article/abs/pii/S0025322719302452"
+            ],
+            "processed": true,
+            "found_value": 3.77,
+            "found_min": 2.3,
+            "found_max": 4.61
+        },
+        {
+            "parameter": "log_r_slow",
+            "value": -1.0,
+            "description": "Log growth rate of slow coral (year^-1)",
+            "source": "literature",
+            "import_type": "PARAMETER",
+            "priority": 2,
+            "enhanced_semantic_description": "Growth rate of slow-growing massive coral species",
+            "citations": [
+                "https://www.sciencedirect.com/science/article/abs/pii/S0025322719302452",
+                "https://www.sciencedirect.com/science/article/pii/S0925857418303094",
+                "https://www.livingoceansfoundation.org/wp-content/uploads/2015/04/U9-Coral-Growth-Background.pdf"
+            ],
+            "processed": true,
+            "found_value": -0.35,
+            "found_min": -0.7,
+            "found_max": 0.0
+        },
+        {
+            "parameter": "log_K_fast",
+            "value": 3.5,
+            "description": "Log carrying capacity for fast coral (%)",
+            "source": "literature",
+            "import_type": "PARAMETER",
+            "priority": 3,
+            "enhanced_semantic_description": "Maximum sustainable cover for fast-growing coral species",
+            "citations": [
+                "https://www.sciencedirect.com/science/article/pii/S0025326X23001522",
+                "https://www.straitstimes.com/asia/australianz/great-barrier-reef-shows-big-increase-in-coral-cover-but-future-uncertain-report",
+                "https://www.nature.com/articles/s41467-022-30234-6"
+            ],
+            "processed": true
+        },
+        {
+            "parameter": "log_K_slow",
+            "value": 3.0,
+            "description": "Log carrying capacity for slow coral (%)",
+            "source": "literature",
+            "import_type": "PARAMETER",
+            "priority": 3,
+            "enhanced_semantic_description": "Maximum sustainable cover for slow-growing coral species",
+            "citations": [
+                "https://www.sciencedirect.com/science/article/pii/S0025326X23001522",
+                "https://link.springer.com/article/10.1007/s00338-024-02560-2",
+                "https://cosmosmagazine.com/earth/great-barrier-reef-coral-cover/"
+            ],
+            "processed": true,
+            "found_value": 52.5,
+            "found_min": 40.0,
+            "found_max": 65.0
+        },
+        {
+            "parameter": "log_m_fast",
+            "value": -2.0,
+            "description": "Log background mortality rate of fast coral (year^-1)",
+            "source": "expert opinion",
+            "import_type": "PARAMETER",
+            "priority": 3,
+            "enhanced_semantic_description": "Background mortality rate for fast-growing coral species",
+            "processed": true
+        },
+        {
+            "parameter": "log_m_slow",
+            "value": -2.0,
+            "description": "Log background mortality rate of slow coral (year^-1)",
+            "source": "expert opinion",
+            "import_type": "PARAMETER",
+            "priority": 3,
+            "enhanced_semantic_description": "Background mortality rate for slow-growing coral species",
+            "processed": true
+        },
+        {
+            "parameter": "logit_phi_outbreak",
+            "value": 0.0,
+            "description": "Logit outbreak threshold (unitless, 0-1)",
+            "source": "expert opinion",
+            "import_type": "PARAMETER",
+            "priority": 2,
+            "enhanced_semantic_description": "Threshold probability for Crown of Thorns starfish population outbreak",
+            "processed": true
+        },
+        {
+            "parameter": "log_immig_scale",
+            "value": -1.0,
+            "description": "Log scale for larval immigration effect",
+            "source": "expert opinion",
+            "import_type": "PARAMETER",
+            "priority": 2,
+            "enhanced_semantic_description": "Magnitude of larval immigration impact on COTS population",
+            "processed": true
+        }
+    ]
+}
+\end{lstlisting}
+\clearpage
+\section{Best Out-of-Sample Test Model}
+\label{sec:best_out_of_sample}
+This section presents the best performing out-of-sample test model.
+
+\subsection{Model Intention}
+\begin{lstlisting}
+
+Assessment:
+- The current model includes resource limitation, environmental drivers, and feedbacks between COTS and coral, but does not fully capture the episodic, explosive nature of COTS outbreaks.
+- The outbreak threshold is a smooth function of coral cover, but there is no explicit positive feedback in COTS recruitment based on previous COTS abundance, which is a key ecological process in outbreak dynamics.
+- Field studies indicate that high COTS densities can amplify recruitment in subsequent years, leading to rapid population booms.
+
+Improvement:
+- Add a lagged positive feedback mechanism to COTS recruitment, where high COTS abundance in the previous year increases recruitment in the current year.
+- This is implemented as a saturating Hill-type function of previous COTS abundance, controlled by a new parameter (phi_cots).
+- This change is ecologically justified as it allows the model to generate sharper, more episodic outbreaks, better matching observed boom-bust cycles and the timing/magnitude of population explosions.
+\end{lstlisting}
+
+\subsection{Model Implementation}
+\begin{lstlisting}
+#include <TMB.hpp>
+
+// 1. Model equations describe the coupled dynamics of COTS, fast coral, and slow coral.
+// 2. Resource limitation is modeled with saturating and threshold functions.
+// 3. Environmental drivers (SST, larval immigration) modulate COTS recruitment.
+// 4. Feedbacks: COTS reduce coral, coral depletion limits COTS, coral recovers after COTS decline.
+// 5. All _pred variables are reported and correspond to _dat observations.
+// 6. No current time step values of _dat variables are used in predictions (no data leakage).
+
+template<class Type>
+Type objective_function<Type>::operator() ()
+{
+  // --- DATA INPUTS ---
+  DATA_VECTOR(Year); // Observation year
+  DATA_VECTOR(cots_dat); // Adult COTS abundance (indiv/m2)
+  DATA_VECTOR(fast_dat); // Fast coral cover (%)
+  DATA_VECTOR(slow_dat); // Slow coral cover (%)
+  DATA_VECTOR(sst_dat); // Sea-surface temperature (deg C)
+  DATA_VECTOR(cotsimm_dat); // COTS larval immigration (indiv/m2/year)
+
+  int n = Year.size();
+
+  // --- GUARD AGAINST EMPTY INPUT ---
+  if(n == 0) {
+    // Return large penalty if no data
+    return Type(1e10);
+  }
+
+  // --- PARAMETERS ---
+  PARAMETER(log_r_cots); // log intrinsic COTS recruitment rate (year^-1)
+  PARAMETER(log_K_cots); // log COTS carrying capacity (indiv/m2)
+  PARAMETER(log_K_cots_half); // log coral cover at which COTS K is half-maximal
+  PARAMETER(log_alpha_fast); // log COTS predation rate on fast coral (m2/indiv/year)
+  PARAMETER(log_alpha_slow); // log COTS predation rate on slow coral (m2/indiv/year)
+  PARAMETER(log_r_fast); // log fast coral regrowth rate (year^-1)
+  PARAMETER(log_r_slow); // log slow coral regrowth rate (year^-1)
+  PARAMETER(log_K_fast); // log fast coral max cover (%)
+  PARAMETER(log_K_slow); // log slow coral max cover (%)
+  PARAMETER(log_beta_sst); // log SST effect on COTS recruitment (unitless)
+  PARAMETER(log_imm_eff); // log efficiency of larval immigration (unitless)
+  PARAMETER(log_sigma_cots); // log obs SD for COTS (lognormal)
+  PARAMETER(log_sigma_fast); // log obs SD for fast coral (lognormal)
+  PARAMETER(log_sigma_slow); // log obs SD for slow coral (lognormal)
+
+  // --- TRANSFORM PARAMETERS ---
+  Type r_cots = exp(log_r_cots); // Intrinsic COTS recruitment rate (year^-1)
+  Type K_cots = exp(log_K_cots); // COTS carrying capacity (indiv/m2)
+  Type K_cots_half = exp(log_K_cots_half); // Coral cover at which COTS K is half-maximal
+  Type alpha_fast = exp(log_alpha_fast); // COTS predation rate on fast coral (m2/indiv/year)
+  Type alpha_slow = exp(log_alpha_slow); // COTS predation rate on slow coral (m2/indiv/year)
+  Type r_fast = exp(log_r_fast); // Fast coral regrowth rate (year^-1)
+  Type r_slow = exp(log_r_slow); // Slow coral regrowth rate (year^-1)
+  Type K_fast = exp(log_K_fast); // Fast coral max cover (%)
+  Type K_slow = exp(log_K_slow); // Slow coral max cover (%)
+  Type beta_sst = exp(log_beta_sst); // SST effect on COTS recruitment (unitless)
+  Type imm_eff = exp(log_imm_eff); // Efficiency of larval immigration (unitless)
+  Type sigma_cots = exp(log_sigma_cots); // Obs SD for COTS (lognormal)
+  Type sigma_fast = exp(log_sigma_fast); // Obs SD for fast coral (lognormal)
+  Type sigma_slow = exp(log_sigma_slow); // Obs SD for slow coral (lognormal)
+  PARAMETER(log_gamma_cots); // log COTS interference strength (density-dependent reduction in per capita predation)
+  Type gamma_cots = exp(log_gamma_cots); // COTS interference strength
+
+  PARAMETER(log_phi_cots); // log positive feedback strength in COTS recruitment (lagged autocatalytic effect)
+  Type phi_cots = exp(log_phi_cots); // Positive feedback strength
+
+  // --- INITIAL STATES ---
+  Type cots_prev = cots_dat(0); // Initial COTS abundance (indiv/m2)
+  Type fast_prev = fast_dat(0); // Initial fast coral cover (%)
+  Type slow_prev = slow_dat(0); // Initial slow coral cover (%)
+
+  // --- OUTPUT VECTORS ---
+  vector<Type> cots_pred(n);
+  vector<Type> fast_pred(n);
+  vector<Type> slow_pred(n);
+
+  // --- SMALL CONSTANT FOR NUMERICAL STABILITY ---
+  Type eps = Type(1e-8);
+
+  // --- INITIALIZE PREDICTIONS ---
+  cots_pred(0) = cots_prev;
+  fast_pred(0) = fast_prev;
+  slow_pred(0) = slow_prev;
+
+  // --- PROCESS MODEL ---
+  for(int t=1; t<n; t++) {
+    // 1. COTS recruitment: logistic growth, modulated by SST, larval immigration, and lagged positive feedback
+    Type env_mod = 1 + beta_sst * (sst_dat(t-1) - Type(27.0)); // SST effect (centered at 27C)
+    Type immig = imm_eff * cotsimm_dat(t-1); // Immigration effect
+
+    // Resource limitation: carrying capacity depends on coral cover (saturating, Michaelis-Menten)
+    Type coral_sum = fast_prev + slow_prev + eps;
+    Type K_cots_eff = K_cots * (coral_sum/(K_cots_half + coral_sum + eps)); // COTS K saturates with total coral
+
+    // Outbreak threshold: smooth sigmoid on COTS recruitment (triggers outbreak when coral is high)
+    Type outbreak_mod = 1/(1 + exp(-5*(coral_sum - 10))); // Outbreak more likely if coral >10%
+
+    // Lagged positive feedback in COTS recruitment (Hill-type function of previous COTS abundance)
+    Type feedback_mod = 1 + phi_cots * cots_prev / (1 + phi_cots * cots_prev);
+
+    // COTS predation on corals (Type II functional response) with density-dependent interference
+    Type interference = exp(-gamma_cots * cots_prev); // Reduces per capita predation at high COTS density
+    Type pred_fast = alpha_fast * cots_prev * fast_prev / (fast_prev + Type(5.0) + eps) * interference; // Fast coral eaten
+    Type pred_slow = alpha_slow * cots_prev * slow_prev / (slow_prev + Type(10.0) + eps) * interference; // Slow coral eaten
+
+    // COTS population update
+    Type cots_growth = r_cots * cots_prev * (1 - cots_prev/(K_cots_eff+eps)) * env_mod * outbreak_mod * feedback_mod;
+    Type cots_next = cots_prev + cots_growth + immig - pred_fast*0.05 - pred_slow*0.02; // Small mortality from feeding inefficiency
+
+    // Bound COTS to positive values
+    cots_next = CppAD::CondExpGt(cots_next, eps, cots_next, eps);
+
+    // Fast coral update: logistic regrowth minus COTS predation
+    Type fast_growth = r_fast * fast_prev * (1 - fast_prev/(K_fast+eps));
+    Type fast_next = fast_prev + fast_growth - pred_fast;
+
+    fast_next = CppAD::CondExpGt(fast_next, eps, fast_next, eps);
+
+    // Slow coral update: logistic regrowth minus COTS predation
+    Type slow_growth = r_slow * slow_prev * (1 - slow_prev/(K_slow+eps));
+    Type slow_next = slow_prev + slow_growth - pred_slow;
+
+    slow_next = CppAD::CondExpGt(slow_next, eps, slow_next, eps);
+
+    // Save predictions
+    cots_pred(t) = cots_next;
+    fast_pred(t) = fast_next;
+    slow_pred(t) = slow_next;
+
+    // Advance state
+    cots_prev = cots_next;
+    fast_prev = fast_next;
+    slow_prev = slow_next;
+  }
+
+  // --- LIKELIHOOD ---
+  Type nll = 0.0;
+  for(int t=0; t<n; t++) {
+    // Lognormal likelihood, fixed minimum SD for stability
+    Type sd_cots = sqrt(sigma_cots*sigma_cots + eps);
+    Type sd_fast = sqrt(sigma_fast*sigma_fast + eps);
+    Type sd_slow = sqrt(sigma_slow*sigma_slow + eps);
+
+    nll -= dnorm(log(cots_dat(t)+eps), log(cots_pred(t)+eps), sd_cots, true);
+    nll -= dnorm(log(fast_dat(t)+eps), log(fast_pred(t)+eps), sd_fast, true);
+    nll -= dnorm(log(slow_dat(t)+eps), log(slow_pred(t)+eps), sd_slow, true);
+  }
+
+  // --- SMOOTH PENALTIES FOR PARAMETER BOUNDS ---
+  // Example: penalize negative growth rates, unreasonably high K, etc.
+  nll += pow(CppAD::CondExpLt(r_cots, Type(0.01), r_cots-Type(0.01), Type(0)), 2) * 10.0;
+  nll += pow(CppAD::CondExpGt(K_cots, Type(10.0), K_cots-Type(10.0), Type(0)), 2) * 10.0;
+  nll += pow(CppAD::CondExpLt(r_fast, Type(0.01), r_fast-Type(0.01), Type(0)), 2) * 10.0;
+  nll += pow(CppAD::CondExpLt(r_slow, Type(0.01), r_slow-Type(0.01), Type(0)), 2) * 10.0;
+
+  // --- REPORTING ---
+  REPORT(cots_pred); // Predicted COTS abundance (indiv/m2)
+  REPORT(fast_pred); // Predicted fast coral cover (%)
+  REPORT(slow_pred); // Predicted slow coral cover (%)
+
+  return nll;
+}
+\end{lstlisting}
+
+\subsection{Model Parameters}
+\begin{lstlisting}
+{
+    "parameters": [
+        {
+            "parameter": "log_r_cots",
+            "value": -0.7,
+            "description": "Log intrinsic COTS recruitment rate (year^-1)",
+            "source": "literature",
+            "import_type": "PARAMETER",
+            "priority": 1,
+            "enhanced_semantic_description": "Crown-of-thorns starfish population growth potential rate",
+            "citations": [
+                "https://www.sciencedirect.com/science/article/pii/S0048969724054329",
+                "https://pmc.ncbi.nlm.nih.gov/articles/PMC9023020/",
+                "https://www.reefresilience.org/pdf/COTS_Nov2003.pdf"
+            ],
+            "processed": true
+        },
+        {
+            "parameter": "log_K_cots",
+            "value": -1.0,
+            "description": "Log COTS carrying capacity (indiv/m2), scales with coral cover",
+            "source": "expert opinion",
+            "import_type": "PARAMETER",
+            "priority": 1,
+            "enhanced_semantic_description": "Maximum sustainable Crown-of-thorns starfish population density",
+            "processed": true
+        },
+        {
+            "parameter": "log_K_cots_half",
+            "value": 2.5,
+            "description": "Log coral cover at which COTS carrying capacity is half its maximum (saturating resource limitation)",
+            "source": "ecological reasoning",
+            "import_type": "PARAMETER",
+            "priority": 2,
+            "enhanced_semantic_description": "Coral cover at which COTS carrying capacity is half-maximal; controls saturation of resource limitation",
+            "processed": true
+        },
+        {
+            "parameter": "log_alpha_fast",
+            "value": -2.0,
+            "description": "Log COTS predation rate on fast coral (m2/indiv/year)",
+            "source": "literature",
+            "import_type": "PARAMETER",
+            "priority": 2,
+            "enhanced_semantic_description": "Predation impact of COTS on fast-growing coral species",
+            "citations": [
+                "https://www.sciencedirect.com/science/article/pii/S0048969724028389",
+                "https://link.springer.com/article/10.1007/s00338-024-02560-2",
+                "https://reefbites.com/2023/04/26/crown-of-thorns-starfish-cots-the-complicated-story-of-a-natural-predator-on-coral-reefs/"
+            ],
+            "processed": true
+        },
+        {
+            "parameter": "log_alpha_slow",
+            "value": -3.0,
+            "description": "Log COTS predation rate on slow coral (m2/indiv/year)",
+            "source": "literature",
+            "import_type": "PARAMETER",
+            "priority": 2,
+            "enhanced_semantic_description": "Predation impact of COTS on slow-growing coral species",
+            "citations": [
+                "https://www.sciencedirect.com/science/article/pii/S0048969724028389",
+                "https://www.nature.com/articles/s41467-021-26786-8",
+                "https://link.springer.com/article/10.1007/s00338-024-02560-2"
+            ],
+            "processed": true
+        },
+        {
+            "parameter": "log_r_fast",
+            "value": -0.5,
+            "description": "Log fast coral regrowth rate (year^-1)",
+            "source": "literature",
+            "import_type": "PARAMETER",
+            "priority": 2,
+            "enhanced_semantic_description": "Rapid coral recovery and regeneration potential rate",
+            "citations": [
+                "https://www.sciencedirect.com/science/article/pii/S0960982224001519",
+                "https://www.cell.com/current-biology/fulltext/S0960-9822(24)00151-9?rss=yes",
+                "https://pmc.ncbi.nlm.nih.gov/articles/PMC9331011/"
+            ],
+            "processed": true
+        },
+        {
+            "parameter": "log_r_slow",
+            "value": -1.0,
+            "description": "Log slow coral regrowth rate (year^-1)",
+            "source": "literature",
+            "import_type": "PARAMETER",
+            "priority": 2,
+            "enhanced_semantic_description": "Slow coral recovery and regeneration potential rate",
+            "citations": [
+                "https://esajournals.onlinelibrary.wiley.com/doi/10.1002/ecy.4510",
+                "https://esajournals.onlinelibrary.wiley.com/doi/10.1002/ecs2.4915",
+                "https://www.sciencedirect.com/science/article/abs/pii/S0025326X15001940"
+            ],
+            "processed": true
+        },
+        {
+            "parameter": "log_K_fast",
+            "value": 3.0,
+            "description": "Log fast coral max cover (%)",
+            "source": "expert opinion",
+            "import_type": "PARAMETER",
+            "priority": 3,
+            "enhanced_semantic_description": "Maximum sustainable coverage for fast-growing coral species",
+            "processed": true
+        },
+        {
+            "parameter": "log_K_slow",
+            "value": 3.0,
+            "description": "Log slow coral max cover (%)",
+            "source": "expert opinion",
+            "import_type": "PARAMETER",
+            "priority": 3,
+            "enhanced_semantic_description": "Maximum sustainable coverage for slow-growing coral species",
+            "processed": true
+        },
+        {
+            "parameter": "log_beta_sst",
+            "value": -2.0,
+            "description": "Log SST effect on COTS recruitment (unitless)",
+            "source": "initial estimate",
+            "import_type": "PARAMETER",
+            "priority": 3,
+            "enhanced_semantic_description": "Sea surface temperature influence on COTS population dynamics",
+            "processed": true
+        },
+        {
+            "parameter": "log_imm_eff",
+            "value": -2.0,
+            "description": "Log efficiency of larval immigration (unitless)",
+            "source": "initial estimate",
+            "import_type": "PARAMETER",
+            "priority": 3,
+            "enhanced_semantic_description": "Larval immigration effectiveness in COTS population expansion",
+            "processed": true
+        },
+        {
+            "parameter": "log_sigma_cots",
+            "value": -1.0,
+            "description": "Log obs SD for COTS (lognormal)",
+            "source": "initial estimate",
+            "import_type": "PARAMETER",
+            "priority": 1,
+            "enhanced_semantic_description": "Measurement uncertainty for Crown-of-thorns starfish population",
+            "processed": true
+        },
+        {
+            "parameter": "log_sigma_fast",
+            "value": -1.0,
+            "description": "Log obs SD for fast coral (lognormal)",
+            "source": "initial estimate",
+            "import_type": "PARAMETER",
+            "priority": 1,
+            "enhanced_semantic_description": "Measurement uncertainty for fast-growing coral species coverage",
+            "processed": true
+        },
+        {
+            "parameter": "log_sigma_slow",
+            "value": -1.0,
+            "description": "Log obs SD for slow coral (lognormal)",
+            "source": "initial estimate",
+            "import_type": "PARAMETER",
+            "priority": 1,
+            "enhanced_semantic_description": "Measurement uncertainty for slow-growing coral species coverage",
+            "processed": true
+        },
+        {
+            "parameter": "log_gamma_cots",
+            "value": -2.0,
+            "description": "Log COTS interference strength (density-dependent reduction in per capita predation)",
+            "source": "ecological reasoning",
+            "import_type": "PARAMETER",
+            "priority": 2,
+            "enhanced_semantic_description": "Strength of intraspecific interference among COTS; higher values reduce per capita predation at high COTS densities",
+            "processed": true
+        },
+        {
+            "parameter": "log_phi_cots",
+            "value": -2.0,
+            "description": "Log positive feedback strength in COTS recruitment (lagged autocatalytic effect)",
+            "source": "ecological reasoning",
+            "import_type": "PARAMETER",
+            "priority": 2,
+            "enhanced_semantic_description": "Strength of lagged positive feedback in COTS recruitment; higher values increase the likelihood and magnitude of outbreak events when previous COTS abundance is high",
+            "processed": true
+        }
+    ]
+}
+\end{lstlisting}
+\clearpage
