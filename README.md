@@ -28,7 +28,7 @@ Put these in .env
 
 1. Clone this repository:
    ```
-   git clone https://github.com/s-spillias/MEMs-with-LLMs.git
+   git clone https://github.com/insert-username/MEMs-with-LLMs.git
    cd MEMs-with-LLMs
    ```
 
