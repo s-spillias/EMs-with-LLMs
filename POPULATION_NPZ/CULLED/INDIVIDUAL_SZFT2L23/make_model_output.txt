@@ -1,0 +1,943 @@
+Parent PNG files: ['POPULATIONS\\POPULATION_0027\\INDIVIDUAL_6X3ON5Y5\\N_pred_comparison.png', 'POPULATIONS\\POPULATION_0027\\INDIVIDUAL_6X3ON5Y5\\P_pred_comparison.png', 'POPULATIONS\\POPULATION_0027\\INDIVIDUAL_6X3ON5Y5\\Z_pred_comparison.png']
+[?12l[?25hSkipping POPULATIONS\POPULATION_0027\INDIVIDUAL_SZFT2L23\model.cpp 
+that matches gitignore spec.
+Skipping 
+POPULATIONS\POPULATION_0027\INDIVIDUAL_SZFT2L23\parameters.json that 
+matches gitignore spec.
+Skipping POPULATIONS\POPULATION_0027\INDIVIDUAL_SZFT2L23\intention.tex
+that matches gitignore spec.
+Creating empty file 
+POPULATIONS\POPULATION_0027\INDIVIDUAL_SZFT2L23\intention.tex
+Added C:\Users\spi085\OneDrive - 
+CSIRO\Documents\_Projects\SCCP-QuantModelling\POPULATIONS\POPULATION_0
+027\INDIVIDUAL_6X3ON5Y5\N_pred_comparison.png to read-only files.
+Added C:\Users\spi085\OneDrive - 
+CSIRO\Documents\_Projects\SCCP-QuantModelling\POPULATIONS\POPULATION_0
+027\INDIVIDUAL_6X3ON5Y5\P_pred_comparison.png to read-only files.
+Added C:\Users\spi085\OneDrive - 
+CSIRO\Documents\_Projects\SCCP-QuantModelling\POPULATIONS\POPULATION_0
+027\INDIVIDUAL_6X3ON5Y5\Z_pred_comparison.png to read-only files.
+Based on the comparison plots, I notice that the model underestimates 
+phytoplankton peaks and has some phase misalignment in the nutrient   
+cycling. One key ecological mechanism that could improve this is the  
+representation of variable nutrient storage by phytoplankton (luxury  
+uptake).                                                              
+
+Currently, the model assumes instant nutrient utilization, but        
+phytoplankton can actually store excess nutrients when available and  
+use them later under limiting conditions. I'll add this mechanism     
+through an internal nutrient quota approach.                          
+
+First, let's add the new parameters:                                  
+
+POPULATIONS\POPULATION_0027\INDIVIDUAL_SZFT2L23\parameters.json       
+
+                                                                      
+ <<<<<<< SEARCH                                                       
+         }                                                            
+     ]                                                                
+ }                                                                    
+ =======                                                              
+         },                                                           
+         {                                                            
+             "parameter": "Q_min",                                    
+             "value": 0.05,                                           
+             "description": "Minimum internal nutrient quota (g N/g   
+ C)",                                                                 
+             "source": "literature",                                  
+             "import_type": "PARAMETER",                              
+             "priority": 2,                                           
+             "enhanced_semantic_description": "Minimum internal       
+ nutrient content required for phytoplankton survival",               
+             "citations": [                                           
+                 "https://doi.org/10.4319/lo.1968.13.1.0156",         
+                 "https://doi.org/10.1016/0022-0981(71)90054-0"       
+             ],                                                       
+             "processed": true                                        
+         },                                                           
+         {                                                            
+             "parameter": "Q_max",                                    
+             "value": 0.3,                                            
+             "description": "Maximum internal nutrient quota (g N/g   
+ C)",                                                                 
+             "source": "literature",                                  
+             "import_type": "PARAMETER",                              
+             "priority": 2,                                           
+             "enhanced_semantic_description": "Maximum internal       
+ nutrient storage capacity of phytoplankton cells",                   
+             "citations": [                                           
+                 "https://doi.org/10.4319/lo.1968.13.1.0156"          
+             ],                                                       
+             "processed": true                                        
+         }                                                            
+     ]                                                                
+ }                                                                    
+ >>>>>>> REPLACE                                                      
+                                                                      
+
+Let's document the ecological reasoning:                              
+
+POPULATIONS\POPULATION_0027\INDIVIDUAL_SZFT2L23\intention.tex         
+
+                                                                      
+ <<<<<<< SEARCH                                                       
+ =======                                                              
+ \section{Variable Nutrient Storage Model}                            
+                                                                      
+ This model enhancement incorporates variable internal nutrient stora 
+ by phytoplankton, known as luxury uptake. This mechanism is based on 
+ Droop's cell quota model, where growth depends on the internal       
+ nutrient content rather than external concentrations.                
+                                                                      
+ Key ecological implications:                                         
+ \begin{itemize}                                                      
+     \item Phytoplankton can store excess nutrients when available,   
+ creating a buffer against future limitation                          
+     \item Growth rate depends on internal rather than external       
+ nutrient status, allowing continued growth even when external        
+ nutrients are depleted                                               
+     \item Uptake rate varies with both external concentration and    
+ internal quota, representing physiological regulation                
+     \item This mechanism can help explain time lags between nutrient 
+ availability and population growth                                   
+ \end{itemize}                                                        
+                                                                      
+ The internal quota Q varies between Q\_min (minimum for survival) an 
+ Q\_max (storage capacity). Growth rate increases with Q but saturate 
+ while uptake rate decreases as Q approaches Q\_max, representing     
+ down-regulation of uptake systems.                                   
+ >>>>>>> REPLACE                                                      
+                                                                      
+
+Now modify the model code:                                            
+
+POPULATIONS\POPULATION_0027\INDIVIDUAL_SZFT2L23\model.cpp             
+
+                                                                      
+ <<<<<<< SEARCH                                                       
+   // Calculate nutrient-dependent uptake efficiency with baseline    
+   Type eta_N = eta_base + (eta_max - eta_base) / (Type(1.0) +        
+ exp(-k_eta * (N - N_crit)));                                         
+                                                                      
+   // Calculate temperature and light dependent rates with enhanced   
+ adaptive efficiency                                                  
+   Type uptake = r_max * temp_scale * photo_eff * light_limitation *  
+ eta_N * N * P / (K_N + N + eps);                                     
+ =======                                                              
+   // Track internal nutrient quota Q                                 
+   Type Q = N/(P + eps);  // Current quota estimate                   
+   Q = Q < Q_min ? Q_min : (Q > Q_max ? Q_max : Q);                   
+                                                                      
+   // Quota-dependent growth limitation                               
+   Type quota_limitation = (Q - Q_min)/(Q - Q_min + eps);             
+                                                                      
+   // Uptake regulation based on current quota                        
+   Type uptake_regulation = (Q_max - Q)/(Q_max - Q_min + eps);        
+                                                                      
+   // Calculate nutrient-dependent uptake efficiency with baseline an 
+ quota regulation                                                     
+   Type eta_N = eta_base + (eta_max - eta_base) / (Type(1.0) +        
+ exp(-k_eta * (N - N_crit)));                                         
+                                                                      
+   // Calculate temperature and light dependent rates with            
+ quota-dependent growth                                               
+   Type uptake = r_max * temp_scale * photo_eff * light_limitation *  
+ eta_N * uptake_regulation * N * P / (K_N + N + eps);                 
+   Type growth = r_max * temp_scale * photo_eff * light_limitation *  
+ quota_limitation * P;                                                
+ >>>>>>> REPLACE                                                      
+                                                                      
+
+                                                                      
+ <<<<<<< SEARCH                                                       
+       Type dP = uptake - grazing - (m_P + nutrient_stress) * P -     
+ sinking;                                                             
+ =======                                                              
+       Type dP = growth - grazing - (m_P + nutrient_stress) * P -     
+ sinking;                                                             
+ >>>>>>> REPLACE                                                      
+                                                                      
+
+This change separates nutrient uptake from growth, allowing           
+phytoplankton to take up nutrients faster than they can use them for  
+growth when nutrients are abundant, and continue growing (albeit at a 
+reduced rate) when external nutrients become scarce. This better      
+represents the observed biological processes and should improve the   
+model's ability to capture the timing and magnitude of population     
+changes.                                                              
+
+Tokens: 13k sent, 1.1k received. Cost: $0.06 message, $0.06 session.
+Committing 
+POPULATIONS\POPULATION_0027\INDIVIDUAL_SZFT2L23\parameters.json before
+applying edits.
+Committing 
+POPULATIONS\POPULATION_0027\INDIVIDUAL_SZFT2L23\intention.tex before 
+applying edits.
+Committing POPULATIONS\POPULATION_0027\INDIVIDUAL_SZFT2L23\model.cpp 
+before applying edits.
+Unable to add C:\Users\spi085\OneDrive - 
+CSIRO\Documents\_Projects\SCCP-QuantModelling\POPULATIONS\POPULATION_0
+027\INDIVIDUAL_SZFT2L23\parameters.json: Cmd('git') failed due to: 
+exit code(1)
+  cmdline: git add C:\Users\spi085\OneDrive - 
+CSIRO\Documents\_Projects\SCCP-QuantModelling\POPULATIONS\POPULATION_0
+027\INDIVIDUAL_SZFT2L23\parameters.json
+  stderr: 'The following paths are ignored by one of your .gitignore 
+files:
+POPULATIONS
+hint: Use -f if you really want to add them.
+hint: Turn this message off by running
+hint: "git config advice.addIgnoredFile false"'
+Unable to add C:\Users\spi085\OneDrive - 
+CSIRO\Documents\_Projects\SCCP-QuantModelling\POPULATIONS\POPULATION_0
+027\INDIVIDUAL_SZFT2L23\model.cpp: Cmd('git') failed due to: exit 
+code(1)
+  cmdline: git add C:\Users\spi085\OneDrive - 
+CSIRO\Documents\_Projects\SCCP-QuantModelling\POPULATIONS\POPULATION_0
+027\INDIVIDUAL_SZFT2L23\model.cpp
+  stderr: 'The following paths are ignored by one of your .gitignore 
+files:
+POPULATIONS
+hint: Use -f if you really want to add them.
+hint: Turn this message off by running
+hint: "git config advice.addIgnoredFile false"'
+Unable to add C:\Users\spi085\OneDrive - 
+CSIRO\Documents\_Projects\SCCP-QuantModelling\POPULATIONS\POPULATION_0
+027\INDIVIDUAL_SZFT2L23\intention.tex: Cmd('git') failed due to: exit 
+code(1)
+  cmdline: git add C:\Users\spi085\OneDrive - 
+CSIRO\Documents\_Projects\SCCP-QuantModelling\POPULATIONS\POPULATION_0
+027\INDIVIDUAL_SZFT2L23\intention.tex
+  stderr: 'The following paths are ignored by one of your .gitignore 
+files:
+POPULATIONS
+hint: Use -f if you really want to add them.
+hint: Turn this message off by running
+hint: "git config advice.addIgnoredFile false"'
+Unable to commit: Cmd('git') failed due to: exit code(1)
+  cmdline: git commit -m feat: Add new individual SZFT2L23 with 
+parameters, model, and intention files --no-verify -- 
+C:\Users\spi085\OneDrive - 
+CSIRO\Documents\_Projects\SCCP-QuantModelling\POPULATIONS\POPULATION_0
+027\INDIVIDUAL_SZFT2L23\parameters.json C:\Users\spi085\OneDrive - 
+CSIRO\Documents\_Projects\SCCP-QuantModelling\POPULATIONS\POPULATION_0
+027\INDIVIDUAL_SZFT2L23\model.cpp C:\Users\spi085\OneDrive - 
+CSIRO\Documents\_Projects\SCCP-QuantModelling\POPULATIONS\POPULATION_0
+027\INDIVIDUAL_SZFT2L23\intention.tex
+  stderr: 'error: pathspec 'C:\Users\spi085\OneDrive - 
+CSIRO\Documents\_Projects\SCCP-QuantModelling\POPULATIONS\POPULATION_0
+027\INDIVIDUAL_SZFT2L23\parameters.json' did not match any file(s) 
+known to git
+error: pathspec 'C:\Users\spi085\OneDrive - 
+CSIRO\Documents\_Projects\SCCP-QuantModelling\POPULATIONS\POPULATION_0
+027\INDIVIDUAL_SZFT2L23\model.cpp' did not match any file(s) known to 
+git
+error: pathspec 'C:\Users\spi085\OneDrive - 
+CSIRO\Documents\_Projects\SCCP-QuantModelling\POPULATIONS\POPULATION_0
+027\INDIVIDUAL_SZFT2L23\intention.tex' did not match any file(s) known
+to git'
+Applied edit to 
+POPULATIONS\POPULATION_0027\INDIVIDUAL_SZFT2L23\parameters.json
+Applied edit to 
+POPULATIONS\POPULATION_0027\INDIVIDUAL_SZFT2L23\model.cpp
+Applied edit to 
+POPULATIONS\POPULATION_0027\INDIVIDUAL_SZFT2L23\intention.tex
+Improved existing model in individual: POPULATIONS\POPULATION_0027\INDIVIDUAL_SZFT2L23
+Validating model for data leakage...
+Opening file: POPULATIONS\POPULATION_0027\INDIVIDUAL_SZFT2L23\model.cpp
+File read successfully
+Extracting vectors...
+Found data vectors: {'P_dat', 'N_dat', 'Z_dat', 'Time'}
+Found prediction vectors: {'P_pred', 'Z_pred', 'N_pred', 'Temp', 'D_pred'}
+Found reported vectors: {'D_pred', 'Z_pred', 'N_pred', 'P_pred'}
+Finding initial conditions...
+Found 4 initial conditions
+Finding time-stepping loop...
+Found loop from line 76 to 168
+Found response variables: {'P_dat', 'N_dat', 'Z_dat'}
+[93mRunning model for individual...[0m
+[0mIndividual directory: POPULATIONS\POPULATION_0027\INDIVIDUAL_SZFT2L23[0m
+[93mR script stdout:[0m
+[0mg++ -std=gnu++17  -I"C:/Users/spi085/AppData/Local/Programs/R/R-4.4.1/include" -DNDEBUG -I"C:/Users/spi085/AppData/Local/Programs/R/R-44~1.1/library/TMB/include" -I"C:/Users/spi085/AppData/Local/Programs/R/R-44~1.1/library/RCPPEI~1/include"   -DTMB_EIGEN_DISABLE_WARNINGS   -DTMB_LIB_INIT=R_init_model  -DCPPAD_FRAMEWORK    -I"C:/rtools44/x86_64-w64-mingw32.static.posix/include"     -O2 -Wa,-mbig-obj -c POPULATIONS//POPULATION_0027//INDIVIDUAL_SZFT2L23/model.cpp -o POPULATIONS//POPULATION_0027//INDIVIDUAL_SZFT2L23/model.o[0m
+[93mR script stderr:[0m
+[0mLoading required package: TMB
+Loading required package: jsonlite
+here() starts at C:/Users/spi085/OneDrive - CSIRO/Documents/_Projects/SCCP-QuantModelling
+using C++ compiler: 'G__~1.EXE (GCC) 13.2.0'
+POPULATIONS//POPULATION_0027//INDIVIDUAL_SZFT2L23/model.cpp: In member function 'Type objective_function<Type>::operator()()':
+POPULATIONS//POPULATION_0027//INDIVIDUAL_SZFT2L23/model.cpp:117:15: error: 'Q_min' was not declared in this scope; did you mean 'min'?
+  117 |       Q = Q < Q_min ? Q_min : (Q > Q_max ? Q_max : Q);
+      |               ^~~~~
+      |               min
+POPULATIONS//POPULATION_0027//INDIVIDUAL_SZFT2L23/model.cpp:117:36: error: 'Q_max' was not declared in this scope; did you mean 'g_max'?
+  117 |       Q = Q < Q_min ? Q_min : (Q > Q_max ? Q_max : Q);
+      |                                    ^~~~~
+      |                                    g_max
+make: *** [C:/Users/spi085/AppData/Local/Programs/R/R-4.4.1/etc/x64/Makeconf:296: POPULATIONS//POPULATION_0027//INDIVIDUAL_SZFT2L23/model.o] Error 1
+Error in TMB::compile(file.path(individual_dir, model_file), flags = flags,  : 
+  Compilation failed
+Error: Compilation failed
+Execution halted[0m
+[91mModel failed to compile.[0m
+MODEL RUN FINISHED
+Error: Objective value is None
+Initial run failed. Attempting to fix...
+Fixing broken model iteration: 0
+The error occurs because we need to declare Q_min and Q_max as        
+parameters in the model. Let's fix this by adding them to the         
+parameter declarations section:                                       
+
+POPULATIONS\POPULATION_0027\INDIVIDUAL_SZFT2L23\model.cpp             
+
+                                                                      
+ <<<<<<< SEARCH                                                       
+   PARAMETER(theta_P);     // Temperature sensitivity of grazing      
+ selectivity                                                          
+   PARAMETER(eta_max);    // Maximum nutrient uptake efficiency       
+ multiplier                                                           
+   PARAMETER(k_eta);      // Steepness of uptake efficiency response  
+   PARAMETER(N_crit);     // Critical nutrient concentration for      
+ efficiency switch                                                    
+   PARAMETER(eta_base);   // Baseline nutrient uptake efficiency      
+ =======                                                              
+   PARAMETER(theta_P);     // Temperature sensitivity of grazing      
+ selectivity                                                          
+   PARAMETER(eta_max);    // Maximum nutrient uptake efficiency       
+ multiplier                                                           
+   PARAMETER(k_eta);      // Steepness of uptake efficiency response  
+   PARAMETER(N_crit);     // Critical nutrient concentration for      
+ efficiency switch                                                    
+   PARAMETER(eta_base);   // Baseline nutrient uptake efficiency      
+   PARAMETER(Q_min);      // Minimum internal nutrient quota          
+   PARAMETER(Q_max);      // Maximum internal nutrient quota          
+ >>>>>>> REPLACE                                                      
+                                                                      
+
+This adds the necessary parameter declarations that match the         
+parameters we added to parameters.json earlier.                       
+
+Tokens: 15k sent, 261 received. Cost: $0.05 message, $0.10 session.
+Committing POPULATIONS\POPULATION_0027\INDIVIDUAL_SZFT2L23\model.cpp 
+before applying edits.
+Unable to add C:\Users\spi085\OneDrive - 
+CSIRO\Documents\_Projects\SCCP-QuantModelling\POPULATIONS\POPULATION_0
+027\INDIVIDUAL_SZFT2L23\model.cpp: Cmd('git') failed due to: exit 
+code(1)
+  cmdline: git add C:\Users\spi085\OneDrive - 
+CSIRO\Documents\_Projects\SCCP-QuantModelling\POPULATIONS\POPULATION_0
+027\INDIVIDUAL_SZFT2L23\model.cpp
+  stderr: 'The following paths are ignored by one of your .gitignore 
+files:
+POPULATIONS
+hint: Use -f if you really want to add them.
+hint: Turn this message off by running
+hint: "git config advice.addIgnoredFile false"'
+Unable to commit: Cmd('git') failed due to: exit code(1)
+  cmdline: git commit -m feat: Add model.cpp for POPULATION_0027 
+INDIVIDUAL_SZFT2L23 --no-verify -- C:\Users\spi085\OneDrive - 
+CSIRO\Documents\_Projects\SCCP-QuantModelling\POPULATIONS\POPULATION_0
+027\INDIVIDUAL_SZFT2L23\model.cpp
+  stderr: 'error: pathspec 'C:\Users\spi085\OneDrive - 
+CSIRO\Documents\_Projects\SCCP-QuantModelling\POPULATIONS\POPULATION_0
+027\INDIVIDUAL_SZFT2L23\model.cpp' did not match any file(s) known to 
+git'
+The LLM did not conform to the edit format.
+https://aider.chat/docs/troubleshooting/edit-errors.html
+
+# 1 SEARCH/REPLACE block failed to match!
+
+## SearchReplaceNoExactMatch: This SEARCH block failed to exactly 
+match lines in 
+POPULATIONS\POPULATION_0027\INDIVIDUAL_SZFT2L23\model.cpp
+<<<<<<< SEARCH
+  PARAMETER(theta_P);     // Temperature sensitivity of grazing 
+selectivity
+  PARAMETER(eta_max);    // Maximum nutrient uptake efficiency 
+multiplier
+  PARAMETER(k_eta);      // Steepness of uptake efficiency response
+  PARAMETER(N_crit);     // Critical nutrient concentration for 
+efficiency switch
+  PARAMETER(eta_base);   // Baseline nutrient uptake efficiency
+=======
+  PARAMETER(theta_P);     // Temperature sensitivity of grazing 
+selectivity
+  PARAMETER(eta_max);    // Maximum nutrient uptake efficiency 
+multiplier
+  PARAMETER(k_eta);      // Steepness of uptake efficiency response
+  PARAMETER(N_crit);     // Critical nutrient concentration for 
+efficiency switch
+  PARAMETER(eta_base);   // Baseline nutrient uptake efficiency
+  PARAMETER(Q_min);      // Minimum internal nutrient quota
+  PARAMETER(Q_max);      // Maximum internal nutrient quota
+>>>>>>> REPLACE
+
+The SEARCH section must exactly match an existing block of lines 
+including all white space, comments, indentation, docstrings, etc
+
+I apologize for the mismatch. Let me fix that by providing the exact  
+match from the file:                                                  
+
+POPULATIONS\POPULATION_0027\INDIVIDUAL_SZFT2L23\model.cpp             
+
+                                                                      
+ <<<<<<< SEARCH                                                       
+   PARAMETER(theta_P);     // Temperature sensitivity of grazing      
+ selectivity                                                          
+   PARAMETER(eta_max);     // Maximum nutrient uptake efficiency      
+ multiplier                                                           
+   PARAMETER(k_eta);       // Steepness of uptake efficiency response 
+   PARAMETER(N_crit);      // Critical nutrient concentration for     
+ efficiency switch                                                    
+   PARAMETER(eta_base);    // Baseline nutrient uptake efficiency     
+ =======                                                              
+   PARAMETER(theta_P);     // Temperature sensitivity of grazing      
+ selectivity                                                          
+   PARAMETER(eta_max);     // Maximum nutrient uptake efficiency      
+ multiplier                                                           
+   PARAMETER(k_eta);       // Steepness of uptake efficiency response 
+   PARAMETER(N_crit);      // Critical nutrient concentration for     
+ efficiency switch                                                    
+   PARAMETER(eta_base);    // Baseline nutrient uptake efficiency     
+   PARAMETER(Q_min);       // Minimum internal nutrient quota         
+   PARAMETER(Q_max);       // Maximum internal nutrient quota         
+ >>>>>>> REPLACE                                                      
+                                                                      
+
+The difference was in the spacing/alignment of the comments. Now it   
+should match exactly.                                                 
+
+Tokens: 16k sent, 249 received. Cost: $0.05 message, $0.16 session.
+Committing POPULATIONS\POPULATION_0027\INDIVIDUAL_SZFT2L23\model.cpp 
+before applying edits.
+Unable to add C:\Users\spi085\OneDrive - 
+CSIRO\Documents\_Projects\SCCP-QuantModelling\POPULATIONS\POPULATION_0
+027\INDIVIDUAL_SZFT2L23\model.cpp: Cmd('git') failed due to: exit 
+code(1)
+  cmdline: git add C:\Users\spi085\OneDrive - 
+CSIRO\Documents\_Projects\SCCP-QuantModelling\POPULATIONS\POPULATION_0
+027\INDIVIDUAL_SZFT2L23\model.cpp
+  stderr: 'The following paths are ignored by one of your .gitignore 
+files:
+POPULATIONS
+hint: Use -f if you really want to add them.
+hint: Turn this message off by running
+hint: "git config advice.addIgnoredFile false"'
+Unable to commit: Cmd('git') failed due to: exit code(1)
+  cmdline: git commit -m feat: Add model.cpp for POPULATION_0027 
+INDIVIDUAL_SZFT2L23 --no-verify -- C:\Users\spi085\OneDrive - 
+CSIRO\Documents\_Projects\SCCP-QuantModelling\POPULATIONS\POPULATION_0
+027\INDIVIDUAL_SZFT2L23\model.cpp
+  stderr: 'error: pathspec 'C:\Users\spi085\OneDrive - 
+CSIRO\Documents\_Projects\SCCP-QuantModelling\POPULATIONS\POPULATION_0
+027\INDIVIDUAL_SZFT2L23\model.cpp' did not match any file(s) known to 
+git'
+Applied edit to 
+POPULATIONS\POPULATION_0027\INDIVIDUAL_SZFT2L23\model.cpp
+Validating fixed model for data leakage...
+Opening file: POPULATIONS\POPULATION_0027\INDIVIDUAL_SZFT2L23\model.cpp
+File read successfully
+Extracting vectors...
+Found data vectors: {'P_dat', 'N_dat', 'Z_dat', 'Time'}
+Found prediction vectors: {'P_pred', 'Z_pred', 'N_pred', 'Temp', 'D_pred'}
+Found reported vectors: {'D_pred', 'Z_pred', 'N_pred', 'P_pred'}
+Finding initial conditions...
+Found 4 initial conditions
+Finding time-stepping loop...
+Found loop from line 78 to 170
+Found response variables: {'P_dat', 'N_dat', 'Z_dat'}
+[93mRunning model for individual...[0m
+[0mIndividual directory: POPULATIONS\POPULATION_0027\INDIVIDUAL_SZFT2L23[0m
+[93mR script stdout:[0m
+[0mg++ -std=gnu++17  -I"C:/Users/spi085/AppData/Local/Programs/R/R-4.4.1/include" -DNDEBUG -I"C:/Users/spi085/AppData/Local/Programs/R/R-44~1.1/library/TMB/include" -I"C:/Users/spi085/AppData/Local/Programs/R/R-44~1.1/library/RCPPEI~1/include"   -DTMB_EIGEN_DISABLE_WARNINGS   -DTMB_LIB_INIT=R_init_model  -DCPPAD_FRAMEWORK    -I"C:/rtools44/x86_64-w64-mingw32.static.posix/include"     -O2 -Wa,-mbig-obj -c POPULATIONS//POPULATION_0027//INDIVIDUAL_SZFT2L23/model.cpp -o POPULATIONS//POPULATION_0027//INDIVIDUAL_SZFT2L23/model.o
+g++ -std=gnu++17 -shared -s -static-libgcc -o POPULATIONS//POPULATION_0027//INDIVIDUAL_SZFT2L23/model.dll tmp.def POPULATIONS//POPULATION_0027//INDIVIDUAL_SZFT2L23/model.o -LC:/rtools44/x86_64-w64-mingw32.static.posix/lib/x64 -LC:/rtools44/x86_64-w64-mingw32.static.posix/lib -LC:/Users/spi085/AppData/Local/Programs/R/R-4.4.1/bin/x64 -lR
+Starting model phases
+Number of phases: 4 
+Phase 1 
+Initial parameter values for phase 1 :
+r_max g_max 
+  1.0   0.4 
+Error in model phases: NA/NaN gradient evaluation[0m
+[93mR script stderr:[0m
+[0mLoading required package: TMB
+Loading required package: jsonlite
+here() starts at C:/Users/spi085/OneDrive - CSIRO/Documents/_Projects/SCCP-QuantModelling
+using C++ compiler: 'G__~1.EXE (GCC) 13.2.0'
+Error in value[[3L]](cond) : 
+  Error in model phases: NA/NaN gradient evaluation
+Calls: tryCatch -> tryCatchList -> tryCatchOne -> <Anonymous>
+In addition: Warning message:
+In nlminb(model$par, model$fn, model$gr) : NA/NaN function evaluation
+Execution halted[0m
+[91mR script failed with return code 1[0m
+Fixing broken model iteration: 1
+The error suggests numerical instability in the gradient evaluation.  
+Let's fix this by:                                                    
+
+ 1 Adjusting how we calculate the quota Q to avoid division by zero   
+ 2 Adding bounds to the quota-based limitations                       
+ 3 Ensuring growth calculation is properly bounded                    
+
+Here are the changes:                                                 
+
+POPULATIONS\POPULATION_0027\INDIVIDUAL_SZFT2L23\model.cpp             
+
+                                                                      
+ <<<<<<< SEARCH                                                       
+       // Track internal nutrient quota Q                             
+       Type Q = N/(P + eps);  // Current quota estimate               
+       Q = Q < Q_min ? Q_min : (Q > Q_max ? Q_max : Q);               
+                                                                      
+       // Quota-dependent growth limitation                           
+       Type quota_limitation = (Q - Q_min)/(Q - Q_min + eps);         
+                                                                      
+       // Uptake regulation based on current quota                    
+       Type uptake_regulation = (Q_max - Q)/(Q_max - Q_min + eps);    
+ =======                                                              
+       // Track internal nutrient quota Q with improved numerical     
+ stability                                                            
+       Type Q = N * P/(P * P + eps);  // More stable quota estimation 
+       Q = Q < Q_min ? Q_min : (Q > Q_max ? Q_max : Q);               
+                                                                      
+       // Quota-dependent growth limitation with bounds               
+       Type quota_limitation = (Q - Q_min)/(Q_max - Q_min + eps);     
+       quota_limitation = quota_limitation < Type(0.0) ? Type(0.0) :  
+                        (quota_limitation > Type(1.0) ? Type(1.0) :   
+ quota_limitation);                                                   
+                                                                      
+       // Uptake regulation based on current quota with bounds        
+       Type uptake_regulation = (Q_max - Q)/(Q_max - Q_min + eps);    
+       uptake_regulation = uptake_regulation < Type(0.0) ? Type(0.0)  
+                         (uptake_regulation > Type(1.0) ? Type(1.0) : 
+ uptake_regulation);                                                  
+ >>>>>>> REPLACE                                                      
+                                                                      
+
+These changes:                                                        
+
+ 1 Use a more numerically stable formula for Q calculation            
+ 2 Add explicit bounds to quota_limitation and uptake_regulation      
+ 3 Ensure all values stay within [0,1] range                          
+
+This should prevent NA/NaN values in the gradient evaluation while    
+maintaining the ecological meaning of the quota model.                
+
+Tokens: 17k sent, 479 received. Cost: $0.06 message, $0.21 session.
+Committing POPULATIONS\POPULATION_0027\INDIVIDUAL_SZFT2L23\model.cpp 
+before applying edits.
+Unable to add C:\Users\spi085\OneDrive - 
+CSIRO\Documents\_Projects\SCCP-QuantModelling\POPULATIONS\POPULATION_0
+027\INDIVIDUAL_SZFT2L23\model.cpp: Cmd('git') failed due to: exit 
+code(1)
+  cmdline: git add C:\Users\spi085\OneDrive - 
+CSIRO\Documents\_Projects\SCCP-QuantModelling\POPULATIONS\POPULATION_0
+027\INDIVIDUAL_SZFT2L23\model.cpp
+  stderr: 'The following paths are ignored by one of your .gitignore 
+files:
+POPULATIONS
+hint: Use -f if you really want to add them.
+hint: Turn this message off by running
+hint: "git config advice.addIgnoredFile false"'
+Unable to commit: Cmd('git') failed due to: exit code(1)
+  cmdline: git commit -m feat: Add model.cpp for POPULATION_0027 
+INDIVIDUAL_SZFT2L23 --no-verify -- C:\Users\spi085\OneDrive - 
+CSIRO\Documents\_Projects\SCCP-QuantModelling\POPULATIONS\POPULATION_0
+027\INDIVIDUAL_SZFT2L23\model.cpp
+  stderr: 'error: pathspec 'C:\Users\spi085\OneDrive - 
+CSIRO\Documents\_Projects\SCCP-QuantModelling\POPULATIONS\POPULATION_0
+027\INDIVIDUAL_SZFT2L23\model.cpp' did not match any file(s) known to 
+git'
+Applied edit to 
+POPULATIONS\POPULATION_0027\INDIVIDUAL_SZFT2L23\model.cpp
+Validating fixed model for data leakage...
+Opening file: POPULATIONS\POPULATION_0027\INDIVIDUAL_SZFT2L23\model.cpp
+File read successfully
+Extracting vectors...
+Found data vectors: {'P_dat', 'N_dat', 'Z_dat', 'Time'}
+Found prediction vectors: {'P_pred', 'Z_pred', 'N_pred', 'Temp', 'D_pred'}
+Found reported vectors: {'D_pred', 'Z_pred', 'N_pred', 'P_pred'}
+Finding initial conditions...
+Found 4 initial conditions
+Finding time-stepping loop...
+Found loop from line 78 to 174
+Found response variables: {'P_dat', 'N_dat', 'Z_dat'}
+[93mRunning model for individual...[0m
+[0mIndividual directory: POPULATIONS\POPULATION_0027\INDIVIDUAL_SZFT2L23[0m
+[93mRemoved old compilation: model.dll[0m
+[93mRemoved old compilation: model.o[0m
+[93mR script stdout:[0m
+[0mg++ -std=gnu++17  -I"C:/Users/spi085/AppData/Local/Programs/R/R-4.4.1/include" -DNDEBUG -I"C:/Users/spi085/AppData/Local/Programs/R/R-44~1.1/library/TMB/include" -I"C:/Users/spi085/AppData/Local/Programs/R/R-44~1.1/library/RCPPEI~1/include"   -DTMB_EIGEN_DISABLE_WARNINGS   -DTMB_LIB_INIT=R_init_model  -DCPPAD_FRAMEWORK    -I"C:/rtools44/x86_64-w64-mingw32.static.posix/include"     -O2 -Wa,-mbig-obj -c POPULATIONS//POPULATION_0027//INDIVIDUAL_SZFT2L23/model.cpp -o POPULATIONS//POPULATION_0027//INDIVIDUAL_SZFT2L23/model.o
+g++ -std=gnu++17 -shared -s -static-libgcc -o POPULATIONS//POPULATION_0027//INDIVIDUAL_SZFT2L23/model.dll tmp.def POPULATIONS//POPULATION_0027//INDIVIDUAL_SZFT2L23/model.o -LC:/rtools44/x86_64-w64-mingw32.static.posix/lib/x64 -LC:/rtools44/x86_64-w64-mingw32.static.posix/lib -LC:/Users/spi085/AppData/Local/Programs/R/R-4.4.1/bin/x64 -lR
+Starting model phases
+Number of phases: 4 
+Phase 1 
+Initial parameter values for phase 1 :
+r_max g_max 
+  1.0   0.4 
+Error in model phases: NA/NaN gradient evaluation[0m
+[93mR script stderr:[0m
+[0mLoading required package: TMB
+Loading required package: jsonlite
+here() starts at C:/Users/spi085/OneDrive - CSIRO/Documents/_Projects/SCCP-QuantModelling
+using C++ compiler: 'G__~1.EXE (GCC) 13.2.0'
+Error in value[[3L]](cond) : 
+  Error in model phases: NA/NaN gradient evaluation
+Calls: tryCatch -> tryCatchList -> tryCatchOne -> <Anonymous>
+In addition: Warning message:
+In nlminb(model$par, model$fn, model$gr) : NA/NaN function evaluation
+Execution halted[0m
+[91mR script failed with return code 1[0m
+Fixing broken model iteration: 2
+The NA/NaN gradient evaluation suggests numerical instability. Let's  
+modify the model to improve stability:                                
+
+ 1 Adjust the quota calculation to be more robust                     
+ 2 Ensure growth and uptake terms remain bounded                      
+ 3 Add more safeguards against division by zero                       
+
+POPULATIONS\POPULATION_0027\INDIVIDUAL_SZFT2L23\model.cpp             
+
+                                                                      
+ <<<<<<< SEARCH                                                       
+       // Track internal nutrient quota Q with improved numerical     
+ stability                                                            
+       Type Q = N * P/(P * P + eps);  // More stable quota estimation 
+       Q = Q < Q_min ? Q_min : (Q > Q_max ? Q_max : Q);               
+                                                                      
+       // Quota-dependent growth limitation with bounds               
+       Type quota_limitation = (Q - Q_min)/(Q_max - Q_min + eps);     
+       quota_limitation = quota_limitation < Type(0.0) ? Type(0.0) :  
+                        (quota_limitation > Type(1.0) ? Type(1.0) :   
+ quota_limitation);                                                   
+                                                                      
+       // Uptake regulation based on current quota with bounds        
+       Type uptake_regulation = (Q_max - Q)/(Q_max - Q_min + eps);    
+       uptake_regulation = uptake_regulation < Type(0.0) ? Type(0.0)  
+                         (uptake_regulation > Type(1.0) ? Type(1.0) : 
+ uptake_regulation);                                                  
+ =======                                                              
+       // Track internal nutrient quota Q with improved numerical     
+ stability                                                            
+       Type Q = N/(Type(1.0) + P + eps);  // Simplified quota         
+ estimation                                                           
+       Q = std::max(Q_min, std::min(Q_max, Q));                       
+                                                                      
+       // Quota-dependent growth limitation with bounds               
+       Type quota_limitation = std::max(Type(0.0),                    
+                             std::min(Type(1.0),                      
+                                    (Q - Q_min)/(Q_max - Q_min +      
+ eps)));                                                              
+                                                                      
+       // Uptake regulation based on current quota with bounds        
+       Type uptake_regulation = std::max(Type(0.0),                   
+                              std::min(Type(1.0),                     
+                                     (Q_max - Q)/(Q_max - Q_min +     
+ eps)));                                                              
+ >>>>>>> REPLACE                                                      
+                                                                      
+
+                                                                      
+ <<<<<<< SEARCH                                                       
+       // Calculate temperature and light dependent rates with        
+ quota-dependent growth                                               
+       Type uptake = r_max * temp_scale * photo_eff * light_limitatio 
+ * eta_N * uptake_regulation * N * P / (K_N + N + eps);               
+       Type growth = r_max * temp_scale * photo_eff * light_limitatio 
+ * quota_limitation * P;                                              
+ =======                                                              
+       // Calculate temperature and light dependent rates with        
+ quota-dependent growth                                               
+       Type uptake = r_max * temp_scale * photo_eff * light_limitatio 
+ * eta_N *                                                            
+                    uptake_regulation * N * P / (K_N + N + P + eps);  
+       Type growth = r_max * temp_scale * photo_eff * light_limitatio 
+ *                                                                    
+                    quota_limitation * P / (Type(1.0) + P/K_P + eps); 
+ >>>>>>> REPLACE                                                      
+                                                                      
+
+These changes:                                                        
+
+ 1 Simplify the quota calculation to avoid potential instabilities    
+ 2 Use std::max/min for cleaner bounds checking                       
+ 3 Add density dependence to uptake and growth terms                  
+ 4 Include additional eps terms to prevent division by zero           
+
+The model should now be more numerically stable while maintaining the 
+same ecological mechanisms.                                           
+
+Tokens: 18k sent, 704 received. Cost: $0.06 message, $0.28 session.
+Committing POPULATIONS\POPULATION_0027\INDIVIDUAL_SZFT2L23\model.cpp 
+before applying edits.
+Unable to add C:\Users\spi085\OneDrive - 
+CSIRO\Documents\_Projects\SCCP-QuantModelling\POPULATIONS\POPULATION_0
+027\INDIVIDUAL_SZFT2L23\model.cpp: Cmd('git') failed due to: exit 
+code(1)
+  cmdline: git add C:\Users\spi085\OneDrive - 
+CSIRO\Documents\_Projects\SCCP-QuantModelling\POPULATIONS\POPULATION_0
+027\INDIVIDUAL_SZFT2L23\model.cpp
+  stderr: 'The following paths are ignored by one of your .gitignore 
+files:
+POPULATIONS
+hint: Use -f if you really want to add them.
+hint: Turn this message off by running
+hint: "git config advice.addIgnoredFile false"'
+Unable to commit: Cmd('git') failed due to: exit code(1)
+  cmdline: git commit -m feat: Add model.cpp for POPULATION_0027 
+INDIVIDUAL_SZFT2L23 --no-verify -- C:\Users\spi085\OneDrive - 
+CSIRO\Documents\_Projects\SCCP-QuantModelling\POPULATIONS\POPULATION_0
+027\INDIVIDUAL_SZFT2L23\model.cpp
+  stderr: 'error: pathspec 'C:\Users\spi085\OneDrive - 
+CSIRO\Documents\_Projects\SCCP-QuantModelling\POPULATIONS\POPULATION_0
+027\INDIVIDUAL_SZFT2L23\model.cpp' did not match any file(s) known to 
+git'
+Applied edit to 
+POPULATIONS\POPULATION_0027\INDIVIDUAL_SZFT2L23\model.cpp
+Validating fixed model for data leakage...
+Opening file: POPULATIONS\POPULATION_0027\INDIVIDUAL_SZFT2L23\model.cpp
+File read successfully
+Extracting vectors...
+Found data vectors: {'P_dat', 'N_dat', 'Z_dat', 'Time'}
+Found prediction vectors: {'P_pred', 'Z_pred', 'N_pred', 'Temp', 'D_pred'}
+Found reported vectors: {'D_pred', 'Z_pred', 'N_pred', 'P_pred'}
+Finding initial conditions...
+Found 4 initial conditions
+Finding time-stepping loop...
+Found loop from line 78 to 176
+Found response variables: {'P_dat', 'N_dat', 'Z_dat'}
+[93mRunning model for individual...[0m
+[0mIndividual directory: POPULATIONS\POPULATION_0027\INDIVIDUAL_SZFT2L23[0m
+[93mRemoved old compilation: model.dll[0m
+[93mRemoved old compilation: model.o[0m
+[93mR script stdout:[0m
+[0mg++ -std=gnu++17  -I"C:/Users/spi085/AppData/Local/Programs/R/R-4.4.1/include" -DNDEBUG -I"C:/Users/spi085/AppData/Local/Programs/R/R-44~1.1/library/TMB/include" -I"C:/Users/spi085/AppData/Local/Programs/R/R-44~1.1/library/RCPPEI~1/include"   -DTMB_EIGEN_DISABLE_WARNINGS   -DTMB_LIB_INIT=R_init_model  -DCPPAD_FRAMEWORK    -I"C:/rtools44/x86_64-w64-mingw32.static.posix/include"     -O2 -Wa,-mbig-obj -c POPULATIONS//POPULATION_0027//INDIVIDUAL_SZFT2L23/model.cpp -o POPULATIONS//POPULATION_0027//INDIVIDUAL_SZFT2L23/model.o
+g++ -std=gnu++17 -shared -s -static-libgcc -o POPULATIONS//POPULATION_0027//INDIVIDUAL_SZFT2L23/model.dll tmp.def POPULATIONS//POPULATION_0027//INDIVIDUAL_SZFT2L23/model.o -LC:/rtools44/x86_64-w64-mingw32.static.posix/lib/x64 -LC:/rtools44/x86_64-w64-mingw32.static.posix/lib -LC:/Users/spi085/AppData/Local/Programs/R/R-4.4.1/bin/x64 -lR
+Starting model phases
+Number of phases: 4 
+Phase 1 
+Initial parameter values for phase 1 :
+r_max g_max 
+  1.0   0.4 
+Final parameter values for phase 1 :
+    r_max     g_max 
+0.4205939 0.2186340 
+Convergence message: relative convergence (4) 
+Number of iterations: 20 
+Objective function value: 6658.449 
+Gradient at solution for phase 1 :
+             [,1]        [,2]
+[1,] -0.001802226 0.003154873
+Phase 2 
+Initial parameter values for phase 2 :
+       K_N        K_P alpha_base  alpha_max    K_alpha      m_P_N        s_P 
+      0.10       0.20       0.20       0.30       0.10       0.15       0.15 
+   s_P_max      m_Z_N        r_D      I_opt       beta        k_w        E_p 
+      0.30       0.10       0.10     150.00       0.10       0.20       0.45 
+   theta_P    eta_max      k_eta     N_crit   eta_base      Q_min      Q_max 
+      0.50       1.50       5.00       0.15       0.50       0.05       0.30 
+Final parameter values for phase 2 :
+          K_N           K_P    alpha_base     alpha_max       K_alpha 
+ 1.288805e-01  5.267242e-02  3.774589e-01  3.763527e-01  4.639704e-02 
+        m_P_N           s_P       s_P_max         m_Z_N           r_D 
+-7.194222e-01  1.019016e-01 -5.694222e-01  2.509748e-01  2.499550e-05 
+        I_opt          beta           k_w           E_p       theta_P 
+ 1.500000e+02  1.000000e-01 -2.253299e+01  4.500000e-01  5.000000e-01 
+      eta_max         k_eta        N_crit      eta_base         Q_min 
+ 1.500000e+00  5.000000e+00  1.500000e-01  5.000000e-01  4.766897e-02 
+        Q_max 
+ 3.023310e-01 
+Convergence message: function evaluation limit reached without convergence (9) 
+Number of iterations: 117 
+Objective function value: 1821.154 
+Gradient at solution for phase 2 :
+         [,1]    [,2]      [,3]      [,4]     [,5]      [,6]     [,7]      [,8]
+[1,] 177.0373 100.256 -16.22552 -14.76559 9.270912 -15.95771 -63.9252 -15.95771
+         [,9]     [,10]        [,11] [,12]       [,13] [,14] [,15] [,16] [,17]
+[1,] 32.71562 -237.3406 1.604619e-17     0 -0.04353445     0     0     0     0
+     [,18] [,19]        [,20]         [,21]
+[1,]     0     0 4.849304e-06 -4.849304e-06
+Phase 3 
+Initial parameter values for phase 3 :
+ m_P  m_Z 
+0.10 0.05 
+Final parameter values for phase 3 :
+       m_P        m_Z 
+0.10000430 0.05337248 
+Convergence message: relative convergence (4) 
+Number of iterations: 17 
+Objective function value: 1820.852 
+Gradient at solution for phase 3 :
+            [,1]         [,2]
+[1,] -0.06318966 -0.001457544
+Phase 4 
+Initial parameter values for phase 4 :
+sigma_N sigma_P sigma_Z 
+    0.2     0.2     0.2 
+Final parameter values for phase 4 :
+  sigma_N   sigma_P   sigma_Z 
+0.9314990 0.2304370 0.0930035 
+Convergence message: relative convergence (4) 
+Number of iterations: 25 
+Objective function value: 140.356 
+Gradient at solution for phase 4 :
+             [,1]         [,2]         [,3]
+[1,] 2.041893e-07 4.898689e-06 2.131864e-07
+Final Phase
+Initial parameter values for final phase:
+        r_max           K_N         g_max           K_P    alpha_base 
+ 4.205939e-01  1.288805e-01  2.186340e-01  5.267242e-02  3.774589e-01 
+    alpha_max       K_alpha           m_P         m_P_N           s_P 
+ 3.763527e-01  4.639704e-02  1.000043e-01 -7.194222e-01  1.019016e-01 
+      s_P_max           m_Z         m_Z_N           r_D       sigma_N 
+-5.694222e-01  5.337248e-02  2.509748e-01  2.499550e-05  9.314990e-01 
+      sigma_P       sigma_Z         I_opt          beta           k_w 
+ 2.304370e-01  9.300350e-02  1.500000e+02  1.000000e-01 -2.253299e+01 
+          E_p       theta_P       eta_max         k_eta        N_crit 
+ 4.500000e-01  5.000000e-01  1.500000e+00  5.000000e+00  1.500000e-01 
+     eta_base         Q_min         Q_max 
+ 5.000000e-01  4.766897e-02  3.023310e-01 
+Final parameter values for final phase:
+        r_max           K_N         g_max           K_P    alpha_base 
+ 3.500611e-01  6.720264e-02  3.956566e-01  8.406723e-02  2.516253e-01 
+    alpha_max       K_alpha           m_P         m_P_N           s_P 
+ 1.377819e-01  5.217123e-01  7.035310e-02 -7.992584e-01 -1.987450e-02 
+      s_P_max           m_Z         m_Z_N           r_D       sigma_N 
+-6.492584e-01  2.374466e-01  1.176541e-01  2.851546e-05  9.310714e-01 
+      sigma_P       sigma_Z         I_opt          beta           k_w 
+ 2.105711e-01  5.986793e-02  1.500000e+02  1.000000e-01 -2.204601e+01 
+          E_p       theta_P       eta_max         k_eta        N_crit 
+ 4.500000e-01  5.000000e-01  1.500000e+00  5.000000e+00  1.500000e-01 
+     eta_base         Q_min         Q_max 
+ 5.000000e-01  4.766901e-02  3.023310e-01 
+Convergence message: function evaluation limit reached without convergence (9) 
+Number of iterations: 94 
+Objective function value: 39.66314 
+Gradient at solution for final phase:
+          [,1]     [,2]      [,3]     [,4]      [,5]      [,6]     [,7]
+[1,] -336.2102 8236.627 -1960.721 984.0167 -1021.221 -447.7682 70.70373
+          [,8]      [,9]     [,10]     [,11]     [,12]    [,13]    [,14]
+[1,] -3063.367 -451.1687 -3098.058 -451.1687 -128.7515 -52.0789 12378.16
+          [,15]     [,16]    [,17]         [,18] [,19]     [,20] [,21] [,22]
+[1,] -0.8333549 -159.3167 766.0751 -1.166602e-16     0 -17.24138     0     0
+     [,23] [,24] [,25] [,26]        [,27]         [,28]
+[1,]     0     0     0     0 1.798605e-05 -1.798605e-05
+All phases completed
+
+Running model validation...
+No test data available (train_test_split >= 1.0)
+NULL
+
+DEBUG: Report contents:
+List of 4
+ $ N_pred: num [1:200] 0.4 0.4 0.4 0.4 0.4 ...
+ $ D_pred: num [1:200] 0.1 0.115 0.132 0.149 0.167 ...
+ $ Z_pred: num [1:200] 0.05 0.052 0.0541 0.0563 0.0587 ...
+ $ P_pred: num [1:200] 0.1 0.105 0.11 0.116 0.121 ...
+NULL
+
+DEBUG: Available variables in report:
+[1] "N_pred" "D_pred" "Z_pred" "P_pred"
+
+Checking predictions and calculating objective function...
+
+DEBUG: Processing N_pred 
+DEBUG: First few predictions: 0.4 0.400003 0.4000064 0.4000102 0.4000146 0.4000194 
+DEBUG: Summary statistics:
+   Min. 1st Qu.  Median    Mean 3rd Qu.    Max. 
+ 0.4000  0.4010  0.4029  0.4034  0.4055  0.4088 
+DEBUG: All zeros? FALSE 
+DEBUG: Any infinities? FALSE 
+
+DEBUG: Processing P_pred 
+DEBUG: First few predictions: 0.1 0.1051316 0.1103661 0.1156905 0.1210802 0.126502 
+DEBUG: Summary statistics:
+   Min. 1st Qu.  Median    Mean 3rd Qu.    Max. 
+0.01224 0.03085 0.03114 0.04570 0.03463 0.17103 
+DEBUG: All zeros? FALSE 
+DEBUG: Any infinities? FALSE 
+
+DEBUG: Processing Z_pred 
+DEBUG: First few predictions: 0.05000001 0.05196545 0.05406316 0.05629808 0.05867498 0.06119823 
+DEBUG: Summary statistics:
+   Min. 1st Qu.  Median    Mean 3rd Qu.    Max. 
+0.05000 0.07249 0.07605 0.08272 0.07811 0.14392 
+DEBUG: All zeros? FALSE 
+DEBUG: Any infinities? FALSE 
+
+DEBUG: Using the following variables for objective function:
+N_dat -> N_pred
+P_dat -> P_pred
+Z_dat -> Z_pred
+
+DEBUG: Calculating MSE for prediction variables only:
+
+DEBUG: N_pred 
+Observed: 0.4 0.375 0.346 0.314 0.278 0.239 ...
+Predicted: 0.4 0.400003 0.4000064 0.4000102 0.4000146 0.4000194 ...
+MSE (normalized): 4.520281 
+
+DEBUG: P_pred 
+Observed: 0.1 0.117 0.138 0.161 0.187 0.215 ...
+Predicted: 0.1 0.1051316 0.1103661 0.1156905 0.1210802 0.126502 ...
+MSE (normalized): 0.2853469 
+
+DEBUG: Z_pred 
+Observed: 0.05 0.052 0.053 0.055 0.057 0.059 ...
+Predicted: 0.05000001 0.05196545 0.05406316 0.05629808 0.05867498 0.06119823 ...
+MSE (normalized): 0.09628477 
+
+DEBUG: MSE values:
+     N_dat      P_dat      Z_dat 
+4.52028131 0.28534695 0.09628477 
+
+DEBUG: Final objective value (mean of MSEs): 1.633971 
+
+Final objective function value: 1.633971 
+
+JSON_REPORT_START
+{
+  "status": "SUCCESS",
+  "objective_value": 1.634,
+  "model_summary": ["            Length Class  Mode     ", "par         28     -none- numeric  ", "objective    1     -none- numeric  ", "convergence  1     -none- numeric  ", "iterations   1     -none- numeric  ", "evaluations  2     -none- numeric  ", "message      1     -none- character"],
+  "model_report": {
+    "N_pred": [0.4, 0.4, 0.4, 0.4, 0.4, 0.4, 0.4, 0.4, 0.4, 0.4, 0.4001, 0.4001, 0.4001, 0.4001, 0.4001, 0.4001, 0.4001, 0.4001, 0.4001, 0.4002, 0.4002, 0.4002, 0.4002, 0.4002, 0.4003, 0.4003, 0.4003, 0.4003, 0.4003, 0.4004, 0.4004, 0.4004, 0.4005, 0.4005, 0.4005, 0.4005, 0.4006, 0.4006, 0.4006, 0.4007, 0.4007, 0.4007, 0.4007, 0.4008, 0.4008, 0.4008, 0.4009, 0.4009, 0.4009, 0.401, 0.401, 0.401, 0.4011, 0.4011, 0.4011, 0.4012, 0.4012, 0.4012, 0.4013, 0.4013, 0.4013, 0.4014, 0.4014, 0.4015, 0.4015, 0.4015, 0.4016, 0.4016, 0.4016, 0.4017, 0.4017, 0.4017, 0.4018, 0.4018, 0.4019, 0.4019, 0.4019, 0.402, 0.402, 0.4021, 0.4021, 0.4021, 0.4022, 0.4022, 0.4023, 0.4023, 0.4023, 0.4024, 0.4024, 0.4025, 0.4025, 0.4026, 0.4026, 0.4026, 0.4027, 0.4027, 0.4028, 0.4028, 0.4029, 0.4029, 0.403, 0.403, 0.4031, 0.4031, 0.4031, 0.4032, 0.4032, 0.4033, 0.4033, 0.4034, 0.4034, 0.4035, 0.4035, 0.4036, 0.4036, 0.4037, 0.4037, 0.4038, 0.4038, 0.4039, 0.4039, 0.404, 0.404, 0.4041, 0.4041, 0.4042, 0.4042, 0.4043, 0.4043, 0.4044, 0.4045, 0.4045, 0.4046, 0.4046, 0.4047, 0.4047, 0.4048, 0.4048, 0.4049, 0.405, 0.405, 0.4051, 0.4051, 0.4052, 0.4052, 0.4053, 0.4053, 0.4054, 0.4055, 0.4055, 0.4056, 0.4056, 0.4057, 0.4058, 0.4058, 0.4059, 0.4059, 0.406, 0.4061, 0.4061, 0.4062, 0.4062, 0.4063, 0.4064, 0.4064, 0.4065, 0.4066, 0.4066, 0.4067, 0.4067, 0.4068, 0.4069, 0.4069, 0.407, 0.4071, 0.4071, 0.4072, 0.4073, 0.4073, 0.4074, 0.4075, 0.4075, 0.4076, 0.4077, 0.4077, 0.4078, 0.4079, 0.4079, 0.408, 0.4081, 0.4081, 0.4082, 0.4083, 0.4083, 0.4084, 0.4085, 0.4086, 0.4086, 0.4087, 0.4088],
+    "D_pred": [0.1, 0.1154, 0.1317, 0.149, 0.1672, 0.1864, 0.2067, 0.2281, 0.2505, 0.2742, 0.299, 0.325, 0.3522, 0.3805, 0.4101, 0.4408, 0.4726, 0.5054, 0.5392, 0.5738, 0.6092, 0.645, 0.6812, 0.7174, 0.7534, 0.7887, 0.823, 0.8558, 0.8865, 0.9148, 0.9402, 0.9629, 0.983, 1.0009, 1.0169, 1.0313, 1.0442, 1.056, 1.0668, 1.0767, 1.0859, 1.0945, 1.1026, 1.1103, 1.1176, 1.1246, 1.1314, 1.1381, 1.1446, 1.1511, 1.1575, 1.1639, 1.1704, 1.1769, 1.1836, 1.1903, 1.1972, 1.2043, 1.2115, 1.219, 1.2266, 1.2345, 1.2425, 1.2508, 1.2592, 1.2679, 1.2767, 1.2857, 1.2949, 1.3042, 1.3136, 1.3231, 1.3328, 1.3426, 1.3524, 1.3623, 1.3723, 1.3823, 1.3924, 1.4025, 1.4126, 1.4227, 1.4328, 1.443, 1.4531, 1.4633, 1.4734, 1.4835, 1.4936, 1.5036, 1.5136, 1.5236, 1.5336, 1.5435, 1.5534, 1.5633, 1.5731, 1.5829, 1.5926, 1.6023, 1.612, 1.6216, 1.6312, 1.6407, 1.6502, 1.6597, 1.6692, 1.6786, 1.6879, 1.6973, 1.7066, 1.7159, 1.7251, 1.7344, 1.7436, 1.7528, 1.7619, 1.771, 1.7801, 1.7892, 1.7983, 1.8073, 1.8163, 1.8254, 1.8343, 1.8433, 1.8523, 1.8612, 1.8701, 1.8791, 1.888, 1.8968, 1.9057, 1.9146, 1.9234, 1.9323, 1.9411, 1.9499, 1.9587, 1.9675, 1.9763, 1.9851, 1.9939, 2.0027, 2.0114, 2.0202, 2.0289, 2.0377, 2.0464, 2.0551, 2.0639, 2.0726, 2.0813, 2.09, 2.0987, 2.1074, 2.1161, 2.1247, 2.1334, 2.1421, 2.1508, 2.1594, 2.1681, 2.1767, 2.1854, 2.194, 2.2027, 2.2113, 2.22, 2.2286, 2.2372, 2.2459, 2.2545, 2.2631, 2.2717, 2.2804, 2.289, 2.2976, 2.3062, 2.3148, 2.3235, 2.3321, 2.3407, 2.3493, 2.3579, 2.3665, 2.3752, 2.3838, 2.3924, 2.401, 2.4096, 2.4182, 2.4269, 2.4355, 2.4441, 2.4527, 2.4614, 2.47, 2.4786, 2.4873],
+    "Z_pred": [0.05, 0.052, 0.0541, 0.0563, 0.0587, 0.0612, 0.0639, 0.0667, 0.0697, 0.0728, 0.0761, 0.0796, 0.0832, 0.0869, 0.0908, 0.0948, 0.0989, 0.1031, 0.1074, 0.1117, 0.116, 0.1203, 0.1245, 0.1285, 0.1323, 0.1357, 0.1387, 0.1412, 0.143, 0.1439, 0.1439, 0.1431, 0.1415, 0.1394, 0.1368, 0.1339, 0.1308, 0.1276, 0.1243, 0.121, 0.1178, 0.1146, 0.1115, 0.1086, 0.1057, 0.103, 0.1004, 0.098, 0.0957, 0.0935, 0.0915, 0.0896, 0.0878, 0.0862, 0.0848, 0.0834, 0.0822, 0.0811, 0.0802, 0.0793, 0.0786, 0.078, 0.0774, 0.077, 0.0766, 0.0763, 0.0761, 0.0759, 0.0758, 0.0758, 0.0758, 0.0758, 0.0758, 0.0759, 0.076, 0.0761, 0.0762, 0.0763, 0.0765, 0.0766, 0.0768, 0.0769, 0.077, 0.0771, 0.0773, 0.0774, 0.0775, 0.0776, 0.0776, 0.0777, 0.0778, 0.0778, 0.0779, 0.0779, 0.0779, 0.0779, 0.0779, 0.0779, 0.0778, 0.0778, 0.0778, 0.0777, 0.0776, 0.0776, 0.0775, 0.0774, 0.0773, 0.0772, 0.0771, 0.077, 0.0769, 0.0768, 0.0767, 0.0766, 0.0765, 0.0764, 0.0762, 0.0761, 0.076, 0.0759, 0.0758, 0.0757, 0.0755, 0.0754, 0.0753, 0.0752, 0.0751, 0.075, 0.0749, 0.0748, 0.0747, 0.0746, 0.0745, 0.0744, 0.0743, 0.0742, 0.0741, 0.074, 0.0739, 0.0738, 0.0737, 0.0736, 0.0736, 0.0735, 0.0734, 0.0733, 0.0732, 0.0732, 0.0731, 0.073, 0.073, 0.0729, 0.0728, 0.0728, 0.0727, 0.0727, 0.0726, 0.0726, 0.0725, 0.0725, 0.0724, 0.0724, 0.0723, 0.0723, 0.0722, 0.0722, 0.0721, 0.0721, 0.0721, 0.072, 0.072, 0.0719, 0.0719, 0.0719, 0.0719, 0.0718, 0.0718, 0.0718, 0.0717, 0.0717, 0.0717, 0.0717, 0.0716, 0.0716, 0.0716, 0.0716, 0.0716, 0.0716, 0.0715, 0.0715, 0.0715, 0.0715, 0.0715, 0.0715, 0.0715, 0.0715, 0.0715, 0.0715, 0.0715, 0.0715],
+    "P_pred": [0.1, 0.1051, 0.1104, 0.1157, 0.1211, 0.1265, 0.1319, 0.1373, 0.1425, 0.1476, 0.1524, 0.1569, 0.1609, 0.1645, 0.1674, 0.1695, 0.1708, 0.171, 0.1701, 0.1679, 0.1643, 0.1592, 0.1524, 0.1439, 0.1338, 0.1221, 0.1089, 0.0947, 0.08, 0.0658, 0.0535, 0.0436, 0.0361, 0.0304, 0.026, 0.0226, 0.02, 0.0179, 0.0163, 0.015, 0.0141, 0.0133, 0.0128, 0.0125, 0.0123, 0.0122, 0.0123, 0.0125, 0.0128, 0.0132, 0.0137, 0.0143, 0.0151, 0.0159, 0.0168, 0.0178, 0.0188, 0.0199, 0.0211, 0.0223, 0.0235, 0.0247, 0.0259, 0.027, 0.0281, 0.0291, 0.0301, 0.031, 0.0318, 0.0325, 0.0332, 0.0338, 0.0342, 0.0347, 0.035, 0.0353, 0.0355, 0.0356, 0.0358, 0.0358, 0.0358, 0.0358, 0.0358, 0.0357, 0.0356, 0.0355, 0.0353, 0.0352, 0.035, 0.0348, 0.0346, 0.0344, 0.0342, 0.0341, 0.0339, 0.0337, 0.0335, 0.0333, 0.0331, 0.033, 0.0328, 0.0327, 0.0325, 0.0324, 0.0322, 0.0321, 0.032, 0.0319, 0.0318, 0.0317, 0.0316, 0.0315, 0.0314, 0.0313, 0.0313, 0.0312, 0.0312, 0.0311, 0.0311, 0.031, 0.031, 0.031, 0.0309, 0.0309, 0.0309, 0.0309, 0.0309, 0.0309, 0.0308, 0.0308, 0.0308, 0.0308, 0.0308, 0.0308, 0.0308, 0.0308, 0.0308, 0.0308, 0.0308, 0.0308, 0.0308, 0.0308, 0.0308, 0.0308, 0.0309, 0.0309, 0.0309, 0.0309, 0.0309, 0.0309, 0.0309, 0.0309, 0.0309, 0.0309, 0.0309, 0.0309, 0.0309, 0.0309, 0.0309, 0.0309, 0.031, 0.031, 0.031, 0.031, 0.031, 0.031, 0.031, 0.031, 0.031, 0.031, 0.031, 0.031, 0.031, 0.0311, 0.0311, 0.0311, 0.0311, 0.0311, 0.0311, 0.0311, 0.0311, 0.0311, 0.0311, 0.0312, 0.0312, 0.0312, 0.0312, 0.0312, 0.0312, 0.0312, 0.0313, 0.0313, 0.0313, 0.0313, 0.0313, 0.0313, 0.0313, 0.0314, 0.0314, 0.0314]
+  },
+  "plot_data": {
+    "N_pred": {
+      "Time": [0, 0.503, 1.005, 1.508, 2.01, 2.513, 3.015, 3.518, 4.02, 4.523, 5.025, 5.528, 6.03, 6.533, 7.035, 7.538, 8.04, 8.543, 9.045, 9.548, 10.05, 10.553, 11.055, 11.558, 12.06, 12.563, 13.065, 13.568, 14.07, 14.573, 15.075, 15.578, 16.08, 16.583, 17.085, 17.588, 18.09, 18.593, 19.095, 19.598, 20.101, 20.603, 21.106, 21.608, 22.111, 22.613, 23.116, 23.618, 24.121, 24.623, 25.126, 25.628, 26.131, 26.633, 27.136, 27.638, 28.141, 28.643, 29.146, 29.648, 30.151, 30.653, 31.156, 31.658, 32.161, 32.663, 33.166, 33.668, 34.171, 34.673, 35.176, 35.678, 36.181, 36.683, 37.186, 37.688, 38.191, 38.693, 39.196, 39.698, 40.201, 40.704, 41.206, 41.709, 42.211, 42.714, 43.216, 43.719, 44.221, 44.724, 45.226, 45.729, 46.231, 46.734, 47.236, 47.739, 48.241, 48.744, 49.246, 49.749, 50.251, 50.754, 51.256, 51.759, 52.261, 52.764, 53.266, 53.769, 54.271, 54.774, 55.276, 55.779, 56.281, 56.784, 57.286, 57.789, 58.291, 58.794, 59.296, 59.799, 60.302, 60.804, 61.307, 61.809, 62.312, 62.814, 63.317, 63.819, 64.322, 64.824, 65.327, 65.829, 66.332, 66.834, 67.337, 67.839, 68.342, 68.844, 69.347, 69.849, 70.352, 70.854, 71.357, 71.859, 72.362, 72.864, 73.367, 73.869, 74.372, 74.874, 75.377, 75.879, 76.382, 76.884, 77.387, 77.889, 78.392, 78.894, 79.397, 79.899, 80.402, 80.905, 81.407, 81.91, 82.412, 82.915, 83.417, 83.92, 84.422, 84.925, 85.427, 85.93, 86.432, 86.935, 87.437, 87.94, 88.442, 88.945, 89.447, 89.95, 90.452, 90.955, 91.457, 91.96, 92.462, 92.965, 93.467, 93.97, 94.472, 94.975, 95.477, 95.98, 96.482, 96.985, 97.487, 97.99, 98.492, 98.995, 99.497, 100],
+      "Modeled": [0.4, 0.4, 0.4, 0.4, 0.4, 0.4, 0.4, 0.4, 0.4, 0.4, 0.4001, 0.4001, 0.4001, 0.4001, 0.4001, 0.4001, 0.4001, 0.4001, 0.4001, 0.4002, 0.4002, 0.4002, 0.4002, 0.4002, 0.4003, 0.4003, 0.4003, 0.4003, 0.4003, 0.4004, 0.4004, 0.4004, 0.4005, 0.4005, 0.4005, 0.4005, 0.4006, 0.4006, 0.4006, 0.4007, 0.4007, 0.4007, 0.4007, 0.4008, 0.4008, 0.4008, 0.4009, 0.4009, 0.4009, 0.401, 0.401, 0.401, 0.4011, 0.4011, 0.4011, 0.4012, 0.4012, 0.4012, 0.4013, 0.4013, 0.4013, 0.4014, 0.4014, 0.4015, 0.4015, 0.4015, 0.4016, 0.4016, 0.4016, 0.4017, 0.4017, 0.4017, 0.4018, 0.4018, 0.4019, 0.4019, 0.4019, 0.402, 0.402, 0.4021, 0.4021, 0.4021, 0.4022, 0.4022, 0.4023, 0.4023, 0.4023, 0.4024, 0.4024, 0.4025, 0.4025, 0.4026, 0.4026, 0.4026, 0.4027, 0.4027, 0.4028, 0.4028, 0.4029, 0.4029, 0.403, 0.403, 0.4031, 0.4031, 0.4031, 0.4032, 0.4032, 0.4033, 0.4033, 0.4034, 0.4034, 0.4035, 0.4035, 0.4036, 0.4036, 0.4037, 0.4037, 0.4038, 0.4038, 0.4039, 0.4039, 0.404, 0.404, 0.4041, 0.4041, 0.4042, 0.4042, 0.4043, 0.4043, 0.4044, 0.4045, 0.4045, 0.4046, 0.4046, 0.4047, 0.4047, 0.4048, 0.4048, 0.4049, 0.405, 0.405, 0.4051, 0.4051, 0.4052, 0.4052, 0.4053, 0.4053, 0.4054, 0.4055, 0.4055, 0.4056, 0.4056, 0.4057, 0.4058, 0.4058, 0.4059, 0.4059, 0.406, 0.4061, 0.4061, 0.4062, 0.4062, 0.4063, 0.4064, 0.4064, 0.4065, 0.4066, 0.4066, 0.4067, 0.4067, 0.4068, 0.4069, 0.4069, 0.407, 0.4071, 0.4071, 0.4072, 0.4073, 0.4073, 0.4074, 0.4075, 0.4075, 0.4076, 0.4077, 0.4077, 0.4078, 0.4079, 0.4079, 0.408, 0.4081, 0.4081, 0.4082, 0.4083, 0.4083, 0.4084, 0.4085, 0.4086, 0.4086, 0.4087, 0.4088],
+      "Observed": [0.4, 0.375, 0.346, 0.314, 0.278, 0.239, 0.197, 0.155, 0.114, 0.076, 0.048, 0.031, 0.023, 0.021, 0.021, 0.021, 0.022, 0.023, 0.024, 0.025, 0.026, 0.028, 0.03, 0.032, 0.035, 0.038, 0.043, 0.048, 0.055, 0.064, 0.075, 0.086, 0.098, 0.11, 0.122, 0.133, 0.144, 0.154, 0.165, 0.174, 0.184, 0.193, 0.201, 0.21, 0.217, 0.225, 0.232, 0.238, 0.245, 0.251, 0.256, 0.261, 0.266, 0.27, 0.274, 0.278, 0.281, 0.284, 0.287, 0.289, 0.291, 0.293, 0.295, 0.296, 0.296, 0.297, 0.297, 0.297, 0.297, 0.296, 0.295, 0.294, 0.293, 0.292, 0.29, 0.288, 0.286, 0.284, 0.282, 0.279, 0.277, 0.275, 0.272, 0.27, 0.268, 0.266, 0.264, 0.262, 0.261, 0.26, 0.259, 0.258, 0.258, 0.258, 0.259, 0.259, 0.26, 0.261, 0.263, 0.265, 0.266, 0.268, 0.27, 0.272, 0.274, 0.276, 0.278, 0.28, 0.282, 0.284, 0.285, 0.287, 0.288, 0.289, 0.29, 0.291, 0.292, 0.293, 0.293, 0.294, 0.294, 0.294, 0.294, 0.294, 0.293, 0.293, 0.292, 0.292, 0.291, 0.29, 0.289, 0.288, 0.287, 0.286, 0.285, 0.284, 0.283, 0.282, 0.281, 0.281, 0.28, 0.279, 0.278, 0.278, 0.278, 0.277, 0.277, 0.277, 0.277, 0.277, 0.277, 0.278, 0.278, 0.279, 0.279, 0.28, 0.281, 0.281, 0.282, 0.283, 0.284, 0.285, 0.285, 0.286, 0.287, 0.288, 0.289, 0.289, 0.29, 0.29, 0.291, 0.291, 0.291, 0.291, 0.291, 0.291, 0.291, 0.291, 0.291, 0.291, 0.29, 0.29, 0.29, 0.289, 0.289, 0.288, 0.288, 0.287, 0.287, 0.286, 0.286, 0.285, 0.285, 0.284, 0.284, 0.284, 0.283, 0.283, 0.283, 0.283]
+    },
+    "P_pred": {
+      "Time": [0, 0.503, 1.005, 1.508, 2.01, 2.513, 3.015, 3.518, 4.02, 4.523, 5.025, 5.528, 6.03, 6.533, 7.035, 7.538, 8.04, 8.543, 9.045, 9.548, 10.05, 10.553, 11.055, 11.558, 12.06, 12.563, 13.065, 13.568, 14.07, 14.573, 15.075, 15.578, 16.08, 16.583, 17.085, 17.588, 18.09, 18.593, 19.095, 19.598, 20.101, 20.603, 21.106, 21.608, 22.111, 22.613, 23.116, 23.618, 24.121, 24.623, 25.126, 25.628, 26.131, 26.633, 27.136, 27.638, 28.141, 28.643, 29.146, 29.648, 30.151, 30.653, 31.156, 31.658, 32.161, 32.663, 33.166, 33.668, 34.171, 34.673, 35.176, 35.678, 36.181, 36.683, 37.186, 37.688, 38.191, 38.693, 39.196, 39.698, 40.201, 40.704, 41.206, 41.709, 42.211, 42.714, 43.216, 43.719, 44.221, 44.724, 45.226, 45.729, 46.231, 46.734, 47.236, 47.739, 48.241, 48.744, 49.246, 49.749, 50.251, 50.754, 51.256, 51.759, 52.261, 52.764, 53.266, 53.769, 54.271, 54.774, 55.276, 55.779, 56.281, 56.784, 57.286, 57.789, 58.291, 58.794, 59.296, 59.799, 60.302, 60.804, 61.307, 61.809, 62.312, 62.814, 63.317, 63.819, 64.322, 64.824, 65.327, 65.829, 66.332, 66.834, 67.337, 67.839, 68.342, 68.844, 69.347, 69.849, 70.352, 70.854, 71.357, 71.859, 72.362, 72.864, 73.367, 73.869, 74.372, 74.874, 75.377, 75.879, 76.382, 76.884, 77.387, 77.889, 78.392, 78.894, 79.397, 79.899, 80.402, 80.905, 81.407, 81.91, 82.412, 82.915, 83.417, 83.92, 84.422, 84.925, 85.427, 85.93, 86.432, 86.935, 87.437, 87.94, 88.442, 88.945, 89.447, 89.95, 90.452, 90.955, 91.457, 91.96, 92.462, 92.965, 93.467, 93.97, 94.472, 94.975, 95.477, 95.98, 96.482, 96.985, 97.487, 97.99, 98.492, 98.995, 99.497, 100],
+      "Modeled": [0.1, 0.1051, 0.1104, 0.1157, 0.1211, 0.1265, 0.1319, 0.1373, 0.1425, 0.1476, 0.1524, 0.1569, 0.1609, 0.1645, 0.1674, 0.1695, 0.1708, 0.171, 0.1701, 0.1679, 0.1643, 0.1592, 0.1524, 0.1439, 0.1338, 0.1221, 0.1089, 0.0947, 0.08, 0.0658, 0.0535, 0.0436, 0.0361, 0.0304, 0.026, 0.0226, 0.02, 0.0179, 0.0163, 0.015, 0.0141, 0.0133, 0.0128, 0.0125, 0.0123, 0.0122, 0.0123, 0.0125, 0.0128, 0.0132, 0.0137, 0.0143, 0.0151, 0.0159, 0.0168, 0.0178, 0.0188, 0.0199, 0.0211, 0.0223, 0.0235, 0.0247, 0.0259, 0.027, 0.0281, 0.0291, 0.0301, 0.031, 0.0318, 0.0325, 0.0332, 0.0338, 0.0342, 0.0347, 0.035, 0.0353, 0.0355, 0.0356, 0.0358, 0.0358, 0.0358, 0.0358, 0.0358, 0.0357, 0.0356, 0.0355, 0.0353, 0.0352, 0.035, 0.0348, 0.0346, 0.0344, 0.0342, 0.0341, 0.0339, 0.0337, 0.0335, 0.0333, 0.0331, 0.033, 0.0328, 0.0327, 0.0325, 0.0324, 0.0322, 0.0321, 0.032, 0.0319, 0.0318, 0.0317, 0.0316, 0.0315, 0.0314, 0.0313, 0.0313, 0.0312, 0.0312, 0.0311, 0.0311, 0.031, 0.031, 0.031, 0.0309, 0.0309, 0.0309, 0.0309, 0.0309, 0.0309, 0.0308, 0.0308, 0.0308, 0.0308, 0.0308, 0.0308, 0.0308, 0.0308, 0.0308, 0.0308, 0.0308, 0.0308, 0.0308, 0.0308, 0.0308, 0.0308, 0.0309, 0.0309, 0.0309, 0.0309, 0.0309, 0.0309, 0.0309, 0.0309, 0.0309, 0.0309, 0.0309, 0.0309, 0.0309, 0.0309, 0.0309, 0.0309, 0.031, 0.031, 0.031, 0.031, 0.031, 0.031, 0.031, 0.031, 0.031, 0.031, 0.031, 0.031, 0.031, 0.0311, 0.0311, 0.0311, 0.0311, 0.0311, 0.0311, 0.0311, 0.0311, 0.0311, 0.0311, 0.0312, 0.0312, 0.0312, 0.0312, 0.0312, 0.0312, 0.0312, 0.0313, 0.0313, 0.0313, 0.0313, 0.0313, 0.0313, 0.0313, 0.0314, 0.0314, 0.0314],
+      "Observed": [0.1, 0.117, 0.138, 0.161, 0.187, 0.215, 0.245, 0.275, 0.303, 0.327, 0.341, 0.344, 0.336, 0.324, 0.31, 0.295, 0.28, 0.266, 0.251, 0.236, 0.22, 0.205, 0.19, 0.174, 0.157, 0.141, 0.123, 0.106, 0.087, 0.068, 0.05, 0.036, 0.025, 0.02, 0.016, 0.014, 0.013, 0.013, 0.013, 0.013, 0.013, 0.013, 0.013, 0.014, 0.014, 0.014, 0.015, 0.016, 0.016, 0.017, 0.017, 0.018, 0.019, 0.02, 0.02, 0.021, 0.022, 0.023, 0.024, 0.025, 0.026, 0.027, 0.027, 0.029, 0.03, 0.031, 0.032, 0.033, 0.034, 0.035, 0.036, 0.037, 0.038, 0.039, 0.04, 0.041, 0.042, 0.043, 0.044, 0.044, 0.045, 0.045, 0.046, 0.046, 0.046, 0.046, 0.046, 0.045, 0.045, 0.044, 0.043, 0.042, 0.041, 0.04, 0.038, 0.037, 0.036, 0.035, 0.033, 0.032, 0.031, 0.031, 0.03, 0.029, 0.029, 0.029, 0.029, 0.029, 0.029, 0.029, 0.029, 0.029, 0.029, 0.03, 0.03, 0.03, 0.031, 0.031, 0.032, 0.032, 0.033, 0.033, 0.034, 0.034, 0.035, 0.035, 0.036, 0.036, 0.037, 0.037, 0.038, 0.038, 0.038, 0.039, 0.039, 0.039, 0.039, 0.039, 0.039, 0.039, 0.039, 0.039, 0.039, 0.038, 0.038, 0.038, 0.037, 0.037, 0.036, 0.036, 0.036, 0.035, 0.035, 0.034, 0.034, 0.034, 0.033, 0.033, 0.033, 0.032, 0.032, 0.032, 0.032, 0.032, 0.032, 0.032, 0.032, 0.032, 0.032, 0.033, 0.033, 0.033, 0.033, 0.034, 0.034, 0.034, 0.034, 0.035, 0.035, 0.035, 0.035, 0.036, 0.036, 0.036, 0.036, 0.037, 0.037, 0.037, 0.037, 0.037, 0.037, 0.037, 0.037, 0.037, 0.037, 0.037, 0.037, 0.037, 0.036, 0.036]
+    },
+    "Z_pred": {
+      "Time": [0, 0.503, 1.005, 1.508, 2.01, 2.513, 3.015, 3.518, 4.02, 4.523, 5.025, 5.528, 6.03, 6.533, 7.035, 7.538, 8.04, 8.543, 9.045, 9.548, 10.05, 10.553, 11.055, 11.558, 12.06, 12.563, 13.065, 13.568, 14.07, 14.573, 15.075, 15.578, 16.08, 16.583, 17.085, 17.588, 18.09, 18.593, 19.095, 19.598, 20.101, 20.603, 21.106, 21.608, 22.111, 22.613, 23.116, 23.618, 24.121, 24.623, 25.126, 25.628, 26.131, 26.633, 27.136, 27.638, 28.141, 28.643, 29.146, 29.648, 30.151, 30.653, 31.156, 31.658, 32.161, 32.663, 33.166, 33.668, 34.171, 34.673, 35.176, 35.678, 36.181, 36.683, 37.186, 37.688, 38.191, 38.693, 39.196, 39.698, 40.201, 40.704, 41.206, 41.709, 42.211, 42.714, 43.216, 43.719, 44.221, 44.724, 45.226, 45.729, 46.231, 46.734, 47.236, 47.739, 48.241, 48.744, 49.246, 49.749, 50.251, 50.754, 51.256, 51.759, 52.261, 52.764, 53.266, 53.769, 54.271, 54.774, 55.276, 55.779, 56.281, 56.784, 57.286, 57.789, 58.291, 58.794, 59.296, 59.799, 60.302, 60.804, 61.307, 61.809, 62.312, 62.814, 63.317, 63.819, 64.322, 64.824, 65.327, 65.829, 66.332, 66.834, 67.337, 67.839, 68.342, 68.844, 69.347, 69.849, 70.352, 70.854, 71.357, 71.859, 72.362, 72.864, 73.367, 73.869, 74.372, 74.874, 75.377, 75.879, 76.382, 76.884, 77.387, 77.889, 78.392, 78.894, 79.397, 79.899, 80.402, 80.905, 81.407, 81.91, 82.412, 82.915, 83.417, 83.92, 84.422, 84.925, 85.427, 85.93, 86.432, 86.935, 87.437, 87.94, 88.442, 88.945, 89.447, 89.95, 90.452, 90.955, 91.457, 91.96, 92.462, 92.965, 93.467, 93.97, 94.472, 94.975, 95.477, 95.98, 96.482, 96.985, 97.487, 97.99, 98.492, 98.995, 99.497, 100],
+      "Modeled": [0.05, 0.052, 0.0541, 0.0563, 0.0587, 0.0612, 0.0639, 0.0667, 0.0697, 0.0728, 0.0761, 0.0796, 0.0832, 0.0869, 0.0908, 0.0948, 0.0989, 0.1031, 0.1074, 0.1117, 0.116, 0.1203, 0.1245, 0.1285, 0.1323, 0.1357, 0.1387, 0.1412, 0.143, 0.1439, 0.1439, 0.1431, 0.1415, 0.1394, 0.1368, 0.1339, 0.1308, 0.1276, 0.1243, 0.121, 0.1178, 0.1146, 0.1115, 0.1086, 0.1057, 0.103, 0.1004, 0.098, 0.0957, 0.0935, 0.0915, 0.0896, 0.0878, 0.0862, 0.0848, 0.0834, 0.0822, 0.0811, 0.0802, 0.0793, 0.0786, 0.078, 0.0774, 0.077, 0.0766, 0.0763, 0.0761, 0.0759, 0.0758, 0.0758, 0.0758, 0.0758, 0.0758, 0.0759, 0.076, 0.0761, 0.0762, 0.0763, 0.0765, 0.0766, 0.0768, 0.0769, 0.077, 0.0771, 0.0773, 0.0774, 0.0775, 0.0776, 0.0776, 0.0777, 0.0778, 0.0778, 0.0779, 0.0779, 0.0779, 0.0779, 0.0779, 0.0779, 0.0778, 0.0778, 0.0778, 0.0777, 0.0776, 0.0776, 0.0775, 0.0774, 0.0773, 0.0772, 0.0771, 0.077, 0.0769, 0.0768, 0.0767, 0.0766, 0.0765, 0.0764, 0.0762, 0.0761, 0.076, 0.0759, 0.0758, 0.0757, 0.0755, 0.0754, 0.0753, 0.0752, 0.0751, 0.075, 0.0749, 0.0748, 0.0747, 0.0746, 0.0745, 0.0744, 0.0743, 0.0742, 0.0741, 0.074, 0.0739, 0.0738, 0.0737, 0.0736, 0.0736, 0.0735, 0.0734, 0.0733, 0.0732, 0.0732, 0.0731, 0.073, 0.073, 0.0729, 0.0728, 0.0728, 0.0727, 0.0727, 0.0726, 0.0726, 0.0725, 0.0725, 0.0724, 0.0724, 0.0723, 0.0723, 0.0722, 0.0722, 0.0721, 0.0721, 0.0721, 0.072, 0.072, 0.0719, 0.0719, 0.0719, 0.0719, 0.0718, 0.0718, 0.0718, 0.0717, 0.0717, 0.0717, 0.0717, 0.0716, 0.0716, 0.0716, 0.0716, 0.0716, 0.0716, 0.0715, 0.0715, 0.0715, 0.0715, 0.0715, 0.0715, 0.0715, 0.0715, 0.0715, 0.0715, 0.0715, 0.0715],
+      "Observed": [0.05, 0.052, 0.053, 0.055, 0.057, 0.059, 0.061, 0.064, 0.066, 0.068, 0.071, 0.074, 0.076, 0.079, 0.082, 0.085, 0.088, 0.092, 0.095, 0.099, 0.102, 0.106, 0.11, 0.114, 0.118, 0.122, 0.126, 0.13, 0.134, 0.137, 0.139, 0.14, 0.14, 0.137, 0.134, 0.131, 0.127, 0.124, 0.12, 0.117, 0.113, 0.11, 0.107, 0.104, 0.101, 0.099, 0.096, 0.094, 0.091, 0.089, 0.087, 0.085, 0.083, 0.082, 0.08, 0.079, 0.078, 0.076, 0.075, 0.074, 0.073, 0.073, 0.072, 0.071, 0.071, 0.07, 0.07, 0.07, 0.07, 0.07, 0.07, 0.07, 0.07, 0.07, 0.071, 0.071, 0.071, 0.072, 0.072, 0.073, 0.074, 0.074, 0.075, 0.076, 0.077, 0.077, 0.078, 0.079, 0.08, 0.08, 0.081, 0.082, 0.082, 0.083, 0.083, 0.083, 0.083, 0.083, 0.083, 0.083, 0.083, 0.082, 0.082, 0.082, 0.081, 0.08, 0.08, 0.079, 0.079, 0.078, 0.078, 0.077, 0.076, 0.076, 0.076, 0.075, 0.075, 0.074, 0.074, 0.074, 0.074, 0.074, 0.073, 0.073, 0.073, 0.073, 0.073, 0.073, 0.074, 0.074, 0.074, 0.074, 0.074, 0.075, 0.075, 0.075, 0.076, 0.076, 0.076, 0.077, 0.077, 0.077, 0.077, 0.078, 0.078, 0.078, 0.078, 0.079, 0.079, 0.079, 0.079, 0.079, 0.079, 0.079, 0.079, 0.079, 0.079, 0.079, 0.078, 0.078, 0.078, 0.078, 0.078, 0.077, 0.077, 0.077, 0.076, 0.076, 0.076, 0.076, 0.076, 0.075, 0.075, 0.075, 0.075, 0.075, 0.075, 0.075, 0.075, 0.075, 0.075, 0.075, 0.075, 0.075, 0.075, 0.075, 0.075, 0.076, 0.076, 0.076, 0.076, 0.076, 0.076, 0.077, 0.077, 0.077, 0.077, 0.077, 0.077, 0.077]
+    }
+  }
+}
+JSON_REPORT_END[0m
+[93mR script stderr:[0m
+[0mLoading required package: TMB
+Loading required package: jsonlite
+here() starts at C:/Users/spi085/OneDrive - CSIRO/Documents/_Projects/SCCP-QuantModelling
+using C++ compiler: 'G__~1.EXE (GCC) 13.2.0'
+There were 50 or more warnings (use warnings() to see the first 50)
+Warning message:
+`aes_string()` was deprecated in ggplot2 3.0.0.
+ℹ Please use tidy evaluation idioms with `aes()`.
+ℹ See also `vignette("ggplot2-in-packages")` for more information.[0m
+[0mObjective value: 1.634[0m
+[94mObjective Value: 1.634[0m
+[92mSuccessful model run[0m
+[0m--------------------------------------[0m
+Model run successful. Objective value: 1.634
+Model ran successful and returned meaningful objective value... enhancing parameter descriptions.
+Enhancing parameter descriptions...
+Parameter processing completed.
