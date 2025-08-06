@@ -1,0 +1,1096 @@
+You are a leading expert in constructing dynamic ecosystem models. You always use robust ecological theory to construct your models, which will be used for predicting future ecosystem states given data on initial conditions. Please create a Template Model Builder model for the following topic:Modeling episodic outbreaks of Crown of Thorns starfish on the Great Barrier Reef, with emphasis on accurately capturing the timing, magnitude, and duration of population explosions. The model should predict the characteristic boom-bust cycles where COTS numbers rapidly increase to outbreak levels then decline, while accounting for their selective predation on coral communities (slow-growing Faviidae and Porites, and fast-growing Acropora species). Special attention should be given to mechanisms that trigger and sustain outbreak events.. Start by writing intention.txt, in which you provide a concise summary of the ecological functioning of the model. In model.cpp, write your TMB model with the following important considerations:
+
+1. ECOLOGICAL PROCESSES:
+- Consider multiple forms of resource limitation (e.g., saturating functions, threshold effects)
+- Include process-specific efficiencies where biologically relevant
+- Think about how environmental conditions might modify rates
+- Consider indirect effects and feedback loops between components
+- Use functional responses that capture observed biological behaviors
+
+2. NUMERICAL STABILITY:
+- Always use small constants (e.g., Type(1e-8)) to prevent division by zero
+- Use smooth transitions instead of hard cutoffs in equations
+- Bound parameters within biologically meaningful ranges using smooth penalties rather than hard constraints
+
+3. LIKELIHOOD CALCULATION:
+- Always include observations in the likelihood calculation, don't skip any based on conditions
+- Use fixed minimum standard deviations to prevent numerical issues when data values are small
+- Consider log-transforming data if it spans multiple orders of magnitude
+- Use appropriate error distributions (e.g., lognormal for strictly positive data)
+
+4. MODEL STRUCTURE:
+- Include comments after each line explaining the parameters (including their units and how to determine their values)
+- Provide a numbered list of descriptions for the equations
+- Ensure all _pred variables are included in the reporting section and called using REPORT()
+- Use '_pred' suffix for model predictions corresponding to '_dat' observations. Use the same _dat names as are found in the data file. Use the exact same time variable name as is provided in the first column of the datafile.
+- IMPORTANT: Never use current time step values of response variables (variables ending in '_dat') in prediction calculations. Only use values from previous time steps to avoid data leakage.
+
+For the parameters.json file, please structure it as an array of parameter objects, where each parameter object must include the following fields:
+- parameter: The name of the parameter matching the model.cpp
+- value: The initial value for the parameter
+- description: A clear description of what the parameter represents, including units
+- source: Where the initial value comes from (e.g., 'literature', 'expert opinion', 'initial estimate')
+- import_type: Should be 'PARAMETER' for model parameters, or 'DATA_VECTOR'/'DATA_SCALAR' for data inputs
+- priority: A number indicating the optimization priority (1 for highest priority parameters to optimize first)
+Example structure:
+{
+  "parameters": [
+    {
+      "parameter": "growth_rate",
+      "value": 0.5,
+      "description": "Intrinsic growth rate (year^-1)",
+      "source": "literature",
+      "import_type": "PARAMETER",
+      "priority": 1
+    }
+  ]
+}
+Warning: Input is not a terminal (fd=11).
+Skipping POPULATIONS/POPULATION_0013/INDIVIDUAL_XW9UL7O3/model.cpp that matches gitignore spec.
+Creating empty file POPULATIONS/POPULATION_0013/INDIVIDUAL_XW9UL7O3/model.cpp
+Skipping POPULATIONS/POPULATION_0013/INDIVIDUAL_XW9UL7O3/parameters.json that matches gitignore spec.
+Creating empty file POPULATIONS/POPULATION_0013/INDIVIDUAL_XW9UL7O3/parameters.json
+Skipping POPULATIONS/POPULATION_0013/INDIVIDUAL_XW9UL7O3/intention.txt that matches gitignore spec.
+Creating empty file POPULATIONS/POPULATION_0013/INDIVIDUAL_XW9UL7O3/intention.txt
+Added /home/spi085/Documents/_Projects/SCCP-QuantModelling/Data/timeseries_data_COTS_response.csv to read-only files.
+Added /home/spi085/Documents/_Projects/SCCP-QuantModelling/Data/timeseries_data_COTS_forcing.csv to read-only files.
+POPULATIONS/POPULATION_0013/INDIVIDUAL_XW9UL7O3/intention.txt                                                                                                                                                          
+
+                                                                                                                                                                                                                       
+ <<<<<<< SEARCH                                                                                                                                                                                                        
+ =======                                                                                                                                                                                                               
+ This model simulates episodic outbreaks ("boom-bust" cycles) of Crown-of-Thorns starfish (COTS) on the Great Barrier Reef, with explicit representation of their interactions with two functional groups of corals:   
+ fast-growing Acropora spp. and slow-growing Faviidae/Porites spp. The model predicts the timing, magnitude, and duration of COTS population explosions, accounting for resource limitation, selective predation, and  
+ environmental drivers (e.g., sea-surface temperature, larval immigration). COTS population growth is regulated by density-dependent feedbacks, resource availability (coral cover), and environmental conditions, wit 
+ saturating and threshold effects to capture nonlinearities. Coral groups are depleted by COTS predation (with group-specific selectivity and efficiency), but recover via intrinsic growth, subject to resource       
+ limitation and environmental modification. The model incorporates smooth transitions and penalties to ensure numerical stability and biologically meaningful parameter ranges. All predictions are made using only    
+ information from previous time steps, ensuring robust forecasting and avoiding data leakage.                                                                                                                          
+ >>>>>>> REPLACE                                                                                                                                                                                                       
+                                                                                                                                                                                                                       
+
+POPULATIONS/POPULATION_0013/INDIVIDUAL_XW9UL7O3/model.cpp                                                                                                                                                              
+
+                                                                                                                                                                                                                       
+ <<<<<<< SEARCH                                                                                                                                                                                                        
+ =======                                                                                                                                                                                                               
+ #include <TMB.hpp>                                                                                                                                                                                                    
+                                                                                                                                                                                                                       
+ // 1. COTS = Crown-of-Thorns starfish (individuals/m2)                                                                                                                                                                
+ // 2. fast = Fast-growing coral (Acropora spp.) cover (%)                                                                                                                                                             
+ // 3. slow = Slow-growing coral (Faviidae/Porites) cover (%)                                                                                                                                                          
+ // 4. sst = Sea-surface temperature (deg C)                                                                                                                                                                           
+ // 5. cotsimm = COTS larval immigration (individuals/m2/year)                                                                                                                                                         
+ // 6. All _dat are observed data, _pred are model predictions                                                                                                                                                         
+                                                                                                                                                                                                                       
+ template<class Type>                                                                                                                                                                                                  
+ Type objective_function<Type>::operator() ()                                                                                                                                                                          
+ {                                                                                                                                                                                                                     
+   // --- DATA BLOCK ---                                                                                                                                                                                               
+   DATA_VECTOR(Year); // Observation years                                                                                                                                                                             
+   DATA_VECTOR(cots_dat); // COTS abundance (individuals/m2)                                                                                                                                                           
+   DATA_VECTOR(fast_dat); // Fast coral cover (%)                                                                                                                                                                      
+   DATA_VECTOR(slow_dat); // Slow coral cover (%)                                                                                                                                                                      
+   DATA_VECTOR(sst_dat); // Sea-surface temperature (deg C)                                                                                                                                                            
+   DATA_VECTOR(cotsimm_dat); // COTS larval immigration (ind/m2/yr)                                                                                                                                                    
+                                                                                                                                                                                                                       
+   int n = Year.size();                                                                                                                                                                                                
+                                                                                                                                                                                                                       
+   // --- PARAMETER BLOCK ---                                                                                                                                                                                          
+   PARAMETER(log_r_cots); // log intrinsic COTS growth rate (year^-1)                                                                                                                                                  
+   // Determines how quickly COTS can increase in absence of limitation                                                                                                                                                
+                                                                                                                                                                                                                       
+   PARAMETER(log_K_cots); // log COTS carrying capacity (ind/m2)                                                                                                                                                       
+   // Maximum sustainable COTS density                                                                                                                                                                                 
+                                                                                                                                                                                                                       
+   PARAMETER(log_alpha_fast); // log COTS attack rate on fast coral (m2/%/yr)                                                                                                                                          
+   // COTS predation rate on Acropora                                                                                                                                                                                  
+                                                                                                                                                                                                                       
+   PARAMETER(log_alpha_slow); // log COTS attack rate on slow coral (m2/%/yr)                                                                                                                                          
+   // COTS predation rate on Faviidae/Porites                                                                                                                                                                          
+                                                                                                                                                                                                                       
+   PARAMETER(log_e_fast); // log assimilation efficiency from fast coral (unitless)                                                                                                                                    
+   // Fraction of consumed fast coral converted to COTS biomass                                                                                                                                                        
+                                                                                                                                                                                                                       
+   PARAMETER(log_e_slow); // log assimilation efficiency from slow coral (unitless)                                                                                                                                    
+   // Fraction of consumed slow coral converted to COTS biomass                                                                                                                                                        
+                                                                                                                                                                                                                       
+   PARAMETER(log_r_fast); // log intrinsic growth rate of fast coral (year^-1)                                                                                                                                         
+   // Maximum per-year increase in fast coral cover                                                                                                                                                                    
+                                                                                                                                                                                                                       
+   PARAMETER(log_r_slow); // log intrinsic growth rate of slow coral (year^-1)                                                                                                                                         
+   // Maximum per-year increase in slow coral cover                                                                                                                                                                    
+                                                                                                                                                                                                                       
+   PARAMETER(log_K_fast); // log carrying capacity of fast coral (% cover)                                                                                                                                             
+   // Maximum possible % cover for fast coral                                                                                                                                                                          
+                                                                                                                                                                                                                       
+   PARAMETER(log_K_slow); // log carrying capacity of slow coral (% cover)                                                                                                                                             
+   // Maximum possible % cover for slow coral                                                                                                                                                                          
+                                                                                                                                                                                                                       
+   PARAMETER(beta_sst); // Effect of SST on COTS growth (per deg C)                                                                                                                                                    
+   // Modifies COTS growth rate with temperature                                                                                                                                                                       
+                                                                                                                                                                                                                       
+   PARAMETER(log_sigma_cots); // log SD of COTS obs error (lognormal)                                                                                                                                                  
+   PARAMETER(log_sigma_fast); // log SD of fast coral obs error (lognormal)                                                                                                                                            
+   PARAMETER(log_sigma_slow); // log SD of slow coral obs error (lognormal)                                                                                                                                            
+                                                                                                                                                                                                                       
+   // --- TRANSFORM PARAMETERS ---                                                                                                                                                                                     
+   Type r_cots = exp(log_r_cots); // COTS intrinsic growth rate                                                                                                                                                        
+   Type K_cots = exp(log_K_cots); // COTS carrying capacity                                                                                                                                                            
+   Type alpha_fast = exp(log_alpha_fast); // COTS attack rate (fast coral)                                                                                                                                             
+   Type alpha_slow = exp(log_alpha_slow); // COTS attack rate (slow coral)                                                                                                                                             
+   Type e_fast = exp(log_e_fast); // COTS assimilation efficiency (fast coral)                                                                                                                                         
+   Type e_slow = exp(log_e_slow); // COTS assimilation efficiency (slow coral)                                                                                                                                         
+   Type r_fast = exp(log_r_fast); // Fast coral growth rate                                                                                                                                                            
+   Type r_slow = exp(log_r_slow); // Slow coral growth rate                                                                                                                                                            
+   Type K_fast = exp(log_K_fast); // Fast coral carrying capacity                                                                                                                                                      
+   Type K_slow = exp(log_K_slow); // Slow coral carrying capacity                                                                                                                                                      
+                                                                                                                                                                                                                       
+   Type sigma_cots = exp(log_sigma_cots) + Type(1e-8); // COTS obs SD                                                                                                                                                  
+   Type sigma_fast = exp(log_sigma_fast) + Type(1e-8); // Fast coral obs SD                                                                                                                                            
+   Type sigma_slow = exp(log_sigma_slow) + Type(1e-8); // Slow coral obs SD                                                                                                                                            
+                                                                                                                                                                                                                       
+   // --- INITIAL CONDITIONS ---                                                                                                                                                                                       
+   vector<Type> cots_pred(n);                                                                                                                                                                                          
+   vector<Type> fast_pred(n);                                                                                                                                                                                          
+   vector<Type> slow_pred(n);                                                                                                                                                                                          
+                                                                                                                                                                                                                       
+   cots_pred(0) = cots_dat(0); // Initial COTS abundance                                                                                                                                                               
+   fast_pred(0) = fast_dat(0); // Initial fast coral cover                                                                                                                                                             
+   slow_pred(0) = slow_dat(0); // Initial slow coral cover                                                                                                                                                             
+                                                                                                                                                                                                                       
+   // --- PROCESS MODEL ---                                                                                                                                                                                            
+   for(int t=1; t<n; t++) {                                                                                                                                                                                            
+     // 1. COTS predation on corals (Holling Type II functional response)                                                                                                                                              
+     Type pred_fast = alpha_fast * cots_pred(t-1) * fast_pred(t-1) / (fast_pred(t-1) + Type(1.0) + Type(1e-8)); // predation on fast coral                                                                             
+     Type pred_slow = alpha_slow * cots_pred(t-1) * slow_pred(t-1) / (slow_pred(t-1) + Type(1.0) + Type(1e-8)); // predation on slow coral                                                                             
+                                                                                                                                                                                                                       
+     // 2. COTS population dynamics (logistic + resource + SST + immigration)                                                                                                                                          
+     Type resource_term = (e_fast * pred_fast + e_slow * pred_slow); // resource assimilation                                                                                                                          
+     Type sst_effect = exp(beta_sst * (sst_dat(t-1) - Type(27.0))); // SST modifies growth (27C baseline)                                                                                                              
+     Type density_term = (Type(1.0) - cots_pred(t-1)/K_cots); // logistic limitation                                                                                                                                   
+                                                                                                                                                                                                                       
+     // Outbreak threshold: smooth sigmoid on resource assimilation                                                                                                                                                    
+     Type outbreak_trigger = Type(1.0) / (Type(1.0) + exp(-10.0 * (resource_term - Type(0.05)))); // triggers when resource_term > 0.05                                                                                
+                                                                                                                                                                                                                       
+     cots_pred(t) = cots_pred(t-1)                                                                                                                                                                                     
+       + r_cots * cots_pred(t-1) * density_term * sst_effect * outbreak_trigger // growth                                                                                                                              
+       + resource_term // resource assimilation                                                                                                                                                                        
+       + cotsimm_dat(t-1); // larval immigration                                                                                                                                                                       
+                                                                                                                                                                                                                       
+     // Prevent negative or zero COTS                                                                                                                                                                                  
+     cots_pred(t) = CppAD::CondExpGt(cots_pred(t), Type(1e-8), cots_pred(t), Type(1e-8));                                                                                                                              
+                                                                                                                                                                                                                       
+     // 3. Fast coral dynamics (logistic growth - COTS predation)                                                                                                                                                      
+     Type fast_growth = r_fast * fast_pred(t-1) * (Type(1.0) - fast_pred(t-1)/K_fast);                                                                                                                                 
+     fast_pred(t) = fast_pred(t-1) + fast_growth - pred_fast;                                                                                                                                                          
+                                                                                                                                                                                                                       
+     // Prevent negative or zero coral cover                                                                                                                                                                           
+     fast_pred(t) = CppAD::CondExpGt(fast_pred(t), Type(1e-8), fast_pred(t), Type(1e-8));                                                                                                                              
+                                                                                                                                                                                                                       
+     // 4. Slow coral dynamics (logistic growth - COTS predation)                                                                                                                                                      
+     Type slow_growth = r_slow * slow_pred(t-1) * (Type(1.0) - slow_pred(t-1)/K_slow);                                                                                                                                 
+     slow_pred(t) = slow_pred(t-1) + slow_growth - pred_slow;                                                                                                                                                          
+                                                                                                                                                                                                                       
+     slow_pred(t) = CppAD::CondExpGt(slow_pred(t), Type(1e-8), slow_pred(t), Type(1e-8));                                                                                                                              
+   }                                                                                                                                                                                                                   
+                                                                                                                                                                                                                       
+   // --- LIKELIHOOD (lognormal, all obs included, fixed min SD) ---                                                                                                                                                   
+   Type nll = 0.0;                                                                                                                                                                                                     
+   for(int t=0; t<n; t++) {                                                                                                                                                                                            
+     nll -= dnorm(log(cots_dat(t) + Type(1e-8)), log(cots_pred(t) + Type(1e-8)), sigma_cots, true);                                                                                                                    
+     nll -= dnorm(log(fast_dat(t) + Type(1e-8)), log(fast_pred(t) + Type(1e-8)), sigma_fast, true);                                                                                                                    
+     nll -= dnorm(log(slow_dat(t) + Type(1e-8)), log(slow_pred(t) + Type(1e-8)), sigma_slow, true);                                                                                                                    
+   }                                                                                                                                                                                                                   
+                                                                                                                                                                                                                       
+   // --- PENALTIES FOR BIOLOGICAL RANGES (soft, smooth) ---                                                                                                                                                           
+   // Example: discourage negative or implausible parameter values                                                                                                                                                     
+   nll += pow(CppAD::CondExpLt(r_cots, Type(0.01), r_cots-Type(0.01), Type(0.0)), 2);                                                                                                                                  
+   nll += pow(CppAD::CondExpGt(r_cots, Type(5.0), r_cots-Type(5.0), Type(0.0)), 2);                                                                                                                                    
+   nll += pow(CppAD::CondExpLt(K_cots, Type(0.01), K_cots-Type(0.01), Type(0.0)), 2);                                                                                                                                  
+   nll += pow(CppAD::CondExpGt(K_cots, Type(10.0), K_cots-Type(10.0), Type(0.0)), 2);                                                                                                                                  
+                                                                                                                                                                                                                       
+   // --- REPORTING ---                                                                                                                                                                                                
+   REPORT(cots_pred);                                                                                                                                                                                                  
+   REPORT(fast_pred);                                                                                                                                                                                                  
+   REPORT(slow_pred);                                                                                                                                                                                                  
+                                                                                                                                                                                                                       
+   // --- EQUATION DESCRIPTIONS ---                                                                                                                                                                                    
+   // 1. COTS predation on corals: Holling Type II functional response                                                                                                                                                 
+   // 2. COTS population: logistic growth, resource assimilation, SST effect, outbreak trigger, immigration                                                                                                            
+   // 3. Coral groups: logistic growth minus COTS predation                                                                                                                                                            
+   // 4. All transitions smooth, no hard cutoffs, all obs included in likelihood                                                                                                                                       
+                                                                                                                                                                                                                       
+   return nll;                                                                                                                                                                                                         
+ }                                                                                                                                                                                                                     
+ >>>>>>> REPLACE                                                                                                                                                                                                       
+                                                                                                                                                                                                                       
+
+POPULATIONS/POPULATION_0013/INDIVIDUAL_XW9UL7O3/parameters.json                                                                                                                                                        
+
+                                                                                                                                                                                                                       
+ <<<<<<< SEARCH                                                                                                                                                                                                        
+ =======                                                                                                                                                                                                               
+ {                                                                                                                                                                                                                     
+   "parameters": [                                                                                                                                                                                                     
+     {                                                                                                                                                                                                                 
+       "parameter": "log_r_cots",                                                                                                                                                                                      
+       "value": -0.7,                                                                                                                                                                                                  
+       "description": "Log intrinsic growth rate of COTS (year^-1)",                                                                                                                                                   
+       "source": "literature",                                                                                                                                                                                         
+       "import_type": "PARAMETER",                                                                                                                                                                                     
+       "priority": 1                                                                                                                                                                                                   
+     },                                                                                                                                                                                                                
+     {                                                                                                                                                                                                                 
+       "parameter": "log_K_cots",                                                                                                                                                                                      
+       "value": -0.5,                                                                                                                                                                                                  
+       "description": "Log carrying capacity of COTS (individuals/m2)",                                                                                                                                                
+       "source": "expert opinion",                                                                                                                                                                                     
+       "import_type": "PARAMETER",                                                                                                                                                                                     
+       "priority": 2                                                                                                                                                                                                   
+     },                                                                                                                                                                                                                
+     {                                                                                                                                                                                                                 
+       "parameter": "log_alpha_fast",                                                                                                                                                                                  
+       "value": -2.0,                                                                                                                                                                                                  
+       "description": "Log attack rate of COTS on fast coral (m2/%/yr)",                                                                                                                                               
+       "source": "literature",                                                                                                                                                                                         
+       "import_type": "PARAMETER",                                                                                                                                                                                     
+       "priority": 2                                                                                                                                                                                                   
+     },                                                                                                                                                                                                                
+     {                                                                                                                                                                                                                 
+       "parameter": "log_alpha_slow",                                                                                                                                                                                  
+       "value": -2.5,                                                                                                                                                                                                  
+       "description": "Log attack rate of COTS on slow coral (m2/%/yr)",                                                                                                                                               
+       "source": "literature",                                                                                                                                                                                         
+       "import_type": "PARAMETER",                                                                                                                                                                                     
+       "priority": 2                                                                                                                                                                                                   
+     },                                                                                                                                                                                                                
+     {                                                                                                                                                                                                                 
+       "parameter": "log_e_fast",                                                                                                                                                                                      
+       "value": -0.1,                                                                                                                                                                                                  
+       "description": "Log assimilation efficiency from fast coral (unitless)",                                                                                                                                        
+       "source": "expert opinion",                                                                                                                                                                                     
+       "import_type": "PARAMETER",                                                                                                                                                                                     
+       "priority": 3                                                                                                                                                                                                   
+     },                                                                                                                                                                                                                
+     {                                                                                                                                                                                                                 
+       "parameter": "log_e_slow",                                                                                                                                                                                      
+       "value": -0.2,                                                                                                                                                                                                  
+       "description": "Log assimilation efficiency from slow coral (unitless)",                                                                                                                                        
+       "source": "expert opinion",                                                                                                                                                                                     
+       "import_type": "PARAMETER",                                                                                                                                                                                     
+       "priority": 3                                                                                                                                                                                                   
+     },                                                                                                                                                                                                                
+     {                                                                                                                                                                                                                 
+       "parameter": "log_r_fast",                                                                                                                                                                                      
+       "value": -0.5,                                                                                                                                                                                                  
+       "description": "Log intrinsic growth rate of fast coral (year^-1)",                                                                                                                                             
+       "source": "literature",                                                                                                                                                                                         
+       "import_type": "PARAMETER",                                                                                                                                                                                     
+       "priority": 2                                                                                                                                                                                                   
+     },                                                                                                                                                                                                                
+     {                                                                                                                                                                                                                 
+       "parameter": "log_r_slow",                                                                                                                                                                                      
+       "value": -1.0,                                                                                                                                                                                                  
+       "description": "Log intrinsic growth rate of slow coral (year^-1)",                                                                                                                                             
+       "source": "literature",                                                                                                                                                                                         
+       "import_type": "PARAMETER",                                                                                                                                                                                     
+       "priority": 2                                                                                                                                                                                                   
+     },                                                                                                                                                                                                                
+     {                                                                                                                                                                                                                 
+       "parameter": "log_K_fast",                                                                                                                                                                                      
+       "value": 3.0,                                                                                                                                                                                                   
+       "description": "Log carrying capacity of fast coral (% cover)",                                                                                                                                                 
+       "source": "expert opinion",                                                                                                                                                                                     
+       "import_type": "PARAMETER",                                                                                                                                                                                     
+       "priority": 3                                                                                                                                                                                                   
+     },                                                                                                                                                                                                                
+     {                                                                                                                                                                                                                 
+       "parameter": "log_K_slow",                                                                                                                                                                                      
+       "value": 3.0,                                                                                                                                                                                                   
+       "description": "Log carrying capacity of slow coral (% cover)",                                                                                                                                                 
+       "source": "expert opinion",                                                                                                                                                                                     
+       "import_type": "PARAMETER",                                                                                                                                                                                     
+       "priority": 3                                                                                                                                                                                                   
+     },                                                                                                                                                                                                                
+     {                                                                                                                                                                                                                 
+       "parameter": "beta_sst",                                                                                                                                                                                        
+       "value": 0.05,                                                                                                                                                                                                  
+       "description": "Effect of SST on COTS growth (per deg C)",                                                                                                                                                      
+       "source": "expert opinion",                                                                                                                                                                                     
+       "import_type": "PARAMETER",                                                                                                                                                                                     
+       "priority": 3                                                                                                                                                                                                   
+     },                                                                                                                                                                                                                
+     {                                                                                                                                                                                                                 
+       "parameter": "log_sigma_cots",                                                                                                                                                                                  
+       "value": -1.0,                                                                                                                                                                                                  
+       "description": "Log SD of COTS observation error (lognormal)",                                                                                                                                                  
+       "source": "initial estimate",                                                                                                                                                                                   
+       "import_type": "PARAMETER",                                                                                                                                                                                     
+       "priority": 1                                                                                                                                                                                                   
+     },                                                                                                                                                                                                                
+     {                                                                                                                                                                                                                 
+       "parameter": "log_sigma_fast",                                                                                                                                                                                  
+       "value": -1.0,                                                                                                                                                                                                  
+       "description": "Log SD of fast coral observation error (lognormal)",                                                                                                                                            
+       "source": "initial estimate",                                                                                                                                                                                   
+       "import_type": "PARAMETER",                                                                                                                                                                                     
+       "priority": 1                                                                                                                                                                                                   
+     },                                                                                                                                                                                                                
+     {                                                                                                                                                                                                                 
+       "parameter": "log_sigma_slow",                                                                                                                                                                                  
+       "value": -1.0,                                                                                                                                                                                                  
+       "description": "Log SD of slow coral observation error (lognormal)",                                                                                                                                            
+       "source": "initial estimate",                                                                                                                                                                                   
+       "import_type": "PARAMETER",                                                                                                                                                                                     
+       "priority": 1                                                                                                                                                                                                   
+     },                                                                                                                                                                                                                
+     {                                                                                                                                                                                                                 
+       "parameter": "Year",                                                                                                                                                                                            
+       "value": [],                                                                                                                                                                                                    
+       "description": "Observation years",                                                                                                                                                                             
+       "source": "data file",                                                                                                                                                                                          
+       "import_type": "DATA_VECTOR",                                                                                                                                                                                   
+       "priority": 1                                                                                                                                                                                                   
+     },                                                                                                                                                                                                                
+     {                                                                                                                                                                                                                 
+       "parameter": "cots_dat",                                                                                                                                                                                        
+       "value": [],                                                                                                                                                                                                    
+       "description": "Observed COTS abundance (individuals/m2)",                                                                                                                                                      
+       "source": "data file",                                                                                                                                                                                          
+       "import_type": "DATA_VECTOR",                                                                                                                                                                                   
+       "priority": 1                                                                                                                                                                                                   
+     },                                                                                                                                                                                                                
+     {                                                                                                                                                                                                                 
+       "parameter": "fast_dat",                                                                                                                                                                                        
+       "value": [],                                                                                                                                                                                                    
+       "description": "Observed fast coral cover (%)",                                                                                                                                                                 
+       "source": "data file",                                                                                                                                                                                          
+       "import_type": "DATA_VECTOR",                                                                                                                                                                                   
+       "priority": 1                                                                                                                                                                                                   
+     },                                                                                                                                                                                                                
+     {                                                                                                                                                                                                                 
+       "parameter": "slow_dat",                                                                                                                                                                                        
+       "value": [],                                                                                                                                                                                                    
+       "description": "Observed slow coral cover (%)",                                                                                                                                                                 
+       "source": "data file",                                                                                                                                                                                          
+       "import_type": "DATA_VECTOR",                                                                                                                                                                                   
+       "priority": 1                                                                                                                                                                                                   
+     },                                                                                                                                                                                                                
+     {                                                                                                                                                                                                                 
+       "parameter": "sst_dat",                                                                                                                                                                                         
+       "value": [],                                                                                                                                                                                                    
+       "description": "Observed sea-surface temperature (deg C)",                                                                                                                                                      
+       "source": "data file",                                                                                                                                                                                          
+       "import_type": "DATA_VECTOR",                                                                                                                                                                                   
+       "priority": 1                                                                                                                                                                                                   
+     },                                                                                                                                                                                                                
+     {                                                                                                                                                                                                                 
+       "parameter": "cotsimm_dat",                                                                                                                                                                                     
+       "value": [],                                                                                                                                                                                                    
+       "description": "Observed COTS larval immigration (individuals/m2/year)",                                                                                                                                        
+       "source": "data file",                                                                                                                                                                                          
+       "import_type": "DATA_VECTOR",                                                                                                                                                                                   
+       "priority": 1                                                                                                                                                                                                   
+     }                                                                                                                                                                                                                 
+   ]                                                                                                                                                                                                                   
+ }                                                                                                                                                                                                                     
+ >>>>>>> REPLACE                                                                                                                                                                                                       
+                                                                                                                                                                                                                       
+
+Tokens: 4.1k sent, 3.7k received. Cost: $0.04 message, $0.04 session.
+Committing POPULATIONS/POPULATION_0013/INDIVIDUAL_XW9UL7O3/intention.txt before applying edits.
+Committing POPULATIONS/POPULATION_0013/INDIVIDUAL_XW9UL7O3/model.cpp before applying edits.
+Committing POPULATIONS/POPULATION_0013/INDIVIDUAL_XW9UL7O3/parameters.json before applying edits.
+Unable to add /home/spi085/Documents/_Projects/SCCP-QuantModelling/POPULATIONS/POPULATION_0013/INDIVIDUAL_XW9UL7O3/intention.txt: Cmd('git') failed due to: exit code(1)
+  cmdline: git add /home/spi085/Documents/_Projects/SCCP-QuantModelling/POPULATIONS/POPULATION_0013/INDIVIDUAL_XW9UL7O3/intention.txt
+  stderr: 'The following paths are ignored by one of your .gitignore files:
+POPULATIONS
+hint: Use -f if you really want to add them.
+hint: Turn this message off by running
+hint: "git config advice.addIgnoredFile false"'
+Unable to add /home/spi085/Documents/_Projects/SCCP-QuantModelling/POPULATIONS/POPULATION_0013/INDIVIDUAL_XW9UL7O3/model.cpp: Cmd('git') failed due to: exit code(1)
+  cmdline: git add /home/spi085/Documents/_Projects/SCCP-QuantModelling/POPULATIONS/POPULATION_0013/INDIVIDUAL_XW9UL7O3/model.cpp
+  stderr: 'The following paths are ignored by one of your .gitignore files:
+POPULATIONS
+hint: Use -f if you really want to add them.
+hint: Turn this message off by running
+hint: "git config advice.addIgnoredFile false"'
+Unable to add /home/spi085/Documents/_Projects/SCCP-QuantModelling/POPULATIONS/POPULATION_0013/INDIVIDUAL_XW9UL7O3/parameters.json: Cmd('git') failed due to: exit code(1)
+  cmdline: git add /home/spi085/Documents/_Projects/SCCP-QuantModelling/POPULATIONS/POPULATION_0013/INDIVIDUAL_XW9UL7O3/parameters.json
+  stderr: 'The following paths are ignored by one of your .gitignore files:
+POPULATIONS
+hint: Use -f if you really want to add them.
+hint: Turn this message off by running
+hint: "git config advice.addIgnoredFile false"'
+Unable to commit: Cmd('git') failed due to: exit code(1)
+  cmdline: git commit -m feat: Add INDIVIDUAL_XW9UL7O3 with model, parameters, and intention files --no-verify -- 
+/home/spi085/Documents/_Projects/SCCP-QuantModelling/POPULATIONS/POPULATION_0013/INDIVIDUAL_XW9UL7O3/intention.txt 
+/home/spi085/Documents/_Projects/SCCP-QuantModelling/POPULATIONS/POPULATION_0013/INDIVIDUAL_XW9UL7O3/model.cpp 
+/home/spi085/Documents/_Projects/SCCP-QuantModelling/POPULATIONS/POPULATION_0013/INDIVIDUAL_XW9UL7O3/parameters.json
+  stderr: 'error: pathspec '/home/spi085/Documents/_Projects/SCCP-QuantModelling/POPULATIONS/POPULATION_0013/INDIVIDUAL_XW9UL7O3/intention.txt' did not match any file(s) known to git
+error: pathspec '/home/spi085/Documents/_Projects/SCCP-QuantModelling/POPULATIONS/POPULATION_0013/INDIVIDUAL_XW9UL7O3/model.cpp' did not match any file(s) known to git
+error: pathspec '/home/spi085/Documents/_Projects/SCCP-QuantModelling/POPULATIONS/POPULATION_0013/INDIVIDUAL_XW9UL7O3/parameters.json' did not match any file(s) known to git'
+Applied edit to POPULATIONS/POPULATION_0013/INDIVIDUAL_XW9UL7O3/intention.txt
+Applied edit to POPULATIONS/POPULATION_0013/INDIVIDUAL_XW9UL7O3/model.cpp
+Applied edit to POPULATIONS/POPULATION_0013/INDIVIDUAL_XW9UL7O3/parameters.json
+Initialized new individual: POPULATIONS/POPULATION_0013/INDIVIDUAL_XW9UL7O3
+Validating model for data leakage...
+Opening file: POPULATIONS/POPULATION_0013/INDIVIDUAL_XW9UL7O3/model.cpp
+File read successfully
+TMB convention check: {'uses_tmb_header': True, 'uses_data_macros': True, 'uses_vector_type': True, 'uses_standard_report': True, 'uses_objective_function': True, 'uses_std_vector': False, 'uses_string_report': False}
+Extracting vectors...
+Found data vectors: {'sst_dat', 'slow_dat', 'Year', 'cotsimm_dat', 'cots_dat', 'fast_dat'}
+Found prediction vectors: {'fast_pred', 'cots_pred', 'slow_pred'}
+Found reported vectors: {'fast_pred', 'cots_pred', 'slow_pred'}
+Finding initial conditions...
+Found 3 initial conditions
+Finding time-stepping loop...
+Found loop from line 87 to 120
+Found response variables from Data/timeseries_data_COTS_response.csv: {'cots_dat', 'fast_dat', 'slow_dat'}
+[93mRunning model for individual...[0m
+[0mIndividual directory: POPULATIONS/POPULATION_0013/INDIVIDUAL_XW9UL7O3[0m
+[93mR script stdout:[0m
+[0mg++ -std=gnu++17 -I"/usr/share/R/include" -DNDEBUG -I"/home/spi085/R/x86_64-pc-linux-gnu-library/4.4/TMB/include" -I"/home/spi085/R/x86_64-pc-linux-gnu-library/4.4/RcppEigen/include"   -DTMB_EIGEN_DISABLE_WARNINGS   -DTMB_LIB_INIT=R_init_model  -DCPPAD_FRAMEWORK      -fpic  -O2  -c POPULATIONS/POPULATION_0013/INDIVIDUAL_XW9UL7O3/model.cpp -o POPULATIONS/POPULATION_0013/INDIVIDUAL_XW9UL7O3/model.o
+g++ -std=gnu++17 -shared -L/usr/lib/R/lib -Wl,-Bsymbolic-functions -flto=auto -ffat-lto-objects -Wl,-z,relro -o POPULATIONS/POPULATION_0013/INDIVIDUAL_XW9UL7O3/model.so POPULATIONS/POPULATION_0013/INDIVIDUAL_XW9UL7O3/model.o -L/usr/lib/R/lib -lR
+Starting model phases
+Number of phases: 3 
+Phase 1[0m
+[93mR script stderr:[0m
+[0mLoading required package: TMB
+Loading required package: jsonlite
+here() starts at /home/spi085/Documents/_Projects/SCCP-QuantModelling
+using C++ compiler: ‘g++ (Ubuntu 13.3.0-6ubuntu2~24.04) 13.3.0’
+
+ *** caught segfault ***
+address (nil), cause 'memory not mapped'
+
+Traceback:
+ 1: getParameterOrder(data, parameters, new.env(), DLL = DLL)
+ 2: MakeADFun(data_in, parameters, DLL = "model", silent = TRUE,     map = map)
+ 3: doTryCatch(return(expr), name, parentenv, handler)
+ 4: tryCatchOne(expr, names, parentenv, handlers[[1L]])
+ 5: tryCatchList(expr, classes, parentenv, handlers)
+ 6: tryCatch({    for (m in seq(1, n_phases)) {        cat("Phase", m, "\n")        to_fit <- params[params$priority == m & !is.na(params$priority) &             params$import_type == "PARAMETER", ]$parameter        map <- generate_map(to_fit)        if (exists("model")) {            parameters <- model$env$parList(fit$par)        }        model <- MakeADFun(data_in, parameters, DLL = "model",             silent = TRUE, map = map)        if (is.null(model)) {            stop("Failed to create model")        }        cat("Initial parameter values for phase", m, ":\n")        print(model$par)        fit <- nlminb(model$par, model$fn, model$gr)        if (is.null(fit)) {            stop("Failed to fit model")        }        cat("Final parameter values for phase", m, ":\n")        print(fit$par)        cat("Convergence message:", fit$message, "\n")        cat("Number of iterations:", fit$iterations, "\n")        cat("Objective function value:", fit$objective, "\n")        if (any(is.nan(fit$par)) || any(is.infinite(fit$par))) {            cat("WARNING: NaN or Inf values detected in parameters at phase",                 m, "\n")        }        cat("Gradient at solution for phase", m, ":\n")        grad <- model$gr(fit$par)        print(grad)        if (any(is.nan(grad)) || any(is.infinite(grad))) {            cat("WARNING: NaN or Inf values detected in gradient at phase",                 m, "\n")        }        best <- model$env$last.par.best        model$report()    }    cat("Final Phase\n")    to_fit <- params[!is.na(params$priority) & params$import_type ==         "PARAMETER", ]$parameter    map <- generate_map(to_fit)    parameters <- model$env$parList(fit$par)    model <- MakeADFun(data_in, parameters, DLL = "model", silent = TRUE,         map = map)    cat("Initial parameter values for final phase:\n")    print(model$par)    fit <- nlminb(model$par, model$fn, model$gr)    cat("Final parameter values for final phase:\n")    print(fit$par)    cat("Convergence message:", fit$message, "\n")    cat("Number of iterations:", fit$iterations, "\n")    cat("Objective function value:", fit$objective, "\n")    if (any(is.nan(fit$par)) || any(is.infinite(fit$par))) {        cat("WARNING: NaN or Inf values detected in parameters at final phase\n")    }    cat("Gradient at solution for final phase:\n")    grad <- model$gr(fit$par)    print(grad)    if (any(is.nan(grad)) || any(is.infinite(grad))) {        cat("WARNING: NaN or Inf values detected in gradient at final phase\n")    }    best <- model$env$last.par.best}, error = function(e) {    error_message <- paste("Error in model phases:", conditionMessage(e))    cat(error_message, "\n")    stop(error_message)})
+An irrecoverable exception occurred. R is aborting now ...
+Segmentation fault (core dumped)[0m
+[91mR script failed with return code 139[0m
+MODEL RUN FINISHED
+Error: Objective value is None
+Initial run failed. Attempting to fix...
+Fixing broken model iteration: 0
+POPULATIONS/POPULATION_0013/INDIVIDUAL_XW9UL7O3/model.cpp                                                                                                                                                              
+
+                                                                                                                                                                                                                       
+ <<<<<<< SEARCH                                                                                                                                                                                                        
+   cots_pred(0) = cots_dat(0); // Initial COTS abundance                                                                                                                                                               
+   fast_pred(0) = fast_dat(0); // Initial fast coral cover                                                                                                                                                             
+   slow_pred(0) = slow_dat(0); // Initial slow coral cover                                                                                                                                                             
+ =======                                                                                                                                                                                                               
+   cots_pred(0) = CppAD::CondExpGt(cots_dat(0), Type(1e-8), cots_dat(0), Type(1e-8)); // Initial COTS abundance (avoid zero/negative)                                                                                  
+   fast_pred(0) = CppAD::CondExpGt(fast_dat(0), Type(1e-8), fast_dat(0), Type(1e-8)); // Initial fast coral cover (avoid zero/negative)                                                                                
+   slow_pred(0) = CppAD::CondExpGt(slow_dat(0), Type(1e-8), slow_dat(0), Type(1e-8)); // Initial slow coral cover (avoid zero/negative)                                                                                
+ >>>>>>> REPLACE                                                                                                                                                                                                       
+                                                                                                                                                                                                                       
+
+POPULATIONS/POPULATION_0013/INDIVIDUAL_XW9UL7O3/model.cpp                                                                                                                                                              
+
+                                                                                                                                                                                                                       
+ <<<<<<< SEARCH                                                                                                                                                                                                        
+     // 1. COTS predation on corals (Holling Type II functional response)                                                                                                                                              
+     Type pred_fast = alpha_fast * cots_pred(t-1) * fast_pred(t-1) / (fast_pred(t-1) + Type(1.0) + Type(1e-8)); // predation on fast coral                                                                             
+     Type pred_slow = alpha_slow * cots_pred(t-1) * slow_pred(t-1) / (slow_pred(t-1) + Type(1.0) + Type(1e-8)); // predation on slow coral                                                                             
+                                                                                                                                                                                                                       
+     // 2. COTS population dynamics (logistic + resource + SST + immigration)                                                                                                                                          
+     Type resource_term = (e_fast * pred_fast + e_slow * pred_slow); // resource assimilation                                                                                                                          
+     Type sst_effect = exp(beta_sst * (sst_dat(t-1) - Type(27.0))); // SST modifies growth (27C baseline)                                                                                                              
+     Type density_term = (Type(1.0) - cots_pred(t-1)/K_cots); // logistic limitation                                                                                                                                   
+                                                                                                                                                                                                                       
+     // Outbreak threshold: smooth sigmoid on resource assimilation                                                                                                                                                    
+     Type outbreak_trigger = Type(1.0) / (Type(1.0) + exp(-10.0 * (resource_term - Type(0.05)))); // triggers when resource_term > 0.05                                                                                
+                                                                                                                                                                                                                       
+     cots_pred(t) = cots_pred(t-1)                                                                                                                                                                                     
+       + r_cots * cots_pred(t-1) * density_term * sst_effect * outbreak_trigger // growth                                                                                                                              
+       + resource_term // resource assimilation                                                                                                                                                                        
+       + cotsimm_dat(t-1); // larval immigration                                                                                                                                                                       
+                                                                                                                                                                                                                       
+     // Prevent negative or zero COTS                                                                                                                                                                                  
+     cots_pred(t) = CppAD::CondExpGt(cots_pred(t), Type(1e-8), cots_pred(t), Type(1e-8));                                                                                                                              
+                                                                                                                                                                                                                       
+     // 3. Fast coral dynamics (logistic growth - COTS predation)                                                                                                                                                      
+     Type fast_growth = r_fast * fast_pred(t-1) * (Type(1.0) - fast_pred(t-1)/K_fast);                                                                                                                                 
+     fast_pred(t) = fast_pred(t-1) + fast_growth - pred_fast;                                                                                                                                                          
+                                                                                                                                                                                                                       
+     // Prevent negative or zero coral cover                                                                                                                                                                           
+     fast_pred(t) = CppAD::CondExpGt(fast_pred(t), Type(1e-8), fast_pred(t), Type(1e-8));                                                                                                                              
+                                                                                                                                                                                                                       
+     // 4. Slow coral dynamics (logistic growth - COTS predation)                                                                                                                                                      
+     Type slow_growth = r_slow * slow_pred(t-1) * (Type(1.0) - slow_pred(t-1)/K_slow);                                                                                                                                 
+     slow_pred(t) = slow_pred(t-1) + slow_growth - pred_slow;                                                                                                                                                          
+                                                                                                                                                                                                                       
+     slow_pred(t) = CppAD::CondExpGt(slow_pred(t), Type(1e-8), slow_pred(t), Type(1e-8));                                                                                                                              
+   }                                                                                                                                                                                                                   
+ =======                                                                                                                                                                                                               
+     // 1. COTS predation on corals (Holling Type II functional response)                                                                                                                                              
+     Type pred_fast = alpha_fast * cots_pred(t-1) * fast_pred(t-1) / (fast_pred(t-1) + Type(1.0) + Type(1e-8)); // predation on fast coral                                                                             
+     Type pred_slow = alpha_slow * cots_pred(t-1) * slow_pred(t-1) / (slow_pred(t-1) + Type(1.0) + Type(1e-8)); // predation on slow coral                                                                             
+                                                                                                                                                                                                                       
+     // 2. COTS population dynamics (logistic + resource + SST + immigration)                                                                                                                                          
+     Type resource_term = (e_fast * pred_fast + e_slow * pred_slow); // resource assimilation                                                                                                                          
+     Type sst_effect = exp(beta_sst * (sst_dat(t-1) - Type(27.0))); // SST modifies growth (27C baseline)                                                                                                              
+     Type density_term = (Type(1.0) - cots_pred(t-1)/K_cots); // logistic limitation                                                                                                                                   
+                                                                                                                                                                                                                       
+     // Outbreak threshold: smooth sigmoid on resource assimilation                                                                                                                                                    
+     Type outbreak_trigger = Type(1.0) / (Type(1.0) + exp(-10.0 * (resource_term - Type(0.05)))); // triggers when resource_term > 0.05                                                                                
+                                                                                                                                                                                                                       
+     Type cots_growth = r_cots * cots_pred(t-1) * density_term * sst_effect * outbreak_trigger; // growth                                                                                                              
+     Type cots_update = cots_pred(t-1) + cots_growth + resource_term + cotsimm_dat(t-1); // update                                                                                                                     
+                                                                                                                                                                                                                       
+     // Prevent negative or zero COTS                                                                                                                                                                                  
+     cots_pred(t) = CppAD::CondExpGt(cots_update, Type(1e-8), cots_update, Type(1e-8));                                                                                                                                
+                                                                                                                                                                                                                       
+     // 3. Fast coral dynamics (logistic growth - COTS predation)                                                                                                                                                      
+     Type fast_growth = r_fast * fast_pred(t-1) * (Type(1.0) - fast_pred(t-1)/K_fast);                                                                                                                                 
+     Type fast_update = fast_pred(t-1) + fast_growth - pred_fast;                                                                                                                                                      
+                                                                                                                                                                                                                       
+     // Prevent negative or zero coral cover                                                                                                                                                                           
+     fast_pred(t) = CppAD::CondExpGt(fast_update, Type(1e-8), fast_update, Type(1e-8));                                                                                                                                
+                                                                                                                                                                                                                       
+     // 4. Slow coral dynamics (logistic growth - COTS predation)                                                                                                                                                      
+     Type slow_growth = r_slow * slow_pred(t-1) * (Type(1.0) - slow_pred(t-1)/K_slow);                                                                                                                                 
+     Type slow_update = slow_pred(t-1) + slow_growth - pred_slow;                                                                                                                                                      
+                                                                                                                                                                                                                       
+     slow_pred(t) = CppAD::CondExpGt(slow_update, Type(1e-8), slow_update, Type(1e-8));                                                                                                                                
+   }                                                                                                                                                                                                                   
+ >>>>>>> REPLACE                                                                                                                                                                                                       
+                                                                                                                                                                                                                       
+
+Tokens: 13k sent, 1.5k received. Cost: $0.04 message, $0.07 session.
+Committing POPULATIONS/POPULATION_0013/INDIVIDUAL_XW9UL7O3/model.cpp before applying edits.
+Unable to add /home/spi085/Documents/_Projects/SCCP-QuantModelling/POPULATIONS/POPULATION_0013/INDIVIDUAL_XW9UL7O3/model.cpp: Cmd('git') failed due to: exit code(1)
+  cmdline: git add /home/spi085/Documents/_Projects/SCCP-QuantModelling/POPULATIONS/POPULATION_0013/INDIVIDUAL_XW9UL7O3/model.cpp
+  stderr: 'The following paths are ignored by one of your .gitignore files:
+POPULATIONS
+hint: Use -f if you really want to add them.
+hint: Turn this message off by running
+hint: "git config advice.addIgnoredFile false"'
+Unable to commit: Cmd('git') failed due to: exit code(1)
+  cmdline: git commit -m feat: add model.cpp for INDIVIDUAL_XW9UL7O3 in POPULATION_0013 --no-verify -- /home/spi085/Documents/_Projects/SCCP-QuantModelling/POPULATIONS/POPULATION_0013/INDIVIDUAL_XW9UL7O3/model.cpp
+  stderr: 'error: pathspec '/home/spi085/Documents/_Projects/SCCP-QuantModelling/POPULATIONS/POPULATION_0013/INDIVIDUAL_XW9UL7O3/model.cpp' did not match any file(s) known to git'
+Applied edit to POPULATIONS/POPULATION_0013/INDIVIDUAL_XW9UL7O3/model.cpp
+Validating fixed model for data leakage...
+Opening file: POPULATIONS/POPULATION_0013/INDIVIDUAL_XW9UL7O3/model.cpp
+File read successfully
+TMB convention check: {'uses_tmb_header': True, 'uses_data_macros': True, 'uses_vector_type': True, 'uses_standard_report': True, 'uses_objective_function': True, 'uses_std_vector': False, 'uses_string_report': False}
+Extracting vectors...
+Found data vectors: {'sst_dat', 'slow_dat', 'Year', 'cotsimm_dat', 'cots_dat', 'fast_dat'}
+Found prediction vectors: {'fast_pred', 'cots_pred', 'slow_pred'}
+Found reported vectors: {'fast_pred', 'cots_pred', 'slow_pred'}
+Finding initial conditions...
+Found 3 initial conditions
+Finding time-stepping loop...
+Found loop from line 87 to 118
+Found response variables from Data/timeseries_data_COTS_response.csv: {'cots_dat', 'fast_dat', 'slow_dat'}
+[93mRunning model for individual...[0m
+[0mIndividual directory: POPULATIONS/POPULATION_0013/INDIVIDUAL_XW9UL7O3[0m
+[93mRemoved old compilation: model.o[0m
+[93mR script stdout:[0m
+[0mg++ -std=gnu++17 -I"/usr/share/R/include" -DNDEBUG -I"/home/spi085/R/x86_64-pc-linux-gnu-library/4.4/TMB/include" -I"/home/spi085/R/x86_64-pc-linux-gnu-library/4.4/RcppEigen/include"   -DTMB_EIGEN_DISABLE_WARNINGS   -DTMB_LIB_INIT=R_init_model  -DCPPAD_FRAMEWORK      -fpic  -O2  -c POPULATIONS/POPULATION_0013/INDIVIDUAL_XW9UL7O3/model.cpp -o POPULATIONS/POPULATION_0013/INDIVIDUAL_XW9UL7O3/model.o
+g++ -std=gnu++17 -shared -L/usr/lib/R/lib -Wl,-Bsymbolic-functions -flto=auto -ffat-lto-objects -Wl,-z,relro -o POPULATIONS/POPULATION_0013/INDIVIDUAL_XW9UL7O3/model.so POPULATIONS/POPULATION_0013/INDIVIDUAL_XW9UL7O3/model.o -L/usr/lib/R/lib -lR
+Starting model phases
+Number of phases: 3 
+Phase 1[0m
+[93mR script stderr:[0m
+[0mLoading required package: TMB
+Loading required package: jsonlite
+here() starts at /home/spi085/Documents/_Projects/SCCP-QuantModelling
+using C++ compiler: ‘g++ (Ubuntu 13.3.0-6ubuntu2~24.04) 13.3.0’
+
+ *** caught segfault ***
+address (nil), cause 'memory not mapped'
+
+Traceback:
+ 1: getParameterOrder(data, parameters, new.env(), DLL = DLL)
+ 2: MakeADFun(data_in, parameters, DLL = "model", silent = TRUE,     map = map)
+ 3: doTryCatch(return(expr), name, parentenv, handler)
+ 4: tryCatchOne(expr, names, parentenv, handlers[[1L]])
+ 5: tryCatchList(expr, classes, parentenv, handlers)
+ 6: tryCatch({    for (m in seq(1, n_phases)) {        cat("Phase", m, "\n")        to_fit <- params[params$priority == m & !is.na(params$priority) &             params$import_type == "PARAMETER", ]$parameter        map <- generate_map(to_fit)        if (exists("model")) {            parameters <- model$env$parList(fit$par)        }        model <- MakeADFun(data_in, parameters, DLL = "model",             silent = TRUE, map = map)        if (is.null(model)) {            stop("Failed to create model")        }        cat("Initial parameter values for phase", m, ":\n")        print(model$par)        fit <- nlminb(model$par, model$fn, model$gr)        if (is.null(fit)) {            stop("Failed to fit model")        }        cat("Final parameter values for phase", m, ":\n")        print(fit$par)        cat("Convergence message:", fit$message, "\n")        cat("Number of iterations:", fit$iterations, "\n")        cat("Objective function value:", fit$objective, "\n")        if (any(is.nan(fit$par)) || any(is.infinite(fit$par))) {            cat("WARNING: NaN or Inf values detected in parameters at phase",                 m, "\n")        }        cat("Gradient at solution for phase", m, ":\n")        grad <- model$gr(fit$par)        print(grad)        if (any(is.nan(grad)) || any(is.infinite(grad))) {            cat("WARNING: NaN or Inf values detected in gradient at phase",                 m, "\n")        }        best <- model$env$last.par.best        model$report()    }    cat("Final Phase\n")    to_fit <- params[!is.na(params$priority) & params$import_type ==         "PARAMETER", ]$parameter    map <- generate_map(to_fit)    parameters <- model$env$parList(fit$par)    model <- MakeADFun(data_in, parameters, DLL = "model", silent = TRUE,         map = map)    cat("Initial parameter values for final phase:\n")    print(model$par)    fit <- nlminb(model$par, model$fn, model$gr)    cat("Final parameter values for final phase:\n")    print(fit$par)    cat("Convergence message:", fit$message, "\n")    cat("Number of iterations:", fit$iterations, "\n")    cat("Objective function value:", fit$objective, "\n")    if (any(is.nan(fit$par)) || any(is.infinite(fit$par))) {        cat("WARNING: NaN or Inf values detected in parameters at final phase\n")    }    cat("Gradient at solution for final phase:\n")    grad <- model$gr(fit$par)    print(grad)    if (any(is.nan(grad)) || any(is.infinite(grad))) {        cat("WARNING: NaN or Inf values detected in gradient at final phase\n")    }    best <- model$env$last.par.best}, error = function(e) {    error_message <- paste("Error in model phases:", conditionMessage(e))    cat(error_message, "\n")    stop(error_message)})
+An irrecoverable exception occurred. R is aborting now ...
+Segmentation fault (core dumped)[0m
+[91mR script failed with return code 139[0m
+Fixing broken model iteration: 1
+POPULATIONS/POPULATION_0013/INDIVIDUAL_XW9UL7O3/model.cpp                                                                                                                                                              
+
+                                                                                                                                                                                                                       
+ <<<<<<< SEARCH                                                                                                                                                                                                        
+   for(int t=1; t<n; t++) {                                                                                                                                                                                            
+     // 1. COTS predation on corals (Holling Type II functional response)                                                                                                                                              
+     Type pred_fast = alpha_fast * cots_pred(t-1) * fast_pred(t-1) / (fast_pred(t-1) + Type(1.0) + Type(1e-8)); // predation on fast coral                                                                             
+     Type pred_slow = alpha_slow * cots_pred(t-1) * slow_pred(t-1) / (slow_pred(t-1) + Type(1.0) + Type(1e-8)); // predation on slow coral                                                                             
+                                                                                                                                                                                                                       
+     // 2. COTS population dynamics (logistic + resource + SST + immigration)                                                                                                                                          
+     Type resource_term = (e_fast * pred_fast + e_slow * pred_slow); // resource assimilation                                                                                                                          
+     Type sst_effect = exp(beta_sst * (sst_dat(t-1) - Type(27.0))); // SST modifies growth (27C baseline)                                                                                                              
+     Type density_term = (Type(1.0) - cots_pred(t-1)/K_cots); // logistic limitation                                                                                                                                   
+                                                                                                                                                                                                                       
+     // Outbreak threshold: smooth sigmoid on resource assimilation                                                                                                                                                    
+     Type outbreak_trigger = Type(1.0) / (Type(1.0) + exp(-10.0 * (resource_term - Type(0.05)))); // triggers when resource_term > 0.05                                                                                
+                                                                                                                                                                                                                       
+     Type cots_growth = r_cots * cots_pred(t-1) * density_term * sst_effect * outbreak_trigger; // growth                                                                                                              
+     Type cots_update = cots_pred(t-1) + cots_growth + resource_term + cotsimm_dat(t-1); // update                                                                                                                     
+                                                                                                                                                                                                                       
+     // Prevent negative or zero COTS                                                                                                                                                                                  
+     cots_pred(t) = CppAD::CondExpGt(cots_update, Type(1e-8), cots_update, Type(1e-8));                                                                                                                                
+                                                                                                                                                                                                                       
+     // 3. Fast coral dynamics (logistic growth - COTS predation)                                                                                                                                                      
+     Type fast_growth = r_fast * fast_pred(t-1) * (Type(1.0) - fast_pred(t-1)/K_fast);                                                                                                                                 
+     Type fast_update = fast_pred(t-1) + fast_growth - pred_fast;                                                                                                                                                      
+                                                                                                                                                                                                                       
+     // Prevent negative or zero coral cover                                                                                                                                                                           
+     fast_pred(t) = CppAD::CondExpGt(fast_update, Type(1e-8), fast_update, Type(1e-8));                                                                                                                                
+                                                                                                                                                                                                                       
+     // 4. Slow coral dynamics (logistic growth - COTS predation)                                                                                                                                                      
+     Type slow_growth = r_slow * slow_pred(t-1) * (Type(1.0) - slow_pred(t-1)/K_slow);                                                                                                                                 
+     Type slow_update = slow_pred(t-1) + slow_growth - pred_slow;                                                                                                                                                      
+                                                                                                                                                                                                                       
+     slow_pred(t) = CppAD::CondExpGt(slow_update, Type(1e-8), slow_update, Type(1e-8));                                                                                                                                
+   }                                                                                                                                                                                                                   
+ =======                                                                                                                                                                                                               
+   for(int t=1; t<n; t++) {                                                                                                                                                                                            
+     // Defensive: ensure previous values are positive                                                                                                                                                                 
+     Type prev_cots = CppAD::CondExpGt(cots_pred(t-1), Type(1e-8), cots_pred(t-1), Type(1e-8));                                                                                                                        
+     Type prev_fast = CppAD::CondExpGt(fast_pred(t-1), Type(1e-8), fast_pred(t-1), Type(1e-8));                                                                                                                        
+     Type prev_slow = CppAD::CondExpGt(slow_pred(t-1), Type(1e-8), slow_pred(t-1), Type(1e-8));                                                                                                                        
+                                                                                                                                                                                                                       
+     // 1. COTS predation on corals (Holling Type II functional response)                                                                                                                                              
+     Type pred_fast = alpha_fast * prev_cots * prev_fast / (prev_fast + Type(1.0) + Type(1e-8)); // predation on fast coral                                                                                            
+     Type pred_slow = alpha_slow * prev_cots * prev_slow / (prev_slow + Type(1.0) + Type(1e-8)); // predation on slow coral                                                                                            
+                                                                                                                                                                                                                       
+     // 2. COTS population dynamics (logistic + resource + SST + immigration)                                                                                                                                          
+     Type resource_term = (e_fast * pred_fast + e_slow * pred_slow); // resource assimilation                                                                                                                          
+     Type sst_effect = exp(beta_sst * (sst_dat(t-1) - Type(27.0))); // SST modifies growth (27C baseline)                                                                                                              
+     Type density_term = (Type(1.0) - prev_cots/K_cots); // logistic limitation                                                                                                                                        
+                                                                                                                                                                                                                       
+     // Outbreak threshold: smooth sigmoid on resource assimilation                                                                                                                                                    
+     Type outbreak_trigger = Type(1.0) / (Type(1.0) + exp(-10.0 * (resource_term - Type(0.05)))); // triggers when resource_term > 0.05                                                                                
+                                                                                                                                                                                                                       
+     Type cots_growth = r_cots * prev_cots * density_term * sst_effect * outbreak_trigger; // growth                                                                                                                   
+     Type cots_update = prev_cots + cots_growth + resource_term + cotsimm_dat(t-1); // update                                                                                                                          
+                                                                                                                                                                                                                       
+     // Prevent negative or zero COTS                                                                                                                                                                                  
+     cots_pred(t) = CppAD::CondExpGt(cots_update, Type(1e-8), cots_update, Type(1e-8));                                                                                                                                
+                                                                                                                                                                                                                       
+     // 3. Fast coral dynamics (logistic growth - COTS predation)                                                                                                                                                      
+     Type fast_growth = r_fast * prev_fast * (Type(1.0) - prev_fast/K_fast);                                                                                                                                           
+     Type fast_update = prev_fast + fast_growth - pred_fast;                                                                                                                                                           
+                                                                                                                                                                                                                       
+     // Prevent negative or zero coral cover                                                                                                                                                                           
+     fast_pred(t) = CppAD::CondExpGt(fast_update, Type(1e-8), fast_update, Type(1e-8));                                                                                                                                
+                                                                                                                                                                                                                       
+     // 4. Slow coral dynamics (logistic growth - COTS predation)                                                                                                                                                      
+     Type slow_growth = r_slow * prev_slow * (Type(1.0) - prev_slow/K_slow);                                                                                                                                           
+     Type slow_update = prev_slow + slow_growth - pred_slow;                                                                                                                                                           
+                                                                                                                                                                                                                       
+     slow_pred(t) = CppAD::CondExpGt(slow_update, Type(1e-8), slow_update, Type(1e-8));                                                                                                                                
+   }                                                                                                                                                                                                                   
+ >>>>>>> REPLACE                                                                                                                                                                                                       
+                                                                                                                                                                                                                       
+
+Tokens: 15k sent, 1.4k received. Cost: $0.04 message, $0.12 session.
+Committing POPULATIONS/POPULATION_0013/INDIVIDUAL_XW9UL7O3/model.cpp before applying edits.
+Unable to add /home/spi085/Documents/_Projects/SCCP-QuantModelling/POPULATIONS/POPULATION_0013/INDIVIDUAL_XW9UL7O3/model.cpp: Cmd('git') failed due to: exit code(1)
+  cmdline: git add /home/spi085/Documents/_Projects/SCCP-QuantModelling/POPULATIONS/POPULATION_0013/INDIVIDUAL_XW9UL7O3/model.cpp
+  stderr: 'The following paths are ignored by one of your .gitignore files:
+POPULATIONS
+hint: Use -f if you really want to add them.
+hint: Turn this message off by running
+hint: "git config advice.addIgnoredFile false"'
+Unable to commit: Cmd('git') failed due to: exit code(1)
+  cmdline: git commit -m feat: add model.cpp for INDIVIDUAL_XW9UL7O3 in POPULATION_0013 --no-verify -- /home/spi085/Documents/_Projects/SCCP-QuantModelling/POPULATIONS/POPULATION_0013/INDIVIDUAL_XW9UL7O3/model.cpp
+  stderr: 'error: pathspec '/home/spi085/Documents/_Projects/SCCP-QuantModelling/POPULATIONS/POPULATION_0013/INDIVIDUAL_XW9UL7O3/model.cpp' did not match any file(s) known to git'
+Applied edit to POPULATIONS/POPULATION_0013/INDIVIDUAL_XW9UL7O3/model.cpp
+Validating fixed model for data leakage...
+Opening file: POPULATIONS/POPULATION_0013/INDIVIDUAL_XW9UL7O3/model.cpp
+File read successfully
+TMB convention check: {'uses_tmb_header': True, 'uses_data_macros': True, 'uses_vector_type': True, 'uses_standard_report': True, 'uses_objective_function': True, 'uses_std_vector': False, 'uses_string_report': False}
+Extracting vectors...
+Found data vectors: {'sst_dat', 'slow_dat', 'Year', 'cotsimm_dat', 'cots_dat', 'fast_dat'}
+Found prediction vectors: {'fast_pred', 'cots_pred', 'slow_pred'}
+Found reported vectors: {'fast_pred', 'cots_pred', 'slow_pred'}
+Finding initial conditions...
+Found 3 initial conditions
+Finding time-stepping loop...
+Found loop from line 87 to 123
+Found response variables from Data/timeseries_data_COTS_response.csv: {'cots_dat', 'fast_dat', 'slow_dat'}
+[93mRunning model for individual...[0m
+[0mIndividual directory: POPULATIONS/POPULATION_0013/INDIVIDUAL_XW9UL7O3[0m
+[93mRemoved old compilation: model.o[0m
+[93mR script stdout:[0m
+[0mg++ -std=gnu++17 -I"/usr/share/R/include" -DNDEBUG -I"/home/spi085/R/x86_64-pc-linux-gnu-library/4.4/TMB/include" -I"/home/spi085/R/x86_64-pc-linux-gnu-library/4.4/RcppEigen/include"   -DTMB_EIGEN_DISABLE_WARNINGS   -DTMB_LIB_INIT=R_init_model  -DCPPAD_FRAMEWORK      -fpic  -O2  -c POPULATIONS/POPULATION_0013/INDIVIDUAL_XW9UL7O3/model.cpp -o POPULATIONS/POPULATION_0013/INDIVIDUAL_XW9UL7O3/model.o
+g++ -std=gnu++17 -shared -L/usr/lib/R/lib -Wl,-Bsymbolic-functions -flto=auto -ffat-lto-objects -Wl,-z,relro -o POPULATIONS/POPULATION_0013/INDIVIDUAL_XW9UL7O3/model.so POPULATIONS/POPULATION_0013/INDIVIDUAL_XW9UL7O3/model.o -L/usr/lib/R/lib -lR
+Starting model phases
+Number of phases: 3 
+Phase 1[0m
+[93mR script stderr:[0m
+[0mLoading required package: TMB
+Loading required package: jsonlite
+here() starts at /home/spi085/Documents/_Projects/SCCP-QuantModelling
+using C++ compiler: ‘g++ (Ubuntu 13.3.0-6ubuntu2~24.04) 13.3.0’
+
+ *** caught segfault ***
+address (nil), cause 'memory not mapped'
+
+Traceback:
+ 1: getParameterOrder(data, parameters, new.env(), DLL = DLL)
+ 2: MakeADFun(data_in, parameters, DLL = "model", silent = TRUE,     map = map)
+ 3: doTryCatch(return(expr), name, parentenv, handler)
+ 4: tryCatchOne(expr, names, parentenv, handlers[[1L]])
+ 5: tryCatchList(expr, classes, parentenv, handlers)
+ 6: tryCatch({    for (m in seq(1, n_phases)) {        cat("Phase", m, "\n")        to_fit <- params[params$priority == m & !is.na(params$priority) &             params$import_type == "PARAMETER", ]$parameter        map <- generate_map(to_fit)        if (exists("model")) {            parameters <- model$env$parList(fit$par)        }        model <- MakeADFun(data_in, parameters, DLL = "model",             silent = TRUE, map = map)        if (is.null(model)) {            stop("Failed to create model")        }        cat("Initial parameter values for phase", m, ":\n")        print(model$par)        fit <- nlminb(model$par, model$fn, model$gr)        if (is.null(fit)) {            stop("Failed to fit model")        }        cat("Final parameter values for phase", m, ":\n")        print(fit$par)        cat("Convergence message:", fit$message, "\n")        cat("Number of iterations:", fit$iterations, "\n")        cat("Objective function value:", fit$objective, "\n")        if (any(is.nan(fit$par)) || any(is.infinite(fit$par))) {            cat("WARNING: NaN or Inf values detected in parameters at phase",                 m, "\n")        }        cat("Gradient at solution for phase", m, ":\n")        grad <- model$gr(fit$par)        print(grad)        if (any(is.nan(grad)) || any(is.infinite(grad))) {            cat("WARNING: NaN or Inf values detected in gradient at phase",                 m, "\n")        }        best <- model$env$last.par.best        model$report()    }    cat("Final Phase\n")    to_fit <- params[!is.na(params$priority) & params$import_type ==         "PARAMETER", ]$parameter    map <- generate_map(to_fit)    parameters <- model$env$parList(fit$par)    model <- MakeADFun(data_in, parameters, DLL = "model", silent = TRUE,         map = map)    cat("Initial parameter values for final phase:\n")    print(model$par)    fit <- nlminb(model$par, model$fn, model$gr)    cat("Final parameter values for final phase:\n")    print(fit$par)    cat("Convergence message:", fit$message, "\n")    cat("Number of iterations:", fit$iterations, "\n")    cat("Objective function value:", fit$objective, "\n")    if (any(is.nan(fit$par)) || any(is.infinite(fit$par))) {        cat("WARNING: NaN or Inf values detected in parameters at final phase\n")    }    cat("Gradient at solution for final phase:\n")    grad <- model$gr(fit$par)    print(grad)    if (any(is.nan(grad)) || any(is.infinite(grad))) {        cat("WARNING: NaN or Inf values detected in gradient at final phase\n")    }    best <- model$env$last.par.best}, error = function(e) {    error_message <- paste("Error in model phases:", conditionMessage(e))    cat(error_message, "\n")    stop(error_message)})
+An irrecoverable exception occurred. R is aborting now ...
+Segmentation fault (core dumped)[0m
+[91mR script failed with return code 139[0m
+Fixing broken model iteration: 2
+POPULATIONS/POPULATION_0013/INDIVIDUAL_XW9UL7O3/model.cpp                                                                                                                                                              
+
+                                                                                                                                                                                                                       
+ <<<<<<< SEARCH                                                                                                                                                                                                        
+   for(int t=1; t<n; t++) {                                                                                                                                                                                            
+     // Defensive: ensure previous values are positive                                                                                                                                                                 
+     Type prev_cots = CppAD::CondExpGt(cots_pred(t-1), Type(1e-8), cots_pred(t-1), Type(1e-8));                                                                                                                        
+     Type prev_fast = CppAD::CondExpGt(fast_pred(t-1), Type(1e-8), fast_pred(t-1), Type(1e-8));                                                                                                                        
+     Type prev_slow = CppAD::CondExpGt(slow_pred(t-1), Type(1e-8), slow_pred(t-1), Type(1e-8));                                                                                                                        
+                                                                                                                                                                                                                       
+     // 1. COTS predation on corals (Holling Type II functional response)                                                                                                                                              
+     Type pred_fast = alpha_fast * prev_cots * prev_fast / (prev_fast + Type(1.0) + Type(1e-8)); // predation on fast coral                                                                                            
+     Type pred_slow = alpha_slow * prev_cots * prev_slow / (prev_slow + Type(1.0) + Type(1e-8)); // predation on slow coral                                                                                            
+                                                                                                                                                                                                                       
+     // 2. COTS population dynamics (logistic + resource + SST + immigration)                                                                                                                                          
+     Type resource_term = (e_fast * pred_fast + e_slow * pred_slow); // resource assimilation                                                                                                                          
+     Type sst_effect = exp(beta_sst * (sst_dat(t-1) - Type(27.0))); // SST modifies growth (27C baseline)                                                                                                              
+     Type density_term = (Type(1.0) - prev_cots/K_cots); // logistic limitation                                                                                                                                        
+                                                                                                                                                                                                                       
+     // Outbreak threshold: smooth sigmoid on resource assimilation                                                                                                                                                    
+     Type outbreak_trigger = Type(1.0) / (Type(1.0) + exp(-10.0 * (resource_term - Type(0.05)))); // triggers when resource_term > 0.05                                                                                
+                                                                                                                                                                                                                       
+     Type cots_growth = r_cots * prev_cots * density_term * sst_effect * outbreak_trigger; // growth                                                                                                                   
+     Type cots_update = prev_cots + cots_growth + resource_term + cotsimm_dat(t-1); // update                                                                                                                          
+                                                                                                                                                                                                                       
+     // Prevent negative or zero COTS                                                                                                                                                                                  
+     cots_pred(t) = CppAD::CondExpGt(cots_update, Type(1e-8), cots_update, Type(1e-8));                                                                                                                                
+                                                                                                                                                                                                                       
+     // 3. Fast coral dynamics (logistic growth - COTS predation)                                                                                                                                                      
+     Type fast_growth = r_fast * prev_fast * (Type(1.0) - prev_fast/K_fast);                                                                                                                                           
+     Type fast_update = prev_fast + fast_growth - pred_fast;                                                                                                                                                           
+                                                                                                                                                                                                                       
+     // Prevent negative or zero coral cover                                                                                                                                                                           
+     fast_pred(t) = CppAD::CondExpGt(fast_update, Type(1e-8), fast_update, Type(1e-8));                                                                                                                                
+                                                                                                                                                                                                                       
+     // 4. Slow coral dynamics (logistic growth - COTS predation)                                                                                                                                                      
+     Type slow_growth = r_slow * prev_slow * (Type(1.0) - prev_slow/K_slow);                                                                                                                                           
+     Type slow_update = prev_slow + slow_growth - pred_slow;                                                                                                                                                           
+                                                                                                                                                                                                                       
+     slow_pred(t) = CppAD::CondExpGt(slow_update, Type(1e-8), slow_update, Type(1e-8));                                                                                                                                
+   }                                                                                                                                                                                                                   
+ =======                                                                                                                                                                                                               
+   for(int t=1; t<n; t++) {                                                                                                                                                                                            
+     // Defensive: ensure previous values are strictly positive (avoid NaN in log, division)                                                                                                                           
+     Type prev_cots = (cots_pred(t-1) > Type(1e-8)) ? cots_pred(t-1) : Type(1e-8);                                                                                                                                     
+     Type prev_fast = (fast_pred(t-1) > Type(1e-8)) ? fast_pred(t-1) : Type(1e-8);                                                                                                                                     
+     Type prev_slow = (slow_pred(t-1) > Type(1e-8)) ? slow_pred(t-1) : Type(1e-8);                                                                                                                                     
+                                                                                                                                                                                                                       
+     // 1. COTS predation on corals (Holling Type II functional response)                                                                                                                                              
+     Type pred_fast = alpha_fast * prev_cots * prev_fast / (prev_fast + Type(1.0) + Type(1e-8)); // predation on fast coral                                                                                            
+     Type pred_slow = alpha_slow * prev_cots * prev_slow / (prev_slow + Type(1.0) + Type(1e-8)); // predation on slow coral                                                                                            
+                                                                                                                                                                                                                       
+     // 2. COTS population dynamics (logistic + resource + SST + immigration)                                                                                                                                          
+     Type resource_term = (e_fast * pred_fast + e_slow * pred_slow); // resource assimilation                                                                                                                          
+     Type sst_effect = exp(beta_sst * (sst_dat(t-1) - Type(27.0))); // SST modifies growth (27C baseline)                                                                                                              
+     Type density_term = (Type(1.0) - prev_cots/K_cots); // logistic limitation                                                                                                                                        
+                                                                                                                                                                                                                       
+     // Outbreak threshold: smooth sigmoid on resource assimilation                                                                                                                                                    
+     Type outbreak_trigger = Type(1.0) / (Type(1.0) + exp(-10.0 * (resource_term - Type(0.05)))); // triggers when resource_term > 0.05                                                                                
+                                                                                                                                                                                                                       
+     Type cots_growth = r_cots * prev_cots * density_term * sst_effect * outbreak_trigger; // growth                                                                                                                   
+     Type cots_update = prev_cots + cots_growth + resource_term + cotsimm_dat(t-1); // update                                                                                                                          
+                                                                                                                                                                                                                       
+     // Prevent negative or zero COTS                                                                                                                                                                                  
+     cots_pred(t) = (cots_update > Type(1e-8)) ? cots_update : Type(1e-8);                                                                                                                                             
+                                                                                                                                                                                                                       
+     // 3. Fast coral dynamics (logistic growth - COTS predation)                                                                                                                                                      
+     Type fast_growth = r_fast * prev_fast * (Type(1.0) - prev_fast/K_fast);                                                                                                                                           
+     Type fast_update = prev_fast + fast_growth - pred_fast;                                                                                                                                                           
+                                                                                                                                                                                                                       
+     // Prevent negative or zero coral cover                                                                                                                                                                           
+     fast_pred(t) = (fast_update > Type(1e-8)) ? fast_update : Type(1e-8);                                                                                                                                             
+                                                                                                                                                                                                                       
+     // 4. Slow coral dynamics (logistic growth - COTS predation)                                                                                                                                                      
+     Type slow_growth = r_slow * prev_slow * (Type(1.0) - prev_slow/K_slow);                                                                                                                                           
+     Type slow_update = prev_slow + slow_growth - pred_slow;                                                                                                                                                           
+                                                                                                                                                                                                                       
+     slow_pred(t) = (slow_update > Type(1e-8)) ? slow_update : Type(1e-8);                                                                                                                                             
+   }                                                                                                                                                                                                                   
+ >>>>>>> REPLACE                                                                                                                                                                                                       
+                                                                                                                                                                                                                       
+
+Tokens: 18k sent, 1.4k received. Cost: $0.05 message, $0.16 session.
+Committing POPULATIONS/POPULATION_0013/INDIVIDUAL_XW9UL7O3/model.cpp before applying edits.
+Unable to add /home/spi085/Documents/_Projects/SCCP-QuantModelling/POPULATIONS/POPULATION_0013/INDIVIDUAL_XW9UL7O3/model.cpp: Cmd('git') failed due to: exit code(1)
+  cmdline: git add /home/spi085/Documents/_Projects/SCCP-QuantModelling/POPULATIONS/POPULATION_0013/INDIVIDUAL_XW9UL7O3/model.cpp
+  stderr: 'The following paths are ignored by one of your .gitignore files:
+POPULATIONS
+hint: Use -f if you really want to add them.
+hint: Turn this message off by running
+hint: "git config advice.addIgnoredFile false"'
+Unable to commit: Cmd('git') failed due to: exit code(1)
+  cmdline: git commit -m feat: add model.cpp for INDIVIDUAL_XW9UL7O3 in POPULATION_0013 --no-verify -- /home/spi085/Documents/_Projects/SCCP-QuantModelling/POPULATIONS/POPULATION_0013/INDIVIDUAL_XW9UL7O3/model.cpp
+  stderr: 'error: pathspec '/home/spi085/Documents/_Projects/SCCP-QuantModelling/POPULATIONS/POPULATION_0013/INDIVIDUAL_XW9UL7O3/model.cpp' did not match any file(s) known to git'
+Applied edit to POPULATIONS/POPULATION_0013/INDIVIDUAL_XW9UL7O3/model.cpp
+Validating fixed model for data leakage...
+Opening file: POPULATIONS/POPULATION_0013/INDIVIDUAL_XW9UL7O3/model.cpp
+File read successfully
+TMB convention check: {'uses_tmb_header': True, 'uses_data_macros': True, 'uses_vector_type': True, 'uses_standard_report': True, 'uses_objective_function': True, 'uses_std_vector': False, 'uses_string_report': False}
+Extracting vectors...
+Found data vectors: {'sst_dat', 'slow_dat', 'Year', 'cotsimm_dat', 'cots_dat', 'fast_dat'}
+Found prediction vectors: {'fast_pred', 'cots_pred', 'slow_pred'}
+Found reported vectors: {'fast_pred', 'cots_pred', 'slow_pred'}
+Finding initial conditions...
+Found 3 initial conditions
+Finding time-stepping loop...
+Found loop from line 87 to 123
+Found response variables from Data/timeseries_data_COTS_response.csv: {'cots_dat', 'fast_dat', 'slow_dat'}
+[93mRunning model for individual...[0m
+[0mIndividual directory: POPULATIONS/POPULATION_0013/INDIVIDUAL_XW9UL7O3[0m
+[93mRemoved old compilation: model.o[0m
+[93mR script stdout:[0m
+[0mg++ -std=gnu++17 -I"/usr/share/R/include" -DNDEBUG -I"/home/spi085/R/x86_64-pc-linux-gnu-library/4.4/TMB/include" -I"/home/spi085/R/x86_64-pc-linux-gnu-library/4.4/RcppEigen/include"   -DTMB_EIGEN_DISABLE_WARNINGS   -DTMB_LIB_INIT=R_init_model  -DCPPAD_FRAMEWORK      -fpic  -O2  -c POPULATIONS/POPULATION_0013/INDIVIDUAL_XW9UL7O3/model.cpp -o POPULATIONS/POPULATION_0013/INDIVIDUAL_XW9UL7O3/model.o
+g++ -std=gnu++17 -shared -L/usr/lib/R/lib -Wl,-Bsymbolic-functions -flto=auto -ffat-lto-objects -Wl,-z,relro -o POPULATIONS/POPULATION_0013/INDIVIDUAL_XW9UL7O3/model.so POPULATIONS/POPULATION_0013/INDIVIDUAL_XW9UL7O3/model.o -L/usr/lib/R/lib -lR
+Starting model phases
+Number of phases: 3 
+Phase 1[0m
+[93mR script stderr:[0m
+[0mLoading required package: TMB
+Loading required package: jsonlite
+here() starts at /home/spi085/Documents/_Projects/SCCP-QuantModelling
+using C++ compiler: ‘g++ (Ubuntu 13.3.0-6ubuntu2~24.04) 13.3.0’
+
+ *** caught segfault ***
+address (nil), cause 'memory not mapped'
+
+Traceback:
+ 1: getParameterOrder(data, parameters, new.env(), DLL = DLL)
+ 2: MakeADFun(data_in, parameters, DLL = "model", silent = TRUE,     map = map)
+ 3: doTryCatch(return(expr), name, parentenv, handler)
+ 4: tryCatchOne(expr, names, parentenv, handlers[[1L]])
+ 5: tryCatchList(expr, classes, parentenv, handlers)
+ 6: tryCatch({    for (m in seq(1, n_phases)) {        cat("Phase", m, "\n")        to_fit <- params[params$priority == m & !is.na(params$priority) &             params$import_type == "PARAMETER", ]$parameter        map <- generate_map(to_fit)        if (exists("model")) {            parameters <- model$env$parList(fit$par)        }        model <- MakeADFun(data_in, parameters, DLL = "model",             silent = TRUE, map = map)        if (is.null(model)) {            stop("Failed to create model")        }        cat("Initial parameter values for phase", m, ":\n")        print(model$par)        fit <- nlminb(model$par, model$fn, model$gr)        if (is.null(fit)) {            stop("Failed to fit model")        }        cat("Final parameter values for phase", m, ":\n")        print(fit$par)        cat("Convergence message:", fit$message, "\n")        cat("Number of iterations:", fit$iterations, "\n")        cat("Objective function value:", fit$objective, "\n")        if (any(is.nan(fit$par)) || any(is.infinite(fit$par))) {            cat("WARNING: NaN or Inf values detected in parameters at phase",                 m, "\n")        }        cat("Gradient at solution for phase", m, ":\n")        grad <- model$gr(fit$par)        print(grad)        if (any(is.nan(grad)) || any(is.infinite(grad))) {            cat("WARNING: NaN or Inf values detected in gradient at phase",                 m, "\n")        }        best <- model$env$last.par.best        model$report()    }    cat("Final Phase\n")    to_fit <- params[!is.na(params$priority) & params$import_type ==         "PARAMETER", ]$parameter    map <- generate_map(to_fit)    parameters <- model$env$parList(fit$par)    model <- MakeADFun(data_in, parameters, DLL = "model", silent = TRUE,         map = map)    cat("Initial parameter values for final phase:\n")    print(model$par)    fit <- nlminb(model$par, model$fn, model$gr)    cat("Final parameter values for final phase:\n")    print(fit$par)    cat("Convergence message:", fit$message, "\n")    cat("Number of iterations:", fit$iterations, "\n")    cat("Objective function value:", fit$objective, "\n")    if (any(is.nan(fit$par)) || any(is.infinite(fit$par))) {        cat("WARNING: NaN or Inf values detected in parameters at final phase\n")    }    cat("Gradient at solution for final phase:\n")    grad <- model$gr(fit$par)    print(grad)    if (any(is.nan(grad)) || any(is.infinite(grad))) {        cat("WARNING: NaN or Inf values detected in gradient at final phase\n")    }    best <- model$env$last.par.best}, error = function(e) {    error_message <- paste("Error in model phases:", conditionMessage(e))    cat(error_message, "\n")    stop(error_message)})
+An irrecoverable exception occurred. R is aborting now ...
+Segmentation fault (core dumped)[0m
+[91mR script failed with return code 139[0m
+Fixing broken model iteration: 3
+POPULATIONS/POPULATION_0013/INDIVIDUAL_XW9UL7O3/model.cpp                                                                                                                                                              
+
+                                                                                                                                                                                                                       
+ <<<<<<< SEARCH                                                                                                                                                                                                        
+   cots_pred(0) = CppAD::CondExpGt(cots_dat(0), Type(1e-8), cots_dat(0), Type(1e-8)); // Initial COTS abundance (avoid zero/negative)                                                                                  
+   fast_pred(0) = CppAD::CondExpGt(fast_dat(0), Type(1e-8), fast_dat(0), Type(1e-8)); // Initial fast coral cover (avoid zero/negative)                                                                                
+   slow_pred(0) = CppAD::CondExpGt(slow_dat(0), Type(1e-8), slow_dat(0), Type(1e-8)); // Initial slow coral cover (avoid zero/negative)                                                                                
+ =======                                                                                                                                                                                                               
+   cots_pred(0) = (cots_dat(0) > Type(1e-8)) ? cots_dat(0) : Type(1e-8); // Initial COTS abundance (avoid zero/negative)                                                                                               
+   fast_pred(0) = (fast_dat(0) > Type(1e-8)) ? fast_dat(0) : Type(1e-8); // Initial fast coral cover (avoid zero/negative)                                                                                             
+   slow_pred(0) = (slow_dat(0) > Type(1e-8)) ? slow_dat(0) : Type(1e-8); // Initial slow coral cover (avoid zero/negative)                                                                                             
+ >>>>>>> REPLACE                                                                                                                                                                                                       
+                                                                                                                                                                                                                       
+
+Tokens: 21k sent, 331 received. Cost: $0.04 message, $0.21 session.
+Committing POPULATIONS/POPULATION_0013/INDIVIDUAL_XW9UL7O3/model.cpp before applying edits.
+Unable to add /home/spi085/Documents/_Projects/SCCP-QuantModelling/POPULATIONS/POPULATION_0013/INDIVIDUAL_XW9UL7O3/model.cpp: Cmd('git') failed due to: exit code(1)
+  cmdline: git add /home/spi085/Documents/_Projects/SCCP-QuantModelling/POPULATIONS/POPULATION_0013/INDIVIDUAL_XW9UL7O3/model.cpp
+  stderr: 'The following paths are ignored by one of your .gitignore files:
+POPULATIONS
+hint: Use -f if you really want to add them.
+hint: Turn this message off by running
+hint: "git config advice.addIgnoredFile false"'
+Unable to commit: Cmd('git') failed due to: exit code(1)
+  cmdline: git commit -m feat: add model.cpp for INDIVIDUAL_XW9UL7O3 in POPULATION_0013 --no-verify -- /home/spi085/Documents/_Projects/SCCP-QuantModelling/POPULATIONS/POPULATION_0013/INDIVIDUAL_XW9UL7O3/model.cpp
+  stderr: 'error: pathspec '/home/spi085/Documents/_Projects/SCCP-QuantModelling/POPULATIONS/POPULATION_0013/INDIVIDUAL_XW9UL7O3/model.cpp' did not match any file(s) known to git'
+Applied edit to POPULATIONS/POPULATION_0013/INDIVIDUAL_XW9UL7O3/model.cpp
+Validating fixed model for data leakage...
+Opening file: POPULATIONS/POPULATION_0013/INDIVIDUAL_XW9UL7O3/model.cpp
+File read successfully
+TMB convention check: {'uses_tmb_header': True, 'uses_data_macros': True, 'uses_vector_type': True, 'uses_standard_report': True, 'uses_objective_function': True, 'uses_std_vector': False, 'uses_string_report': False}
+Extracting vectors...
+Found data vectors: {'sst_dat', 'slow_dat', 'Year', 'cotsimm_dat', 'cots_dat', 'fast_dat'}
+Found prediction vectors: {'fast_pred', 'cots_pred', 'slow_pred'}
+Found reported vectors: {'fast_pred', 'cots_pred', 'slow_pred'}
+Finding initial conditions...
+Found 3 initial conditions
+Finding time-stepping loop...
+Found loop from line 87 to 123
+Found response variables from Data/timeseries_data_COTS_response.csv: {'cots_dat', 'fast_dat', 'slow_dat'}
+[93mRunning model for individual...[0m
+[0mIndividual directory: POPULATIONS/POPULATION_0013/INDIVIDUAL_XW9UL7O3[0m
+[93mRemoved old compilation: model.o[0m
+[93mR script stdout:[0m
+[0mg++ -std=gnu++17 -I"/usr/share/R/include" -DNDEBUG -I"/home/spi085/R/x86_64-pc-linux-gnu-library/4.4/TMB/include" -I"/home/spi085/R/x86_64-pc-linux-gnu-library/4.4/RcppEigen/include"   -DTMB_EIGEN_DISABLE_WARNINGS   -DTMB_LIB_INIT=R_init_model  -DCPPAD_FRAMEWORK      -fpic  -O2  -c POPULATIONS/POPULATION_0013/INDIVIDUAL_XW9UL7O3/model.cpp -o POPULATIONS/POPULATION_0013/INDIVIDUAL_XW9UL7O3/model.o
+g++ -std=gnu++17 -shared -L/usr/lib/R/lib -Wl,-Bsymbolic-functions -flto=auto -ffat-lto-objects -Wl,-z,relro -o POPULATIONS/POPULATION_0013/INDIVIDUAL_XW9UL7O3/model.so POPULATIONS/POPULATION_0013/INDIVIDUAL_XW9UL7O3/model.o -L/usr/lib/R/lib -lR
+Starting model phases
+Number of phases: 3 
+Phase 1[0m
+[93mR script stderr:[0m
+[0mLoading required package: TMB
+Loading required package: jsonlite
+here() starts at /home/spi085/Documents/_Projects/SCCP-QuantModelling
+using C++ compiler: ‘g++ (Ubuntu 13.3.0-6ubuntu2~24.04) 13.3.0’
+
+ *** caught segfault ***
+address (nil), cause 'memory not mapped'
+
+Traceback:
+ 1: getParameterOrder(data, parameters, new.env(), DLL = DLL)
+ 2: MakeADFun(data_in, parameters, DLL = "model", silent = TRUE,     map = map)
+ 3: doTryCatch(return(expr), name, parentenv, handler)
+ 4: tryCatchOne(expr, names, parentenv, handlers[[1L]])
+ 5: tryCatchList(expr, classes, parentenv, handlers)
+ 6: tryCatch({    for (m in seq(1, n_phases)) {        cat("Phase", m, "\n")        to_fit <- params[params$priority == m & !is.na(params$priority) &             params$import_type == "PARAMETER", ]$parameter        map <- generate_map(to_fit)        if (exists("model")) {            parameters <- model$env$parList(fit$par)        }        model <- MakeADFun(data_in, parameters, DLL = "model",             silent = TRUE, map = map)        if (is.null(model)) {            stop("Failed to create model")        }        cat("Initial parameter values for phase", m, ":\n")        print(model$par)        fit <- nlminb(model$par, model$fn, model$gr)        if (is.null(fit)) {            stop("Failed to fit model")        }        cat("Final parameter values for phase", m, ":\n")        print(fit$par)        cat("Convergence message:", fit$message, "\n")        cat("Number of iterations:", fit$iterations, "\n")        cat("Objective function value:", fit$objective, "\n")        if (any(is.nan(fit$par)) || any(is.infinite(fit$par))) {            cat("WARNING: NaN or Inf values detected in parameters at phase",                 m, "\n")        }        cat("Gradient at solution for phase", m, ":\n")        grad <- model$gr(fit$par)        print(grad)        if (any(is.nan(grad)) || any(is.infinite(grad))) {            cat("WARNING: NaN or Inf values detected in gradient at phase",                 m, "\n")        }        best <- model$env$last.par.best        model$report()    }    cat("Final Phase\n")    to_fit <- params[!is.na(params$priority) & params$import_type ==         "PARAMETER", ]$parameter    map <- generate_map(to_fit)    parameters <- model$env$parList(fit$par)    model <- MakeADFun(data_in, parameters, DLL = "model", silent = TRUE,         map = map)    cat("Initial parameter values for final phase:\n")    print(model$par)    fit <- nlminb(model$par, model$fn, model$gr)    cat("Final parameter values for final phase:\n")    print(fit$par)    cat("Convergence message:", fit$message, "\n")    cat("Number of iterations:", fit$iterations, "\n")    cat("Objective function value:", fit$objective, "\n")    if (any(is.nan(fit$par)) || any(is.infinite(fit$par))) {        cat("WARNING: NaN or Inf values detected in parameters at final phase\n")    }    cat("Gradient at solution for final phase:\n")    grad <- model$gr(fit$par)    print(grad)    if (any(is.nan(grad)) || any(is.infinite(grad))) {        cat("WARNING: NaN or Inf values detected in gradient at final phase\n")    }    best <- model$env$last.par.best}, error = function(e) {    error_message <- paste("Error in model phases:", conditionMessage(e))    cat(error_message, "\n")    stop(error_message)})
+An irrecoverable exception occurred. R is aborting now ...
+Segmentation fault (core dumped)[0m
+[91mR script failed with return code 139[0m
+Fixing broken model iteration: 4
+POPULATIONS/POPULATION_0013/INDIVIDUAL_XW9UL7O3/model.cpp                                                                                                                                                              
+
+                                                                                                                                                                                                                       
+ <<<<<<< SEARCH                                                                                                                                                                                                        
+   for(int t=1; t<n; t++) {                                                                                                                                                                                            
+     // Defensive: ensure previous values are strictly positive (avoid NaN in log, division)                                                                                                                           
+     Type prev_cots = (cots_pred(t-1) > Type(1e-8)) ? cots_pred(t-1) : Type(1e-8);                                                                                                                                     
+     Type prev_fast = (fast_pred(t-1) > Type(1e-8)) ? fast_pred(t-1) : Type(1e-8);                                                                                                                                     
+     Type prev_slow = (slow_pred(t-1) > Type(1e-8)) ? slow_pred(t-1) : Type(1e-8);                                                                                                                                     
+                                                                                                                                                                                                                       
+     // 1. COTS predation on corals (Holling Type II functional response)                                                                                                                                              
+     Type pred_fast = alpha_fast * prev_cots * prev_fast / (prev_fast + Type(1.0) + Type(1e-8)); // predation on fast coral                                                                                            
+     Type pred_slow = alpha_slow * prev_cots * prev_slow / (prev_slow + Type(1.0) + Type(1e-8)); // predation on slow coral                                                                                            
+                                                                                                                                                                                                                       
+     // 2. COTS population dynamics (logistic + resource + SST + immigration)                                                                                                                                          
+     Type resource_term = (e_fast * pred_fast + e_slow * pred_slow); // resource assimilation                                                                                                                          
+     Type sst_effect = exp(beta_sst * (sst_dat(t-1) - Type(27.0))); // SST modifies growth (27C baseline)                                                                                                              
+     Type density_term = (Type(1.0) - prev_cots/K_cots); // logistic limitation                                                                                                                                        
+                                                                                                                                                                                                                       
+     // Outbreak threshold: smooth sigmoid on resource assimilation                                                                                                                                                    
+     Type outbreak_trigger = Type(1.0) / (Type(1.0) + exp(-10.0 * (resource_term - Type(0.05)))); // triggers when resource_term > 0.05                                                                                
+                                                                                                                                                                                                                       
+     Type cots_growth = r_cots * prev_cots * density_term * sst_effect * outbreak_trigger; // growth                                                                                                                   
+     Type cots_update = prev_cots + cots_growth + resource_term + cotsimm_dat(t-1); // update                                                                                                                          
+                                                                                                                                                                                                                       
+     // Prevent negative or zero COTS                                                                                                                                                                                  
+     cots_pred(t) = (cots_update > Type(1e-8)) ? cots_update : Type(1e-8);                                                                                                                                             
+                                                                                                                                                                                                                       
+     // 3. Fast coral dynamics (logistic growth - COTS predation)                                                                                                                                                      
+     Type fast_growth = r_fast * prev_fast * (Type(1.0) - prev_fast/K_fast);                                                                                                                                           
+     Type fast_update = prev_fast + fast_growth - pred_fast;                                                                                                                                                           
+                                                                                                                                                                                                                       
+     // Prevent negative or zero coral cover                                                                                                                                                                           
+     fast_pred(t) = (fast_update > Type(1e-8)) ? fast_update : Type(1e-8);                                                                                                                                             
+                                                                                                                                                                                                                       
+     // 4. Slow coral dynamics (logistic growth - COTS predation)                                                                                                                                                      
+     Type slow_growth = r_slow * prev_slow * (Type(1.0) - prev_slow/K_slow);                                                                                                                                           
+     Type slow_update = prev_slow + slow_growth - pred_slow;                                                                                                                                                           
+                                                                                                                                                                                                                       
+     slow_pred(t) = (slow_update > Type(1e-8)) ? slow_update : Type(1e-8);                                                                                                                                             
+   }                                                                                                                                                                                                                   
+ =======                                                                                                                                                                                                               
+   for(int t=1; t<n; t++) {                                                                                                                                                                                            
+     // Defensive: ensure previous values are strictly positive (avoid NaN in log, division)                                                                                                                           
+     Type prev_cots = CppAD::CondExpGt(cots_pred(t-1), Type(1e-8), cots_pred(t-1), Type(1e-8));                                                                                                                        
+     Type prev_fast = CppAD::CondExpGt(fast_pred(t-1), Type(1e-8), fast_pred(t-1), Type(1e-8));                                                                                                                        
+     Type prev_slow = CppAD::CondExpGt(slow_pred(t-1), Type(1e-8), slow_pred(t-1), Type(1e-8));                                                                                                                        
+                                                                                                                                                                                                                       
+     // 1. COTS predation on corals (Holling Type II functional response)                                                                                                                                              
+     Type pred_fast = alpha_fast * prev_cots * prev_fast / (prev_fast + Type(1.0) + Type(1e-8)); // predation on fast coral                                                                                            
+     Type pred_slow = alpha_slow * prev_cots * prev_slow / (prev_slow + Type(1.0) + Type(1e-8)); // predation on slow coral                                                                                            
+                                                                                                                                                                                                                       
+     // 2. COTS population dynamics (logistic + resource + SST + immigration)                                                                                                                                          
+     Type resource_term = (e_fast * pred_fast + e_slow * pred_slow); // resource assimilation                                                                                                                          
+     Type sst_effect = exp(beta_sst * (sst_dat(t-1) - Type(27.0))); // SST modifies growth (27C baseline)                                                                                                              
+     Type density_term = (Type(1.0) - prev_cots/K_cots); // logistic limitation                                                                                                                                        
+                                                                                                                                                                                                                       
+     // Outbreak threshold: smooth sigmoid on resource assimilation                                                                                                                                                    
+     Type outbreak_trigger = Type(1.0) / (Type(1.0) + exp(-10.0 * (resource_term - Type(0.05)))); // triggers when resource_term > 0.05                                                                                
+                                                                                                                                                                                                                       
+     Type cots_growth = r_cots * prev_cots * density_term * sst_effect * outbreak_trigger; // growth                                                                                                                   
+     Type cots_update = prev_cots + cots_growth + resource_term + cotsimm_dat(t-1); // update                                                                                                                          
+                                                                                                                                                                                                                       
+     // Prevent negative or zero COTS                                                                                                                                                                                  
+     cots_pred(t) = CppAD::CondExpGt(cots_update, Type(1e-8), cots_update, Type(1e-8));                                                                                                                                
+                                                                                                                                                                                                                       
+     // 3. Fast coral dynamics (logistic growth - COTS predation)                                                                                                                                                      
+     Type fast_growth = r_fast * prev_fast * (Type(1.0) - prev_fast/K_fast);                                                                                                                                           
+     Type fast_update = prev_fast + fast_growth - pred_fast;                                                                                                                                                           
+                                                                                                                                                                                                                       
+     // Prevent negative or zero coral cover                                                                                                                                                                           
+     fast_pred(t) = CppAD::CondExpGt(fast_update, Type(1e-8), fast_update, Type(1e-8));                                                                                                                                
+                                                                                                                                                                                                                       
+     // 4. Slow coral dynamics (logistic growth - COTS predation)                                                                                                                                                      
+     Type slow_growth = r_slow * prev_slow * (Type(1.0) - prev_slow/K_slow);                                                                                                                                           
+     Type slow_update = prev_slow + slow_growth - pred_slow;                                                                                                                                                           
+                                                                                                                                                                                                                       
+     slow_pred(t) = CppAD::CondExpGt(slow_update, Type(1e-8), slow_update, Type(1e-8));                                                                                                                                
+   }                                                                                                                                                                                                                   
+ >>>>>>> REPLACE                                                                                                                                                                                                       
+                                                                                                                                                                                                                       
+
+Tokens: 22k sent, 1.4k received. Cost: $0.06 message, $0.26 session.
+Committing POPULATIONS/POPULATION_0013/INDIVIDUAL_XW9UL7O3/model.cpp before applying edits.
+Unable to add /home/spi085/Documents/_Projects/SCCP-QuantModelling/POPULATIONS/POPULATION_0013/INDIVIDUAL_XW9UL7O3/model.cpp: Cmd('git') failed due to: exit code(1)
+  cmdline: git add /home/spi085/Documents/_Projects/SCCP-QuantModelling/POPULATIONS/POPULATION_0013/INDIVIDUAL_XW9UL7O3/model.cpp
+  stderr: 'The following paths are ignored by one of your .gitignore files:
+POPULATIONS
+hint: Use -f if you really want to add them.
+hint: Turn this message off by running
+hint: "git config advice.addIgnoredFile false"'
+Unable to commit: Cmd('git') failed due to: exit code(1)
+  cmdline: git commit -m feat: add model.cpp for INDIVIDUAL_XW9UL7O3 in POPULATION_0013 --no-verify -- /home/spi085/Documents/_Projects/SCCP-QuantModelling/POPULATIONS/POPULATION_0013/INDIVIDUAL_XW9UL7O3/model.cpp
+  stderr: 'error: pathspec '/home/spi085/Documents/_Projects/SCCP-QuantModelling/POPULATIONS/POPULATION_0013/INDIVIDUAL_XW9UL7O3/model.cpp' did not match any file(s) known to git'
+Applied edit to POPULATIONS/POPULATION_0013/INDIVIDUAL_XW9UL7O3/model.cpp
+Validating fixed model for data leakage...
+Opening file: POPULATIONS/POPULATION_0013/INDIVIDUAL_XW9UL7O3/model.cpp
+File read successfully
+TMB convention check: {'uses_tmb_header': True, 'uses_data_macros': True, 'uses_vector_type': True, 'uses_standard_report': True, 'uses_objective_function': True, 'uses_std_vector': False, 'uses_string_report': False}
+Extracting vectors...
+Found data vectors: {'sst_dat', 'slow_dat', 'Year', 'cotsimm_dat', 'cots_dat', 'fast_dat'}
+Found prediction vectors: {'fast_pred', 'cots_pred', 'slow_pred'}
+Found reported vectors: {'fast_pred', 'cots_pred', 'slow_pred'}
+Finding initial conditions...
+Found 3 initial conditions
+Finding time-stepping loop...
+Found loop from line 87 to 123
+Found response variables from Data/timeseries_data_COTS_response.csv: {'cots_dat', 'fast_dat', 'slow_dat'}
+[93mRunning model for individual...[0m
+[0mIndividual directory: POPULATIONS/POPULATION_0013/INDIVIDUAL_XW9UL7O3[0m
+[93mRemoved old compilation: model.o[0m
+[93mR script stdout:[0m
+[0mg++ -std=gnu++17 -I"/usr/share/R/include" -DNDEBUG -I"/home/spi085/R/x86_64-pc-linux-gnu-library/4.4/TMB/include" -I"/home/spi085/R/x86_64-pc-linux-gnu-library/4.4/RcppEigen/include"   -DTMB_EIGEN_DISABLE_WARNINGS   -DTMB_LIB_INIT=R_init_model  -DCPPAD_FRAMEWORK      -fpic  -O2  -c POPULATIONS/POPULATION_0013/INDIVIDUAL_XW9UL7O3/model.cpp -o POPULATIONS/POPULATION_0013/INDIVIDUAL_XW9UL7O3/model.o
+g++ -std=gnu++17 -shared -L/usr/lib/R/lib -Wl,-Bsymbolic-functions -flto=auto -ffat-lto-objects -Wl,-z,relro -o POPULATIONS/POPULATION_0013/INDIVIDUAL_XW9UL7O3/model.so POPULATIONS/POPULATION_0013/INDIVIDUAL_XW9UL7O3/model.o -L/usr/lib/R/lib -lR
+Starting model phases
+Number of phases: 3 
+Phase 1[0m
+[93mR script stderr:[0m
+[0mLoading required package: TMB
+Loading required package: jsonlite
+here() starts at /home/spi085/Documents/_Projects/SCCP-QuantModelling
+using C++ compiler: ‘g++ (Ubuntu 13.3.0-6ubuntu2~24.04) 13.3.0’
+
+ *** caught segfault ***
+address (nil), cause 'memory not mapped'
+
+Traceback:
+ 1: getParameterOrder(data, parameters, new.env(), DLL = DLL)
+ 2: MakeADFun(data_in, parameters, DLL = "model", silent = TRUE,     map = map)
+ 3: doTryCatch(return(expr), name, parentenv, handler)
+ 4: tryCatchOne(expr, names, parentenv, handlers[[1L]])
+ 5: tryCatchList(expr, classes, parentenv, handlers)
+ 6: tryCatch({    for (m in seq(1, n_phases)) {        cat("Phase", m, "\n")        to_fit <- params[params$priority == m & !is.na(params$priority) &             params$import_type == "PARAMETER", ]$parameter        map <- generate_map(to_fit)        if (exists("model")) {            parameters <- model$env$parList(fit$par)        }        model <- MakeADFun(data_in, parameters, DLL = "model",             silent = TRUE, map = map)        if (is.null(model)) {            stop("Failed to create model")        }        cat("Initial parameter values for phase", m, ":\n")        print(model$par)        fit <- nlminb(model$par, model$fn, model$gr)        if (is.null(fit)) {            stop("Failed to fit model")        }        cat("Final parameter values for phase", m, ":\n")        print(fit$par)        cat("Convergence message:", fit$message, "\n")        cat("Number of iterations:", fit$iterations, "\n")        cat("Objective function value:", fit$objective, "\n")        if (any(is.nan(fit$par)) || any(is.infinite(fit$par))) {            cat("WARNING: NaN or Inf values detected in parameters at phase",                 m, "\n")        }        cat("Gradient at solution for phase", m, ":\n")        grad <- model$gr(fit$par)        print(grad)        if (any(is.nan(grad)) || any(is.infinite(grad))) {            cat("WARNING: NaN or Inf values detected in gradient at phase",                 m, "\n")        }        best <- model$env$last.par.best        model$report()    }    cat("Final Phase\n")    to_fit <- params[!is.na(params$priority) & params$import_type ==         "PARAMETER", ]$parameter    map <- generate_map(to_fit)    parameters <- model$env$parList(fit$par)    model <- MakeADFun(data_in, parameters, DLL = "model", silent = TRUE,         map = map)    cat("Initial parameter values for final phase:\n")    print(model$par)    fit <- nlminb(model$par, model$fn, model$gr)    cat("Final parameter values for final phase:\n")    print(fit$par)    cat("Convergence message:", fit$message, "\n")    cat("Number of iterations:", fit$iterations, "\n")    cat("Objective function value:", fit$objective, "\n")    if (any(is.nan(fit$par)) || any(is.infinite(fit$par))) {        cat("WARNING: NaN or Inf values detected in parameters at final phase\n")    }    cat("Gradient at solution for final phase:\n")    grad <- model$gr(fit$par)    print(grad)    if (any(is.nan(grad)) || any(is.infinite(grad))) {        cat("WARNING: NaN or Inf values detected in gradient at final phase\n")    }    best <- model$env$last.par.best}, error = function(e) {    error_message <- paste("Error in model phases:", conditionMessage(e))    cat(error_message, "\n")    stop(error_message)})
+An irrecoverable exception occurred. R is aborting now ...
+Segmentation fault (core dumped)[0m
+[91mR script failed with return code 139[0m
+Maximum sub-iterations reached for POPULATIONS/POPULATION_0013/INDIVIDUAL_XW9UL7O3. The model could not be successfully run after 5 attempts.
