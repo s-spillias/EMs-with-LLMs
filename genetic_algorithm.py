@@ -22,7 +22,7 @@ load_dotenv()
 # Set up logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-def initialize_population(population_dir, n_individuals, project_topic, response_file, forcing_file, report_file, template_file, temperature, max_sub_iterations, llm_choice, train_test_split):
+def initialize_population(population_dir, n_individuals, project_topic, response_file, forcing_file, report_file, temperature, max_sub_iterations, llm_choice, train_test_split):
     logging.info("Initializing population")
     initial_individuals = [generate_individual_id() for _ in range(n_individuals)]
     logging.info(f"Initial individuals: {initial_individuals}")
@@ -30,7 +30,7 @@ def initialize_population(population_dir, n_individuals, project_topic, response
     # Run make_model in parallel and save output to files
     with multiprocessing.Pool(processes=n_individuals) as pool:
         pool.starmap(run_make_model_with_file_output, 
-                     [(population_dir, individual, project_topic, response_file, forcing_file, report_file, template_file, temperature, max_sub_iterations, llm_choice, train_test_split) for individual in initial_individuals])
+                     [(population_dir, individual, project_topic, response_file, forcing_file, report_file, temperature, max_sub_iterations, llm_choice, train_test_split) for individual in initial_individuals])
     
     return initial_individuals
 
@@ -64,7 +64,6 @@ PARAM_SPECS = {
     'project_topic': {'type': str},
     'response_file': {'type': str, 'is_path': True},
     'forcing_file': {'type': str, 'is_path': True, 'optional': True},
-    'template_file': {'type': str, 'is_path': True},
     'temperature': {'type': float, 'min': 0.0, 'max': 1.0},
     'max_sub_iterations': {'type': int, 'min': 1},
     'convergence_threshold': {'type': float, 'min': 0.0},
@@ -158,7 +157,6 @@ def main():
         'project_topic': 'project_topic',
         'response_file': 'response_file',
         'forcing_file': 'forcing_file',
-        'template_file': 'template_file',
         'temperature': 'temperature',
         'max_sub_iterations': 'max_sub_iterations',
         'convergence_threshold': 'convergence_threshold',
@@ -187,7 +185,6 @@ def main():
     project_topic = config['project_topic']
     response_file = config['response_file']
     forcing_file = config['forcing_file']
-    template_file = config['template_file']
     temperature = config['temperature']
     max_sub_iterations = config['max_sub_iterations']
     convergence_threshold = config['convergence_threshold']
@@ -239,7 +236,6 @@ def main():
             "response_file": response_file,
             "forcing_file": forcing_file,
             "report_file": report_file,
-            "template_file": template_file,
             "temperature": temperature,
             "max_sub_iterations": max_sub_iterations,
             "convergence_threshold": convergence_threshold,
@@ -264,7 +260,7 @@ def main():
     # Initialize population if there are no current best performers
     if not current_best_performers:
         logging.info("Initializing population")
-        individuals = initialize_population(population_dir, n_individuals, project_topic, response_file, forcing_file, report_file, template_file, temperature, max_sub_iterations, llm_choice, train_test_split)
+        individuals = initialize_population(population_dir, n_individuals, project_topic, response_file, forcing_file, report_file, temperature, max_sub_iterations, llm_choice, train_test_split)
         best_individuals, culled_individuals, broken_individuals = evolve_population(population_dir, individuals, n_best)
         
         # Move culled and broken individuals
@@ -316,7 +312,7 @@ def main():
         time.sleep(0.1)
         
         # Create new generation
-        new_individuals = create_new_generation(population_dir, [ind['individual'] for ind in current_best_performers], n_individuals, project_topic, response_file, forcing_file, report_file, template_file, temperature, max_sub_iterations, llm_choice, train_test_split)
+        new_individuals = create_new_generation(population_dir, [ind['individual'] for ind in current_best_performers], n_individuals, project_topic, response_file, forcing_file, report_file, temperature, max_sub_iterations, llm_choice, train_test_split)
         logging.info(f"\033[93mCreated {len(new_individuals)} new individuals\033[0m")
         
         if not new_individuals:

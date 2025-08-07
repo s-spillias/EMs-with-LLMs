@@ -306,7 +306,7 @@ def handle_successful_run(individual_dir, project_topic, objective_value):
     get_params(individual_dir)
     return "SUCCESS", objective_value
 
-def process_individual(individual_dir, project_topic, response_file, forcing_file, report_file, template_file, temperature=0.1, max_sub_iterations=5, llm_choice="anthropic_sonnet", train_test_split=1.0):
+def process_individual(individual_dir, project_topic, response_file, forcing_file, report_file, temperature=0.1, max_sub_iterations=5, llm_choice="anthropic_sonnet", train_test_split=1.0):
     os.makedirs(individual_dir, exist_ok=True)
 
     model_file = os.path.join(individual_dir, 'model.cpp')
@@ -337,9 +337,9 @@ def process_individual(individual_dir, project_topic, response_file, forcing_fil
     if not os.path.exists(model_file):
         # Initialize the individual if it's new
         template_content = ""
-        if template_file and template_file.strip():
-            with open(template_file, 'r') as file:
-                template_content = file.read()
+        # if template_file and template_file.strip():
+        #     with open(template_file, 'r') as file:
+        #         template_content = file.read()
         random_string = generate_random_string()
         prompt_model = (  
             "You are a leading expert in constructing dynamic ecosystem models. You always use robust ecological theory to construct your models, which will be used for predicting future ecosystem states given data on initial conditions. Please create a Template Model Builder model for the following topic:"

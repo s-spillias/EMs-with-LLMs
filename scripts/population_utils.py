@@ -82,7 +82,7 @@ def evolve_population(population_dir, all_individuals, n_best):
     return best_individuals, culled_individuals, broken_individuals
 
 def spawn_or_initialize_individual(args):
-    population_dir, parent, project_topic, response_file, forcing_file, report_file, template_file, temperature, max_sub_iterations, llm_choice, train_test_split = args
+    population_dir, parent, project_topic, response_file, forcing_file, report_file, temperature, max_sub_iterations, llm_choice, train_test_split = args
     individual_id = generate_individual_id()
     
     try:
@@ -93,7 +93,7 @@ def spawn_or_initialize_individual(args):
         create_individual_metadata(os.path.join(population_dir, individual_id), parent=parent)
         
         status, objective_value = run_make_model_with_file_output(
-            population_dir, individual_id, project_topic, response_file, forcing_file, report_file, template_file, temperature, max_sub_iterations, llm_choice, train_test_split
+            population_dir, individual_id, project_topic, response_file, forcing_file, report_file, temperature, max_sub_iterations, llm_choice, train_test_split
         )
         
         logging.info(f"Created individual {individual_id} with parent {parent} and objective value {objective_value}")
@@ -102,18 +102,18 @@ def spawn_or_initialize_individual(args):
         logging.error(f"Error in spawn_or_initialize_individual for {individual_id}: {str(e)}")
         return None
 
-def create_new_generation(population_dir, best_individuals, n_individuals, project_topic, response_file, forcing_file, report_file, template_file, temperature, max_sub_iterations, llm_choice, train_test_split):
+def create_new_generation(population_dir, best_individuals, n_individuals, project_topic, response_file, forcing_file, report_file, temperature, max_sub_iterations, llm_choice, train_test_split):
     logging.info(f"Creating new generation with {len(best_individuals)} best individuals and {n_individuals} total individuals")
     # Prepare arguments for parallel processing
     args_list = []
     
     # First, create one child for each parent
     for parent in best_individuals:
-        args_list.append((population_dir, parent, project_topic, response_file, forcing_file, report_file, template_file, temperature, max_sub_iterations, llm_choice, train_test_split))
+        args_list.append((population_dir, parent, project_topic, response_file, forcing_file, report_file, temperature, max_sub_iterations, llm_choice, train_test_split))
     
     # Then, fill the remaining slots with new random individuals
     for _ in range(n_individuals - len(best_individuals)):
-        args_list.append((population_dir, None, project_topic, response_file, forcing_file, report_file, template_file, temperature, max_sub_iterations, llm_choice, train_test_split))
+        args_list.append((population_dir, None, project_topic, response_file, forcing_file, report_file, temperature, max_sub_iterations, llm_choice, train_test_split))
     
     # Spawn offspring or initialize new individuals in parallel
     new_individuals = []

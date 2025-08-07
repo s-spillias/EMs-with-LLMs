@@ -47,7 +47,7 @@ def evaluate_population(population_dir, individuals):
     
     return evaluations, broken_individuals
 
-def run_make_model_with_file_output(population_dir, individual_id, project_topic, response_file, forcing_file=None, report_file=None, template_file=None, temperature=0.1, max_sub_iterations=5, llm_choice='anthropic_sonnet', train_test_split=1.0, parent=None):
+def run_make_model_with_file_output(population_dir, individual_id, project_topic, response_file, forcing_file=None, report_file=None, temperature=0.1, max_sub_iterations=5, llm_choice='anthropic_sonnet', train_test_split=1.0, parent=None):
     individual_dir = os.path.join(population_dir, individual_id)
     os.makedirs(individual_dir, exist_ok=True)
     create_individual_metadata(individual_dir, parent=parent)
@@ -57,7 +57,7 @@ def run_make_model_with_file_output(population_dir, individual_id, project_topic
         with open(output_file, 'w', encoding='utf-8') as f:
             with redirect_stdout(f), redirect_stderr(f):
                 #                 # First, process the individual
-                status, objective_value = process_individual(individual_dir, project_topic, response_file, forcing_file, report_file, template_file, temperature, max_sub_iterations, llm_choice, train_test_split)
+                status, objective_value = process_individual(individual_dir, project_topic, response_file, forcing_file, report_file, temperature, max_sub_iterations, llm_choice, train_test_split)
                 # # Use dummy process instead of real process
                 # status, objective_value = dummy_process_individual(
                 #     individual_dir, 
