@@ -99,23 +99,23 @@ Type objective_function<Type>::operator() ()
   
   // Likelihood for nutrient observations (lognormal distribution)
   for(int i = 0; i < n_obs; i++) {
-    if(N_dat(i) > Type(0.0) && N_pred(i) > Type(0.0)) {
-      nll -= dnorm(log(N_dat(i)), log(N_pred(i)), sigma_N, true);
-    }
+    Type N_obs = N_dat(i) + Type(1e-8);  // Add small constant to prevent log(0)
+    Type N_model = N_pred(i) + Type(1e-8); // Add small constant to prevent log(0)
+    nll -= dnorm(log(N_obs), log(N_model), sigma_N, true);
   }
   
   // Likelihood for phytoplankton observations (lognormal distribution)
   for(int i = 0; i < n_obs; i++) {
-    if(P_dat(i) > Type(0.0) && P_pred(i) > Type(0.0)) {
-      nll -= dnorm(log(P_dat(i)), log(P_pred(i)), sigma_P, true);
-    }
+    Type P_obs = P_dat(i) + Type(1e-8);  // Add small constant to prevent log(0)
+    Type P_model = P_pred(i) + Type(1e-8); // Add small constant to prevent log(0)
+    nll -= dnorm(log(P_obs), log(P_model), sigma_P, true);
   }
   
   // Likelihood for zooplankton observations (lognormal distribution)
   for(int i = 0; i < n_obs; i++) {
-    if(Z_dat(i) > Type(0.0) && Z_pred(i) > Type(0.0)) {
-      nll -= dnorm(log(Z_dat(i)), log(Z_pred(i)), sigma_Z, true);
-    }
+    Type Z_obs = Z_dat(i) + Type(1e-8);  // Add small constant to prevent log(0)
+    Type Z_model = Z_pred(i) + Type(1e-8); // Add small constant to prevent log(0)
+    nll -= dnorm(log(Z_obs), log(Z_model), sigma_Z, true);
   }
   
   // Soft biological constraints using penalty functions
