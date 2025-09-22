@@ -103,6 +103,7 @@ Type objective_function<Type>::operator() ()
     nll -= dnorm(log(Z_dat(t)), log((Z_pred(t) + eps) > eps ? (Z_pred(t) + eps) : eps), Type(0.1), true);
   }
   
+#ifdef SIMULATE
   // Simulate observations from predictions (using a lognormal distribution)
   SIMULATE {
     N_dat(0) = exp(rnorm(log(N_pred(0) + eps), 0.1));
@@ -114,6 +115,7 @@ Type objective_function<Type>::operator() ()
       Z_dat(t) = exp(rnorm(log(Z_pred(t) + eps), 0.1));
     }
   }
+#endif
   REPORT(N_pred);
   REPORT(P_pred);
   REPORT(Z_pred);
