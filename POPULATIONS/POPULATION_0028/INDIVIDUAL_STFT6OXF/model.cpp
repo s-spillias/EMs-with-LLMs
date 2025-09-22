@@ -103,16 +103,15 @@ Type objective_function<Type>::operator() ()
     nll -= dnorm(log(Z_dat(t)), log((Z_pred(t) + eps) > eps ? (Z_pred(t) + eps) : eps), Type(0.1), true);
   }
   
-  // Reporting predicted state variables for further analysis
+  // Simulate observations from predictions (using a lognormal distribution)
   SIMULATE {
-    // Preserve initial conditions and simulate the remaining time points
-    N_dat(0) = N_pred(0);
-    P_dat(0) = P_pred(0);
-    Z_dat(0) = Z_pred(0);
+    N_dat(0) = exp(rnorm(log(N_pred(0) + eps), 0.1));
+    P_dat(0) = exp(rnorm(log(P_pred(0) + eps), 0.1));
+    Z_dat(0) = exp(rnorm(log(Z_pred(0) + eps), 0.1));
     for(int t = 1; t < n; t++){
-      N_dat(t) = N_pred(t);
-      P_dat(t) = P_pred(t);
-      Z_dat(t) = Z_pred(t);
+      N_dat(t) = exp(rnorm(log(N_pred(t) + eps), 0.1));
+      P_dat(t) = exp(rnorm(log(P_pred(t) + eps), 0.1));
+      Z_dat(t) = exp(rnorm(log(Z_pred(t) + eps), 0.1));
     }
   }
   REPORT(N_pred);
