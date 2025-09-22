@@ -97,7 +97,7 @@ Type objective_function<Type>::operator() ()
 
   // Likelihood calculation using lognormal error distributions
   Type nll = 0.0;
-  for(int t = 1; t < n; t++){
+  for(int t = 0; t < n; t++){
     nll -= dlnorm(N_dat(t), log(N_pred(t) + eps), sd_N, true);
     nll -= dlnorm(P_dat(t), log(P_pred(t) + eps), sd_P, true);
     nll -= dlnorm(Z_dat(t), log(Z_pred(t) + eps), sd_Z, true);
