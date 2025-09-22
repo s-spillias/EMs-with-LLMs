@@ -55,9 +55,9 @@ Type objective_function<Type>::operator() ()
   
   // Time integration using Euler's method, ensuring predictions use only past values
   for(int t = 1; t < n; t++){
-    // Equation 1: Nutrient uptake (Michaelis-Menten form)
-    // U = v_N * N_pred(t-1) / (K_N + N_pred(t-1) + eps)
-    Type U = v_N * I_L * N_pred(t-1) / (K_N + N_pred(t-1) + eps);
+    // Equation 1: Nutrient uptake (Michaelis-Menten form) with non-linear uptake exponent p_N
+    // U = v_N * I_L * pow(N_pred(t-1), p_N) / (K_N + pow(N_pred(t-1), p_N) + eps)
+    Type U = v_N * I_L * pow(N_pred(t-1), p_N) / (K_N + pow(N_pred(t-1), p_N) + eps);
     
     // Equation 2: Phytoplankton growth, grazing, and mortality
     Type growth_P = eps_P * U * P_pred(t-1) * exp(-alpha * P_pred(t-1)); // Growth contribution, including self-shading effect
