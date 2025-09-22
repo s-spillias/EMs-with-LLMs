@@ -91,8 +91,7 @@ Type objective_function<Type>::operator() ()
    }
 
    // REPORT predicted time series for later analysis:
-   }
-   
+      
    // Compute likelihood separately (using predictions computed above) to avoid data leakage
    for (int t = 1; t < n; t++){
       nll -= dlnorm(N_dat(t), log(N_pred(t)), max(sd_N, Type(1e-3)), true);
