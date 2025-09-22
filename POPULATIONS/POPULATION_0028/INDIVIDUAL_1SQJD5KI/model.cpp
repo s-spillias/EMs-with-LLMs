@@ -56,6 +56,15 @@ Type objective_function<Type>::operator() ()
   P_pred(0) = P_dat(0);
   Z_pred(0) = Z_dat(0);
   
+  vector<Type> temp_used(n);
+  if(temp.size() == 0){
+    for(int i = 0; i < n; i++){
+      temp_used(i) = T_ref;
+    }
+  } else {
+    temp_used = temp;
+  }
+  
   Type nll = 0.0;         // Negative log-likelihood accumulator
   Type eps = Type(1e-8);  // Small constant for numerical stability
   
@@ -76,7 +85,7 @@ Type objective_function<Type>::operator() ()
     
     // Equation 4: Nutrient recycling and uptake with saturating recycling efficiency modified by temperature
     // dN/dt = - U * P_pred(t-1) + r * temp_factor * (P_pred(t-1) + Z_pred(t-1))/(1 + beta*(P_pred(t-1) + Z_pred(t-1)))
-    Type temp_factor = pow(Q10, (temp(t-1) - T_ref)/Type(10));
+    Type temp_factor = pow(Q10, (temp_used(t-1) - T_ref)/Type(10));
     Type dN = - U * P_pred(t-1) + r * temp_factor * (P_pred(t-1) + Z_pred(t-1))/(1 + beta*(P_pred(t-1) + Z_pred(t-1)));
     
     // Use time step difference (dt) for integration
