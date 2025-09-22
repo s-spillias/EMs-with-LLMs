@@ -45,9 +45,9 @@ Type objective_function<Type>::operator() ()
   vector<Type> Z_pred(n_obs);           // Predicted zooplankton concentration
   
   // Set initial conditions from first observation with minimum bounds
-  N_pred(0) = fmax(N_dat(0), Type(1e-6)); // Initial nutrient concentration
-  P_pred(0) = fmax(P_dat(0), Type(1e-6)); // Initial phytoplankton concentration
-  Z_pred(0) = fmax(Z_dat(0), Type(1e-6)); // Initial zooplankton concentration
+  N_pred(0) = N_dat(0) + Type(1e-6);   // Initial nutrient concentration
+  P_pred(0) = P_dat(0) + Type(1e-6);   // Initial phytoplankton concentration
+  Z_pred(0) = Z_dat(0) + Type(1e-6);   // Initial zooplankton concentration
   
   // Numerical integration using Euler method
   for(int i = 1; i < n_obs; i++) {
@@ -59,9 +59,9 @@ Type objective_function<Type>::operator() ()
     Type Z_prev = Z_pred(i-1);          // Previous zooplankton concentration
     
     // Ensure minimum values for numerical stability
-    N_prev = fmax(N_prev, Type(1e-6));  // Numerical stability for nutrients
-    P_prev = fmax(P_prev, Type(1e-6));  // Numerical stability for phytoplankton
-    Z_prev = fmax(Z_prev, Type(1e-6));  // Numerical stability for zooplankton
+    N_prev = N_prev + Type(1e-8);       // Numerical stability for nutrients
+    P_prev = P_prev + Type(1e-8);       // Numerical stability for phytoplankton
+    Z_prev = Z_prev + Type(1e-8);       // Numerical stability for zooplankton
     
     // Ecological process rates
     Type nutrient_limitation = N_prev / (K + N_prev); // Michaelis-Menten nutrient uptake
@@ -85,10 +85,10 @@ Type objective_function<Type>::operator() ()
     P_pred(i) = P_prev + dt * dP_dt;    // Update phytoplankton concentration
     Z_pred(i) = Z_prev + dt * dZ_dt;    // Update zooplankton concentration
     
-    // Ensure non-negative concentrations with minimum bounds
-    N_pred(i) = fmax(N_pred(i), Type(1e-6)); // Prevent negative nutrients
-    P_pred(i) = fmax(P_pred(i), Type(1e-6)); // Prevent negative phytoplankton
-    Z_pred(i) = fmax(Z_pred(i), Type(1e-6)); // Prevent negative zooplankton
+    // Ensure non-negative concentrations using smooth lower bounds
+    N_pred(i) = N_pred(i) + Type(1e-8); // Prevent negative nutrients
+    P_pred(i) = P_pred(i) + Type(1e-8); // Prevent negative phytoplankton
+    Z_pred(i) = Z_pred(i) + Type(1e-8); // Prevent negative zooplankton
   }
   
   // Calculate negative log-likelihood
@@ -97,21 +97,21 @@ Type objective_function<Type>::operator() ()
   // Likelihood for nutrient observations (normal distribution on log scale)
   for(int i = 0; i < n_obs; i++) {
     Type pred_log = log(N_pred(i));     // Log predicted nutrients
-    Type obs_log = log(fmax(N_dat(i), Type(1e-6))); // Log observed nutrients
+    Type obs_log = log(N_dat(i) + Type(1e-8)); // Log observed nutrients
     nll -= dnorm(obs_log, pred_log, sigma_N, true); // Lognormal likelihood for nutrients
   }
   
   // Likelihood for phytoplankton observations (normal distribution on log scale)
   for(int i = 0; i < n_obs; i++) {
     Type pred_log = log(P_pred(i));     // Log predicted phytoplankton
-    Type obs_log = log(fmax(P_dat(i), Type(1e-6))); // Log observed phytoplankton
+    Type obs_log = log(P_dat(i) + Type(1e-8)); // Log observed phytoplankton
     nll -= dnorm(obs_log, pred_log, sigma_P, true); // Lognormal likelihood for phytoplankton
   }
   
   // Likelihood for zooplankton observations (normal distribution on log scale)
   for(int i = 0; i < n_obs; i++) {
     Type pred_log = log(Z_pred(i));     // Log predicted zooplankton
-    Type obs_log = log(fmax(Z_dat(i), Type(1e-6))); // Log observed zooplankton
+    Type obs_log = log(Z_dat(i) + Type(1e-8)); // Log observed zooplankton
     nll -= dnorm(obs_log, pred_log, sigma_Z, true); // Lognormal likelihood for zooplankton
   }
   
@@ -130,8 +130,8 @@ Type objective_function<Type>::operator() ()
   
   nll += penalty;                       // Add penalties to objective function
   
-  // Check for numerical issues
-  if(!isfinite(asDouble(nll))) {
+  // Check for numerical issues and return large finite value if needed
+  if(CppAD::isnan(nll) || CppAD::isinf(nll)) {
     nll = Type(1e10);                   // Return large finite value if NaN/Inf
   }
   
