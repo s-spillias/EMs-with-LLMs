@@ -33,9 +33,9 @@ Type objective_function<Type>::operator() ()
   Type m_z = exp(log_m_z);              // Zooplankton mortality rate (day^-1)
   Type d = Type(1.0) / (Type(1.0) + exp(-log_d)); // Recycling efficiency (0-1)
   Type N_in = exp(log_N_in);            // External nutrient input (g C m^-3 day^-1)
-  Type sigma_N = exp(log_sigma_N) + Type(1e-6); // Observation error for N
-  Type sigma_P = exp(log_sigma_P) + Type(1e-6); // Observation error for P
-  Type sigma_Z = exp(log_sigma_Z) + Type(1e-6); // Observation error for Z
+  Type sigma_N = exp(log_sigma_N) + Type(1e-4); // Observation error for N
+  Type sigma_P = exp(log_sigma_P) + Type(1e-4); // Observation error for P
+  Type sigma_Z = exp(log_sigma_Z) + Type(1e-4); // Observation error for Z
   
   int n_obs = Time.size();              // Number of observations
   
@@ -44,10 +44,10 @@ Type objective_function<Type>::operator() ()
   vector<Type> P_pred(n_obs);           // Predicted phytoplankton concentration
   vector<Type> Z_pred(n_obs);           // Predicted zooplankton concentration
   
-  // Set initial conditions from first observation
-  N_pred(0) = N_dat(0);                 // Initial nutrient concentration
-  P_pred(0) = P_dat(0);                 // Initial phytoplankton concentration
-  Z_pred(0) = Z_dat(0);                 // Initial zooplankton concentration
+  // Set initial conditions from first observation with minimum bounds
+  N_pred(0) = fmax(N_dat(0), Type(1e-6)); // Initial nutrient concentration
+  P_pred(0) = fmax(P_dat(0), Type(1e-6)); // Initial phytoplankton concentration
+  Z_pred(0) = fmax(Z_dat(0), Type(1e-6)); // Initial zooplankton concentration
   
   // Numerical integration using Euler method
   for(int i = 1; i < n_obs; i++) {
@@ -58,10 +58,10 @@ Type objective_function<Type>::operator() ()
     Type P_prev = P_pred(i-1);          // Previous phytoplankton concentration  
     Type Z_prev = Z_pred(i-1);          // Previous zooplankton concentration
     
-    // Add small constants to prevent division by zero
-    N_prev = N_prev + Type(1e-8);       // Numerical stability for nutrients
-    P_prev = P_prev + Type(1e-8);       // Numerical stability for phytoplankton
-    Z_prev = Z_prev + Type(1e-8);       // Numerical stability for zooplankton
+    // Ensure minimum values for numerical stability
+    N_prev = fmax(N_prev, Type(1e-6));  // Numerical stability for nutrients
+    P_prev = fmax(P_prev, Type(1e-6));  // Numerical stability for phytoplankton
+    Z_prev = fmax(Z_prev, Type(1e-6));  // Numerical stability for zooplankton
     
     // Ecological process rates
     Type nutrient_limitation = N_prev / (K + N_prev); // Michaelis-Menten nutrient uptake
@@ -85,33 +85,33 @@ Type objective_function<Type>::operator() ()
     P_pred(i) = P_prev + dt * dP_dt;    // Update phytoplankton concentration
     Z_pred(i) = Z_prev + dt * dZ_dt;    // Update zooplankton concentration
     
-    // Ensure non-negative concentrations using smooth approximation
-    N_pred(i) = CppAD::CondExpGt(N_pred(i), Type(1e-8), N_pred(i), Type(1e-8)); // Prevent negative nutrients
-    P_pred(i) = CppAD::CondExpGt(P_pred(i), Type(1e-8), P_pred(i), Type(1e-8)); // Prevent negative phytoplankton
-    Z_pred(i) = CppAD::CondExpGt(Z_pred(i), Type(1e-8), Z_pred(i), Type(1e-8)); // Prevent negative zooplankton
+    // Ensure non-negative concentrations with minimum bounds
+    N_pred(i) = fmax(N_pred(i), Type(1e-6)); // Prevent negative nutrients
+    P_pred(i) = fmax(P_pred(i), Type(1e-6)); // Prevent negative phytoplankton
+    Z_pred(i) = fmax(Z_pred(i), Type(1e-6)); // Prevent negative zooplankton
   }
   
   // Calculate negative log-likelihood
   Type nll = Type(0.0);                 // Initialize negative log-likelihood
   
-  // Likelihood for nutrient observations (lognormal distribution)
+  // Likelihood for nutrient observations (normal distribution on log scale)
   for(int i = 0; i < n_obs; i++) {
-    Type pred_log = log(N_pred(i) + Type(1e-8)); // Log predicted nutrients
-    Type obs_log = log(N_dat(i) + Type(1e-8));   // Log observed nutrients
+    Type pred_log = log(N_pred(i));     // Log predicted nutrients
+    Type obs_log = log(fmax(N_dat(i), Type(1e-6))); // Log observed nutrients
     nll -= dnorm(obs_log, pred_log, sigma_N, true); // Lognormal likelihood for nutrients
   }
   
-  // Likelihood for phytoplankton observations (lognormal distribution)
+  // Likelihood for phytoplankton observations (normal distribution on log scale)
   for(int i = 0; i < n_obs; i++) {
-    Type pred_log = log(P_pred(i) + Type(1e-8)); // Log predicted phytoplankton
-    Type obs_log = log(P_dat(i) + Type(1e-8));   // Log observed phytoplankton
+    Type pred_log = log(P_pred(i));     // Log predicted phytoplankton
+    Type obs_log = log(fmax(P_dat(i), Type(1e-6))); // Log observed phytoplankton
     nll -= dnorm(obs_log, pred_log, sigma_P, true); // Lognormal likelihood for phytoplankton
   }
   
-  // Likelihood for zooplankton observations (lognormal distribution)
+  // Likelihood for zooplankton observations (normal distribution on log scale)
   for(int i = 0; i < n_obs; i++) {
-    Type pred_log = log(Z_pred(i) + Type(1e-8)); // Log predicted zooplankton
-    Type obs_log = log(Z_dat(i) + Type(1e-8));   // Log observed zooplankton
+    Type pred_log = log(Z_pred(i));     // Log predicted zooplankton
+    Type obs_log = log(fmax(Z_dat(i), Type(1e-6))); // Log observed zooplankton
     nll -= dnorm(obs_log, pred_log, sigma_Z, true); // Lognormal likelihood for zooplankton
   }
   
@@ -119,16 +119,21 @@ Type objective_function<Type>::operator() ()
   Type penalty = Type(0.0);             // Initialize penalty term
   
   // Penalty for unrealistic growth rate (should be < 5 day^-1)
-  penalty += CppAD::CondExpGt(r, Type(5.0), Type(10.0) * pow(r - Type(5.0), 2), Type(0.0));
+  if(r > Type(5.0)) penalty += Type(10.0) * pow(r - Type(5.0), 2);
   
   // Penalty for unrealistic grazing rate (should be < 2 day^-1)  
-  penalty += CppAD::CondExpGt(g, Type(2.0), Type(10.0) * pow(g - Type(2.0), 2), Type(0.0));
+  if(g > Type(2.0)) penalty += Type(10.0) * pow(g - Type(2.0), 2);
   
   // Penalty for unrealistic mortality rates (should be < 1 day^-1)
-  penalty += CppAD::CondExpGt(m_p, Type(1.0), Type(10.0) * pow(m_p - Type(1.0), 2), Type(0.0));
-  penalty += CppAD::CondExpGt(m_z, Type(1.0), Type(10.0) * pow(m_z - Type(1.0), 2), Type(0.0));
+  if(m_p > Type(1.0)) penalty += Type(10.0) * pow(m_p - Type(1.0), 2);
+  if(m_z > Type(1.0)) penalty += Type(10.0) * pow(m_z - Type(1.0), 2);
   
   nll += penalty;                       // Add penalties to objective function
+  
+  // Check for numerical issues
+  if(!isfinite(asDouble(nll))) {
+    nll = Type(1e10);                   // Return large finite value if NaN/Inf
+  }
   
   // Report predicted values and parameters
   REPORT(N_pred);                       // Report predicted nutrient concentrations
