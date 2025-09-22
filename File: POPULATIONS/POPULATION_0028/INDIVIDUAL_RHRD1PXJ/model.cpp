@@ -1,4 +1,5 @@
 #include <TMB.hpp>
+using Eigen::VectorXd;
 
 // Template Model Builder model for a plankton population dynamics model.
 //
@@ -51,7 +52,8 @@ Type objective_function<Type>::operator() ()
    Type nll = 0.0;
 
    // Number of time steps:
-   int n = time.size();
+   DATA_INTEGER(n_obs);    // Number of observations provided in 'time'
+   int n = n_obs;
 
    // Vectors for model predictions:
    vector<Type> N_pred(n); // Predicted nutrient concentrations (g C m^-3)
