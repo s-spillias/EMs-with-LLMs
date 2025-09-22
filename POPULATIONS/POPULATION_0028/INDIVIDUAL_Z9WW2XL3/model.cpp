@@ -64,7 +64,7 @@ Type objective_function<Type>::operator() ()
     Type U = v_N * (1 - exp(-I_L)) * N_pred(t-1) / (K_N + N_pred(t-1) + eps);
     
     // Equation 2: Phytoplankton growth, grazing, and mortality
-    Type growth_P = eps_P * (N_pred(t-1) / (K_eps + N_pred(t-1) + eps)) * U * P_pred(t-1) * exp(-alpha * P_pred(t-1) - delta * pow(P_pred(t-1), 2)); // Additional quadratic inhibition from dense phytoplankton leading to stronger self-shading and resource competition
+    Type growth_P = eps_P * (N_pred(t-1) / (K_eps + N_pred(t-1) + eps)) * U * P_pred(t-1) * exp(-alpha * P_pred(t-1) - delta * pow(P_pred(t-1), 2)) * (1 - P_pred(t-1) / K_P_carrying); // Logistic limitation representing carrying capacity effects on phytoplankton growth
     Type grazing = g_Z * pow(Z_pred(t-1), gamma) * pow(P_pred(t-1), 2) / (pow(K_P3, 2) + pow(P_pred(t-1), 2) + h_Z * P_pred(t-1) + cp * pow(P_pred(t-1), 2)); // Grazing loss with Type III response, incorporating reduced grazing at low prey densities
     Type mortality_P = d_P * P_pred(t-1);    // Mortality loss
     Type dP = growth_P - grazing - mortality_P;
