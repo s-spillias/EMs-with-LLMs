@@ -105,7 +105,11 @@ Type objective_function<Type>::operator() ()
   
   // Reporting predicted state variables for further analysis
   SIMULATE {
-    for(int t = 0; t < n; t++){
+    // Preserve initial conditions and simulate the remaining time points
+    N_dat(0) = N_pred(0);
+    P_dat(0) = P_pred(0);
+    Z_dat(0) = Z_pred(0);
+    for(int t = 1; t < n; t++){
       N_dat(t) = N_pred(t);
       P_dat(t) = P_pred(t);
       Z_dat(t) = Z_pred(t);
