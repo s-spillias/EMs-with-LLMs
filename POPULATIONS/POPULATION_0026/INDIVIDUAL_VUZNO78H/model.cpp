@@ -33,9 +33,9 @@ Type objective_function<Type>::operator() ()
   Type m_Z = exp(log_m_Z);              // Zooplankton mortality rate (day^-1), natural death + predation
   Type d = Type(1.0) / (Type(1.0) + exp(-log_d)); // Recycling efficiency (0-1), fraction of dead matter recycled
   Type S = exp(log_S);                  // External nutrient supply (g C m^-3 day^-1), upwelling + inputs
-  Type sigma_N = exp(log_sigma_N) + Type(1e-6); // Observation error for N with minimum bound
-  Type sigma_P = exp(log_sigma_P) + Type(1e-6); // Observation error for P with minimum bound  
-  Type sigma_Z = exp(log_sigma_Z) + Type(1e-6); // Observation error for Z with minimum bound
+  Type sigma_N = exp(log_sigma_N) + Type(1e-4); // Observation error for N with minimum bound
+  Type sigma_P = exp(log_sigma_P) + Type(1e-4); // Observation error for P with minimum bound  
+  Type sigma_Z = exp(log_sigma_Z) + Type(1e-4); // Observation error for Z with minimum bound
   
   int n_obs = Time.size();              // Number of observations
   
@@ -53,10 +53,15 @@ Type objective_function<Type>::operator() ()
   for(int i = 1; i < n_obs; i++) {
     Type dt = Time(i) - Time(i-1);      // Time step size (days)
     
-    // Previous time step values (avoid data leakage) with smooth lower bounds
-    Type N_prev = N_pred(i-1) + Type(1e-8); // Add small constant for numerical stability
-    Type P_prev = P_pred(i-1) + Type(1e-8); // Add small constant for numerical stability
-    Type Z_prev = Z_pred(i-1) + Type(1e-8); // Add small constant for numerical stability
+    // Previous time step values (avoid data leakage) with numerical stability
+    Type N_prev = N_pred(i-1);          // Previous nutrient concentration
+    Type P_prev = P_pred(i-1);          // Previous phytoplankton concentration
+    Type Z_prev = Z_pred(i-1);          // Previous zooplankton concentration
+    
+    // Ensure positive values for calculations
+    N_prev = N_prev < Type(1e-6) ? Type(1e-6) : N_prev; // Minimum nutrient level
+    P_prev = P_prev < Type(1e-6) ? Type(1e-6) : P_prev; // Minimum phytoplankton level
+    Z_prev = Z_prev < Type(1e-6) ? Type(1e-6) : Z_prev; // Minimum zooplankton level
     
     // Equation 1: Phytoplankton growth rate with Michaelis-Menten nutrient limitation
     Type phyto_growth = r * (N_prev / (K_N + N_prev)) * P_prev;
@@ -80,15 +85,15 @@ Type objective_function<Type>::operator() ()
     // Equation 7: Zooplankton dynamics - efficient grazing - mortality  
     Type dZ_dt = e * grazing - m_Z * Z_prev;
     
-    // Update state variables using Euler integration with smooth lower bounds
-    Type N_new = N_prev + dt * dN_dt;   // Forward Euler step for nutrients
-    Type P_new = P_prev + dt * dP_dt;   // Forward Euler step for phytoplankton
-    Type Z_new = Z_prev + dt * dZ_dt;   // Forward Euler step for zooplankton
+    // Update state variables using Euler integration
+    N_pred(i) = N_prev + dt * dN_dt;    // Forward Euler step for nutrients
+    P_pred(i) = P_prev + dt * dP_dt;    // Forward Euler step for phytoplankton
+    Z_pred(i) = Z_prev + dt * dZ_dt;    // Forward Euler step for zooplankton
     
-    // Apply smooth lower bounds using sqrt transformation
-    N_pred(i) = (N_new + sqrt(N_new * N_new + Type(4e-16))) / Type(2.0); // Smooth max with 1e-8
-    P_pred(i) = (P_new + sqrt(P_new * P_new + Type(4e-16))) / Type(2.0); // Smooth max with 1e-8
-    Z_pred(i) = (Z_new + sqrt(Z_new * Z_new + Type(4e-16))) / Type(2.0); // Smooth max with 1e-8
+    // Apply simple lower bounds to prevent negative values
+    N_pred(i) = N_pred(i) < Type(1e-6) ? Type(1e-6) : N_pred(i); // Minimum nutrient bound
+    P_pred(i) = P_pred(i) < Type(1e-6) ? Type(1e-6) : P_pred(i); // Minimum phytoplankton bound
+    Z_pred(i) = Z_pred(i) < Type(1e-6) ? Type(1e-6) : Z_pred(i); // Minimum zooplankton bound
   }
   
   // Calculate negative log-likelihood
@@ -96,9 +101,14 @@ Type objective_function<Type>::operator() ()
   
   // Likelihood contributions from all observations using normal distribution
   for(int i = 0; i < n_obs; i++) {
-    nll -= dnorm(N_dat(i), N_pred(i), sigma_N, true); // Nutrient observation likelihood
-    nll -= dnorm(P_dat(i), P_pred(i), sigma_P, true); // Phytoplankton observation likelihood  
-    nll -= dnorm(Z_dat(i), Z_pred(i), sigma_Z, true); // Zooplankton observation likelihood
+    Type nll_N = -dnorm(N_dat(i), N_pred(i), sigma_N, true); // Nutrient observation likelihood
+    Type nll_P = -dnorm(P_dat(i), P_pred(i), sigma_P, true); // Phytoplankton observation likelihood  
+    Type nll_Z = -dnorm(Z_dat(i), Z_pred(i), sigma_Z, true); // Zooplankton observation likelihood
+    
+    // Check for finite values before adding to total
+    if(CppAD::isfinite(nll_N)) nll += nll_N; else nll += Type(1e6); // Add penalty if not finite
+    if(CppAD::isfinite(nll_P)) nll += nll_P; else nll += Type(1e6); // Add penalty if not finite
+    if(CppAD::isfinite(nll_Z)) nll += nll_Z; else nll += Type(1e6); // Add penalty if not finite
   }
   
   // Report predicted values for plotting and diagnostics
