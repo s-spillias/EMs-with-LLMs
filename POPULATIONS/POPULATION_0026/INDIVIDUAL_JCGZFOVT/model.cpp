@@ -106,49 +106,34 @@ Type objective_function<Type>::operator() ()
   // Calculate negative log-likelihood
   Type nll = Type(0.0);
   
-  // Likelihood for nutrient observations (normal distribution on log scale)
+  // Likelihood for nutrient observations (lognormal distribution)
   for(int i = 0; i < n_obs; i++) {
     Type N_obs = N_dat(i) + Type(1e-6);  // Add small constant to prevent log(0)
     Type N_model = N_pred(i) + Type(1e-6); // Add small constant to prevent log(0)
     Type log_N_obs = log(N_obs);
     Type log_N_model = log(N_model);
-    
-    // Check for finite values before adding to likelihood
     Type residual = log_N_obs - log_N_model;
-    Type likelihood_contrib = Type(0.5) * pow(residual / sigma_N, 2) + log(sigma_N);
-    
-    // Only add finite contributions
-    nll += CppAD::CondExpGt(abs(likelihood_contrib), Type(100.0), Type(100.0), likelihood_contrib);
+    nll -= dnorm(log_N_obs, log_N_model, sigma_N, true);
   }
   
-  // Likelihood for phytoplankton observations (normal distribution on log scale)
+  // Likelihood for phytoplankton observations (lognormal distribution)
   for(int i = 0; i < n_obs; i++) {
     Type P_obs = P_dat(i) + Type(1e-6);  // Add small constant to prevent log(0)
     Type P_model = P_pred(i) + Type(1e-6); // Add small constant to prevent log(0)
     Type log_P_obs = log(P_obs);
     Type log_P_model = log(P_model);
-    
-    // Check for finite values before adding to likelihood
     Type residual = log_P_obs - log_P_model;
-    Type likelihood_contrib = Type(0.5) * pow(residual / sigma_P, 2) + log(sigma_P);
-    
-    // Only add finite contributions
-    nll += CppAD::CondExpGt(abs(likelihood_contrib), Type(100.0), Type(100.0), likelihood_contrib);
+    nll -= dnorm(log_P_obs, log_P_model, sigma_P, true);
   }
   
-  // Likelihood for zooplankton observations (normal distribution on log scale)
+  // Likelihood for zooplankton observations (lognormal distribution)
   for(int i = 0; i < n_obs; i++) {
     Type Z_obs = Z_dat(i) + Type(1e-6);  // Add small constant to prevent log(0)
     Type Z_model = Z_pred(i) + Type(1e-6); // Add small constant to prevent log(0)
     Type log_Z_obs = log(Z_obs);
     Type log_Z_model = log(Z_model);
-    
-    // Check for finite values before adding to likelihood
     Type residual = log_Z_obs - log_Z_model;
-    Type likelihood_contrib = Type(0.5) * pow(residual / sigma_Z, 2) + log(sigma_Z);
-    
-    // Only add finite contributions
-    nll += CppAD::CondExpGt(abs(likelihood_contrib), Type(100.0), Type(100.0), likelihood_contrib);
+    nll -= dnorm(log_Z_obs, log_Z_model, sigma_Z, true);
   }
   
   // Soft biological constraints using penalty functions
@@ -162,9 +147,6 @@ Type objective_function<Type>::operator() ()
   // Constraint 3: Half-saturation constants should be reasonable
   nll += CppAD::CondExpGt(K_N, Type(2.0), Type(5.0) * pow(K_N - Type(2.0), 2), Type(0.0));
   nll += CppAD::CondExpGt(K_P, Type(1.0), Type(5.0) * pow(K_P - Type(1.0), 2), Type(0.0));
-  
-  // Final check to ensure nll is finite
-  nll = CppAD::CondExpGt(abs(nll), Type(1e6), Type(1e6), nll);
   
   // Report predicted values and parameters
   REPORT(N_pred);                       // Predicted nutrient concentrations
