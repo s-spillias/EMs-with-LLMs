@@ -50,6 +50,7 @@ Type objective_function<Type>::operator() ()
 
   // Initialize predicted state vectors
   vector<Type> N_pred(n), P_pred(n), Z_pred(n);
+  Type nll = 0.0;         // Negative log-likelihood accumulator
   
   // Set initial conditions to the observed first data points
   N_pred(0) = N_dat(0);
