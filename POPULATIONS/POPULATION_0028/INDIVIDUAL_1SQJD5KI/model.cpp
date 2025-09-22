@@ -23,6 +23,7 @@ Type objective_function<Type>::operator() ()
   DATA_VECTOR(N_dat);       // Nutrient observations (g C m^-3)
   DATA_VECTOR(P_dat);       // Phytoplankton observations (g C m^-3)
   DATA_VECTOR(Z_dat);       // Zooplankton observations (g C m^-3)
+  DATA_SCALAR(temp);        // Environmental temperature (°C)
 
   int n = time.size();
 
@@ -42,6 +43,8 @@ Type objective_function<Type>::operator() ()
   PARAMETER(alpha);         // Self-shading coefficient for phytoplankton growth (dimensionless)
   PARAMETER(beta);          // Saturation coefficient for nutrient recycling
   PARAMETER(I_L);         // Light intensity modifier scaling nutrient uptake
+  PARAMETER(Q10);         // Temperature sensitivity factor (Q10 coefficient)
+  PARAMETER(T_ref);       // Reference temperature (°C) for Q10 adjustment
   PARAMETER(cp);          // Coefficient for density-dependent inhibition in grazing (model improvement)
   PARAMETER(K_P3);        // Half-saturation constant for Type III grazing response.
 
@@ -71,9 +74,10 @@ Type objective_function<Type>::operator() ()
     // Equation 3: Zooplankton dynamics (growth via grazing, mortality)
     Type dZ = eps_Z * grazing - d_Z * Z_pred(t-1);
     
-    // Equation 4: Nutrient recycling and uptake with saturating recycling efficiency
-    // dN/dt = - U * P_pred(t-1) + r*(P_pred(t-1) + Z_pred(t-1))/(1 + beta*(P_pred(t-1) + Z_pred(t-1)))
-    Type dN = - U * P_pred(t-1) + r*(P_pred(t-1) + Z_pred(t-1))/(1 + beta*(P_pred(t-1) + Z_pred(t-1)));
+    // Equation 4: Nutrient recycling and uptake with saturating recycling efficiency modified by temperature
+    // dN/dt = - U * P_pred(t-1) + r * temp_factor * (P_pred(t-1) + Z_pred(t-1))/(1 + beta*(P_pred(t-1) + Z_pred(t-1)))
+    Type temp_factor = pow(Q10, (temp - T_ref)/Type(10));
+    Type dN = - U * P_pred(t-1) + r * temp_factor * (P_pred(t-1) + Z_pred(t-1))/(1 + beta*(P_pred(t-1) + Z_pred(t-1)));
     
     // Use time step difference (dt) for integration
     Type dt = time(t) - time(t-1);
