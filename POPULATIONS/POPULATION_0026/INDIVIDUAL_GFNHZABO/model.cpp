@@ -58,10 +58,10 @@ Type objective_function<Type>::operator() ()
     Type P_prev = P_pred(i-1);          // Previous phytoplankton concentration
     Type Z_prev = Z_pred(i-1);          // Previous zooplankton concentration
     
-    // Add small constants for numerical stability using smooth functions
-    Type N_stable = N_prev + Type(1e-6) + sqrt(N_prev * N_prev + Type(1e-12)); // Nutrient with smooth minimum bound
-    Type P_stable = P_prev + Type(1e-6) + sqrt(P_prev * P_prev + Type(1e-12)); // Phytoplankton with smooth minimum bound
-    Type Z_stable = Z_prev + Type(1e-6) + sqrt(Z_prev * Z_prev + Type(1e-12)); // Zooplankton with smooth minimum bound
+    // Simple numerical stability - add small positive values
+    Type N_stable = N_prev + Type(1e-8); // Nutrient with small constant
+    Type P_stable = P_prev + Type(1e-8); // Phytoplankton with small constant
+    Type Z_stable = Z_prev + Type(1e-8); // Zooplankton with small constant
     
     // Ecological rate calculations
     Type nutrient_limitation = N_stable / (K_N + N_stable);  // Michaelis-Menten nutrient uptake
@@ -82,10 +82,10 @@ Type objective_function<Type>::operator() ()
     P_pred(i) = P_prev + dt * dP_dt;     // Update phytoplankton concentration
     Z_pred(i) = Z_prev + dt * dZ_dt;     // Update zooplankton concentration
     
-    // Ensure non-negative concentrations using smooth approximation to max function
-    N_pred(i) = Type(0.5) * (N_pred(i) + sqrt(N_pred(i) * N_pred(i) + Type(1e-12)));  // Smooth minimum nutrient concentration
-    P_pred(i) = Type(0.5) * (P_pred(i) + sqrt(P_pred(i) * P_pred(i) + Type(1e-12)));  // Smooth minimum phytoplankton concentration
-    Z_pred(i) = Type(0.5) * (Z_pred(i) + sqrt(Z_pred(i) * Z_pred(i) + Type(1e-12)));  // Smooth minimum zooplankton concentration
+    // Simple bounds to prevent negative values
+    if(N_pred(i) < Type(1e-8)) N_pred(i) = Type(1e-8);  // Minimum nutrient concentration
+    if(P_pred(i) < Type(1e-8)) P_pred(i) = Type(1e-8);  // Minimum phytoplankton concentration
+    if(Z_pred(i) < Type(1e-8)) Z_pred(i) = Type(1e-8);  // Minimum zooplankton concentration
   }
   
   // Likelihood calculation using normal distribution
@@ -100,11 +100,11 @@ Type objective_function<Type>::operator() ()
     nll -= dnorm(Z_dat(i), Z_pred(i), sigma_Z, true);
   }
   
-  // Biological parameter bounds using smooth penalties
-  nll += Type(0.1) * pow((log_r - log(Type(1.0))) / Type(2.0), 2);      // Penalize extreme growth rates
-  nll += Type(0.1) * pow((log_g_max - log(Type(1.0))) / Type(2.0), 2);  // Penalize extreme grazing rates
-  nll += Type(0.1) * pow((log_K_N - log(Type(0.1))) / Type(2.0), 2);    // Penalize extreme half-saturation
-  nll += Type(0.1) * pow((log_K_P - log(Type(0.1))) / Type(2.0), 2);    // Penalize extreme half-saturation
+  // Biological parameter bounds using weak penalties
+  nll += Type(0.01) * pow(log_r, 2);                        // Weak penalty on growth rate
+  nll += Type(0.01) * pow(log_g_max, 2);                    // Weak penalty on grazing rate
+  nll += Type(0.01) * pow(log_K_N + Type(2.3), 2);         // Weak penalty on nutrient half-saturation
+  nll += Type(0.01) * pow(log_K_P + Type(2.3), 2);         // Weak penalty on grazing half-saturation
   
   // Report predicted values for output
   REPORT(N_pred);                       // Report predicted nutrient concentrations
