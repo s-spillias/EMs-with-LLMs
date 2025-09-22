@@ -46,7 +46,7 @@ Type objective_function<Type>::operator() ()
   penalty -= dnorm(log_gamma, log(Type(0.5)), Type(1.0), true); // Recycling efficiency around 50%
   
   // Minimum standard deviations to prevent numerical issues
-  Type min_sigma = Type(1e-6);
+  Type min_sigma = Type(1e-4);
   sigma_N = sigma_N + min_sigma;        // Prevent sigma from being too small
   sigma_P = sigma_P + min_sigma;        // Prevent sigma from being too small
   sigma_Z = sigma_Z + min_sigma;        // Prevent sigma from being too small
@@ -64,7 +64,7 @@ Type objective_function<Type>::operator() ()
   Z_pred(0) = Z_dat(0);                 // Initial zooplankton concentration
   
   // Small constant to prevent division by zero
-  Type eps = Type(1e-8);
+  Type eps = Type(1e-6);
   
   // Numerical integration using Euler method
   for(int i = 1; i < n_obs; i++) {
@@ -75,16 +75,16 @@ Type objective_function<Type>::operator() ()
     Type P_prev = P_pred(i-1);          // Previous phytoplankton concentration
     Type Z_prev = Z_pred(i-1);          // Previous zooplankton concentration
     
-    // Ensure positive values using smooth maximum function
-    N_prev = CppAD::CondExpGt(N_prev, eps, N_prev, eps);  // Prevent negative nutrients
-    P_prev = CppAD::CondExpGt(P_prev, eps, P_prev, eps);  // Prevent negative phytoplankton
-    Z_prev = CppAD::CondExpGt(Z_prev, eps, Z_prev, eps);  // Prevent negative zooplankton
+    // Ensure positive values using smooth approximation
+    N_prev = N_prev + eps;              // Add small constant to prevent negative nutrients
+    P_prev = P_prev + eps;              // Add small constant to prevent negative phytoplankton
+    Z_prev = Z_prev + eps;              // Add small constant to prevent negative zooplankton
     
     // Equation 1: Phytoplankton growth rate with Michaelis-Menten nutrient limitation
-    Type phyto_growth = r * (N_prev / (K + N_prev)) * P_prev;
+    Type phyto_growth = r * (N_prev / (K + N_prev + eps)) * P_prev;
     
     // Equation 2: Zooplankton grazing rate with Type II functional response
-    Type grazing = a * (P_prev / (b + P_prev)) * Z_prev;
+    Type grazing = a * (P_prev / (b + P_prev + eps)) * Z_prev;
     
     // Equation 3: Nutrient recycling from zooplankton excretion and phytoplankton mortality
     Type nutrient_recycling = gamma * (grazing * (Type(1.0) - e) + d * P_prev + m * Z_prev);
@@ -107,14 +107,21 @@ Type objective_function<Type>::operator() ()
     P_pred(i) = P_prev + dt * dP_dt;    // Update phytoplankton concentration
     Z_pred(i) = Z_prev + dt * dZ_dt;    // Update zooplankton concentration
     
-    // Ensure predictions remain positive using smooth maximum
-    N_pred(i) = CppAD::CondExpGt(N_pred(i), eps, N_pred(i), eps);  // Bound nutrients above zero
-    P_pred(i) = CppAD::CondExpGt(P_pred(i), eps, P_pred(i), eps);  // Bound phytoplankton above zero
-    Z_pred(i) = CppAD::CondExpGt(Z_pred(i), eps, Z_pred(i), eps);  // Bound zooplankton above zero
+    // Ensure predictions remain positive by adding small epsilon
+    N_pred(i) = N_pred(i) + eps;        // Bound nutrients above zero
+    P_pred(i) = P_pred(i) + eps;        // Bound phytoplankton above zero
+    Z_pred(i) = Z_pred(i) + eps;        // Bound zooplankton above zero
   }
   
   // Calculate negative log-likelihood
   Type nll = Type(0.0);
+  
+  // Check for invalid predictions
+  for(int i = 0; i < n_obs; i++) {
+    if(!isfinite(asDouble(N_pred(i))) || !isfinite(asDouble(P_pred(i))) || !isfinite(asDouble(Z_pred(i)))) {
+      return Type(1e10);  // Return large penalty for invalid predictions
+    }
+  }
   
   // Likelihood for all observations using normal distribution
   for(int i = 0; i < n_obs; i++) {
@@ -125,6 +132,11 @@ Type objective_function<Type>::operator() ()
   
   // Add parameter penalties
   nll += penalty;
+  
+  // Check for invalid likelihood
+  if(!isfinite(asDouble(nll))) {
+    return Type(1e10);  // Return large penalty for invalid likelihood
+  }
   
   // Report predictions and parameters
   REPORT(N_pred);                       // Report predicted nutrient concentrations
