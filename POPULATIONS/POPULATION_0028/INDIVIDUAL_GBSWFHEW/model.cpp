@@ -34,6 +34,7 @@ Type objective_function<Type>::operator() ()
   PARAMETER(K_P);           // Half-saturation constant for grazing (g C m^-3)
   PARAMETER(d_P);           // Phytoplankton mortality rate (day^-1)
   PARAMETER(d_Z);           // Zooplankton mortality rate (day^-1)
+  PARAMETER(eps_Z);         // Zooplankton conversion efficiency from grazed phytoplankton biomass (dimensionless)
   PARAMETER(r);             // Remineralization rate (day^-1)
   PARAMETER(alpha);         // Self-shading coefficient for phytoplankton growth (dimensionless)
   PARAMETER(beta);          // Saturation coefficient for nutrient recycling
@@ -57,12 +58,12 @@ Type objective_function<Type>::operator() ()
     
     // Equation 2: Phytoplankton growth, grazing, and mortality
     Type growth_P = eps_P * U * P_pred(t-1) * exp(-alpha * P_pred(t-1)); // Growth contribution, including self-shading effect
-    Type grazing = g_Z * (P_pred(t-1) * P_pred(t-1)) / (K_P + P_pred(t-1) + eps); // Grazing loss
+    Type grazing = g_Z * Z_pred(t-1) * P_pred(t-1) / (K_P + P_pred(t-1) + eps); // Grazing loss, now depends on predator density
     Type mortality_P = d_P * P_pred(t-1);    // Mortality loss
     Type dP = growth_P - grazing - mortality_P;
     
     // Equation 3: Zooplankton dynamics (growth via grazing, mortality)
-    Type dZ = grazing - d_Z * Z_pred(t-1);
+    Type dZ = eps_Z * grazing - d_Z * Z_pred(t-1);
     
     // Equation 4: Nutrient recycling and uptake with saturating recycling efficiency
     // dN/dt = - U * P_pred(t-1) + r*(P_pred(t-1) + Z_pred(t-1))/(1 + beta*(P_pred(t-1) + Z_pred(t-1)))
