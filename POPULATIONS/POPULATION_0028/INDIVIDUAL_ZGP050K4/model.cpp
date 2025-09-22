@@ -63,7 +63,7 @@ Type objective_function<Type>::operator() ()
     Type U = v_N * (1 - exp(-I_L)) * N_pred(t-1) / (K_N + N_pred(t-1) + eps);
     
     // Equation 2: Phytoplankton growth, grazing, and mortality
-    Type growth_P = eps_P * (N_pred(t-1) / (K_eps + N_pred(t-1) + eps)) * U * P_pred(t-1) * exp(-alpha * P_pred(t-1)); // Nutrient-dependent conversion efficiency included in growth term
+    Type growth_P = eps_P * (pow(N_pred(t-1), h_N) / (pow(K_eps, h_N) + pow(N_pred(t-1), h_N) + eps)) * U * P_pred(t-1) * exp(-alpha * P_pred(t-1)); // Nutrient-dependent conversion efficiency improved with Hill function for cooperative uptake
     Type grazing = g_Z * pow(Z_pred(t-1), gamma) * pow(P_pred(t-1), 2) / (pow(K_P3, 2) + pow(P_pred(t-1), 2) + h_Z * P_pred(t-1) + cp * pow(P_pred(t-1), 2)); // Grazing loss with Type III response, incorporating reduced grazing at low prey densities
     Type mortality_P = d_P * P_pred(t-1);    // Mortality loss
     Type dP = growth_P - grazing - mortality_P;
