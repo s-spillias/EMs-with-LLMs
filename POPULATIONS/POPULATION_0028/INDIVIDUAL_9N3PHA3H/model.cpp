@@ -41,6 +41,7 @@ Type objective_function<Type>::operator() ()
   PARAMETER(alpha);         // Self-shading coefficient for phytoplankton growth (dimensionless)
   PARAMETER(beta);          // Saturation coefficient for nutrient recycling
   PARAMETER(I_L);         // Light intensity modifier scaling nutrient uptake
+  PARAMETER(N_crit);      // Nutrient threshold for uptake inhibition (g C m^-3)
 
   // Initialize predicted state vectors
   vector<Type> N_pred(n), P_pred(n), Z_pred(n);
