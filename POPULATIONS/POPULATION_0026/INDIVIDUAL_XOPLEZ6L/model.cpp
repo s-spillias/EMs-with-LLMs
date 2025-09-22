@@ -25,14 +25,14 @@ Type objective_function<Type>::operator() ()
   PARAMETER(log_sigma_P);               // Log standard deviation for phytoplankton observations
   PARAMETER(log_sigma_Z);               // Log standard deviation for zooplankton observations
   
-  // Transform parameters to natural scale
+  // Transform parameters to natural scale with bounds
   Type r = exp(log_r);                  // Maximum phytoplankton growth rate (day^-1)
   Type K = exp(log_K);                  // Half-saturation constant for nutrient uptake (g C m^-3)
   Type a = exp(log_a);                  // Zooplankton maximum grazing rate (day^-1)
   Type b = exp(log_b);                  // Zooplankton half-saturation constant for grazing (g C m^-3)
-  Type e = exp(log_e);                  // Zooplankton assimilation efficiency (dimensionless)
+  Type e = Type(1.0) / (Type(1.0) + exp(-log_e));  // Bounded assimilation efficiency (0-1)
   Type m = exp(log_m);                  // Zooplankton mortality rate (day^-1)
-  Type gamma = exp(log_gamma);          // Nutrient recycling efficiency (dimensionless)
+  Type gamma = Type(1.0) / (Type(1.0) + exp(-log_gamma));  // Bounded recycling efficiency (0-1)
   Type d = exp(log_d);                  // Phytoplankton mortality rate (day^-1)
   Type s = exp(log_s);                  // External nutrient supply rate (g C m^-3 day^-1)
   
@@ -42,11 +42,11 @@ Type objective_function<Type>::operator() ()
   
   // Apply biological bounds using smooth penalties
   Type penalty = Type(0.0);
-  penalty -= dnorm(log_e, log(Type(0.3)), Type(1.0), true);  // Efficiency around 30% with flexibility
-  penalty -= dnorm(log_gamma, log(Type(0.5)), Type(1.0), true); // Recycling efficiency around 50%
+  penalty += pow(log_r - log(Type(0.5)), 2) * Type(0.1);  // Soft constraint on growth rate
+  penalty += pow(log_a - log(Type(0.5)), 2) * Type(0.1);  // Soft constraint on grazing rate
   
   // Minimum standard deviations to prevent numerical issues
-  Type min_sigma = Type(1e-4);
+  Type min_sigma = Type(0.01);
   sigma_N = sigma_N + min_sigma;        // Prevent sigma from being too small
   sigma_P = sigma_P + min_sigma;        // Prevent sigma from being too small
   sigma_Z = sigma_Z + min_sigma;        // Prevent sigma from being too small
@@ -64,9 +64,9 @@ Type objective_function<Type>::operator() ()
   Z_pred(0) = Z_dat(0);                 // Initial zooplankton concentration
   
   // Small constant to prevent division by zero
-  Type eps = Type(1e-8);
+  Type eps = Type(1e-6);
   
-  // Numerical integration using Euler method
+  // Numerical integration using Euler method with stability checks
   for(int i = 1; i < n_obs; i++) {
     Type dt = Time(i) - Time(i-1);      // Time step (days)
     
@@ -75,10 +75,15 @@ Type objective_function<Type>::operator() ()
     Type P_prev = P_pred(i-1);          // Previous phytoplankton concentration
     Type Z_prev = Z_pred(i-1);          // Previous zooplankton concentration
     
-    // Ensure positive values using smooth approximation
+    // Ensure positive values with lower bounds
     N_prev = N_prev + eps;              // Add small constant to prevent negative nutrients
     P_prev = P_prev + eps;              // Add small constant to prevent negative phytoplankton
     Z_prev = Z_prev + eps;              // Add small constant to prevent negative zooplankton
+    
+    // Apply upper bounds to prevent explosive growth
+    N_prev = N_prev / (Type(1.0) + N_prev / Type(10.0));  // Soft upper bound on nutrients
+    P_prev = P_prev / (Type(1.0) + P_prev / Type(5.0));   // Soft upper bound on phytoplankton
+    Z_prev = Z_prev / (Type(1.0) + Z_prev / Type(2.0));   // Soft upper bound on zooplankton
     
     // Equation 1: Phytoplankton growth rate with Michaelis-Menten nutrient limitation
     Type phyto_growth = r * (N_prev / (K + N_prev + eps)) * P_prev;
@@ -102,12 +107,18 @@ Type objective_function<Type>::operator() ()
     // Equation 7: dZ/dt = zooplankton growth - natural mortality
     Type dZ_dt = zoo_growth - m * Z_prev;
     
+    // Limit the rate of change to prevent instability
+    Type max_change = Type(0.1);  // Maximum fractional change per time step
+    dN_dt = dN_dt / (Type(1.0) + abs(dN_dt) / (max_change * N_prev));
+    dP_dt = dP_dt / (Type(1.0) + abs(dP_dt) / (max_change * P_prev));
+    dZ_dt = dZ_dt / (Type(1.0) + abs(dZ_dt) / (max_change * Z_prev));
+    
     // Update predictions using Euler integration
     N_pred(i) = N_prev + dt * dN_dt;    // Update nutrient concentration
     P_pred(i) = P_prev + dt * dP_dt;    // Update phytoplankton concentration
     Z_pred(i) = Z_prev + dt * dZ_dt;    // Update zooplankton concentration
     
-    // Ensure predictions remain positive by adding small epsilon
+    // Ensure predictions remain positive
     N_pred(i) = N_pred(i) + eps;        // Bound nutrients above zero
     P_pred(i) = P_pred(i) + eps;        // Bound phytoplankton above zero
     Z_pred(i) = Z_pred(i) + eps;        // Bound zooplankton above zero
