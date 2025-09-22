@@ -59,9 +59,9 @@ Type objective_function<Type>::operator() ()
   
   // Time integration using Euler's method, ensuring predictions use only past values
   for(int t = 1; t < n; t++){
-    // Equation 1: Nutrient uptake (Michaelis-Menten form) with saturating light limitation
-    // U = v_N * (1 - exp(-I_L)) * N_pred(t-1) / (K_N + N_pred(t-1) + eps)
-    Type U = v_N * (1 - exp(-I_L)) * N_pred(t-1) / (K_N + N_pred(t-1) + eps);
+    // Equation 1: Nutrient uptake with competition effect from phytoplankton density.
+    // U = v_N * (1 - exp(-I_L)) * N_pred(t-1) / (K_N + N_pred(t-1) + a * P_pred(t-1) + eps)
+    Type U = v_N * (1 - exp(-I_L)) * N_pred(t-1) / (K_N + N_pred(t-1) + a * P_pred(t-1) + eps);
     
     // Equation 2: Phytoplankton growth, grazing, and mortality
     Type growth_P = eps_P * (N_pred(t-1) / (K_eps + N_pred(t-1) + eps)) * U * P_pred(t-1) * exp(-alpha * P_pred(t-1) - delta * pow(P_pred(t-1), 2)); // Additional quadratic inhibition from dense phytoplankton leading to stronger self-shading and resource competition
