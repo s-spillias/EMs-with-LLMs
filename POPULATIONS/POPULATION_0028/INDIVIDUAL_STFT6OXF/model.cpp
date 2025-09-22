@@ -44,6 +44,8 @@ Type objective_function<Type>::operator() ()
   PARAMETER(beta);          // Saturation coefficient for nutrient recycling
   PARAMETER(I_L);         // Light intensity modifier scaling nutrient uptake
   PARAMETER(cp);          // Coefficient for density-dependent inhibition in grazing (model improvement)
+  PARAMETER(Q10);         // Temperature coefficient representing the multiplicative effect on metabolic rates per 10°C change. Adjusts nutrient uptake based on ambient temperature.
+  PARAMETER(T_ref);       // Reference temperature (°C) for scaling metabolic rates in the Q10 formulation.
   PARAMETER(K_P3);        // Half-saturation constant for Type III grazing response.
 
   // Initialize predicted state vectors
