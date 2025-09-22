@@ -43,9 +43,11 @@ Type objective_function<Type>::operator() ()
   PARAMETER(I_L);         // Light intensity modifier scaling nutrient uptake
   PARAMETER(T_opt);       // Optimal temperature for phytoplankton growth (°C)
   PARAMETER(T_sigma);     // Temperature sensitivity standard deviation (°C)
-  vector<Type> temperature;
+  vector<Type> temperature(n);
   if(temperature_aux.size() == 0) {
-    temperature = rep(T_opt, n);
+    for(int i = 0; i < n; i++){
+      temperature(i) = T_opt;
+    }
   } else {
     temperature = temperature_aux;
   }
