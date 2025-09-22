@@ -40,17 +40,17 @@ Type objective_function<Type>::operator() ()
   // Add small constants for numerical stability
   Type eps = Type(1e-8);
   
-  // Apply smooth penalties to keep parameters within biological ranges
+  // Apply weak penalties to keep parameters within biological ranges
   Type nll = Type(0.0);
-  nll -= dnorm(log_r, log(Type(1.0)), Type(1.0), true);        // Penalty for r around 1.0 day^-1
-  nll -= dnorm(log_K_N, log(Type(0.1)), Type(1.0), true);     // Penalty for K_N around 0.1 g C m^-3
-  nll -= dnorm(log_g_max, log(Type(0.5)), Type(1.0), true);   // Penalty for g_max around 0.5 day^-1
-  nll -= dnorm(log_K_P, log(Type(0.1)), Type(1.0), true);     // Penalty for K_P around 0.1 g C m^-3
-  nll -= dnorm(log_m_P, log(Type(0.1)), Type(1.0), true);     // Penalty for m_P around 0.1 day^-1
-  nll -= dnorm(log_m_Z, log(Type(0.1)), Type(1.0), true);     // Penalty for m_Z around 0.1 day^-1
-  nll -= dnorm(log_e, Type(0.0), Type(1.0), true);            // Penalty for e around 0.5
-  nll -= dnorm(log_gamma, Type(0.0), Type(1.0), true);        // Penalty for gamma around 0.5
-  nll -= dnorm(log_N_in, log(Type(0.01)), Type(1.0), true);   // Penalty for N_in around 0.01 g C m^-3 day^-1
+  nll += Type(0.01) * pow(log_r - log(Type(1.0)), 2);        // Weak penalty for r around 1.0 day^-1
+  nll += Type(0.01) * pow(log_K_N - log(Type(0.1)), 2);     // Weak penalty for K_N around 0.1 g C m^-3
+  nll += Type(0.01) * pow(log_g_max - log(Type(0.5)), 2);   // Weak penalty for g_max around 0.5 day^-1
+  nll += Type(0.01) * pow(log_K_P - log(Type(0.1)), 2);     // Weak penalty for K_P around 0.1 g C m^-3
+  nll += Type(0.01) * pow(log_m_P - log(Type(0.1)), 2);     // Weak penalty for m_P around 0.1 day^-1
+  nll += Type(0.01) * pow(log_m_Z - log(Type(0.1)), 2);     // Weak penalty for m_Z around 0.1 day^-1
+  nll += Type(0.01) * pow(log_e, 2);                        // Weak penalty for e around 0.5
+  nll += Type(0.01) * pow(log_gamma, 2);                    // Weak penalty for gamma around 0.5
+  nll += Type(0.01) * pow(log_N_in - log(Type(0.01)), 2);   // Weak penalty for N_in around 0.01 g C m^-3 day^-1
   
   int n_obs = Time.size();
   
@@ -108,17 +108,21 @@ Type objective_function<Type>::operator() ()
     P_pred(i) = P_prev + dt * dP_dt;   // New phytoplankton concentration
     Z_pred(i) = Z_prev + dt * dZ_dt;   // New zooplankton concentration
     
-    // Ensure non-negative concentrations using conditional expressions
-    N_pred(i) = CppAD::CondExpGt(N_pred(i), eps, N_pred(i), eps);
-    P_pred(i) = CppAD::CondExpGt(P_pred(i), eps, P_pred(i), eps);
-    Z_pred(i) = CppAD::CondExpGt(Z_pred(i), eps, Z_pred(i), eps);
+    // Ensure non-negative concentrations using simple max operation
+    if(N_pred(i) < eps) N_pred(i) = eps;
+    if(P_pred(i) < eps) P_pred(i) = eps;
+    if(Z_pred(i) < eps) Z_pred(i) = eps;
   }
   
   // Calculate likelihood using normal distribution with minimum standard deviations
-  Type min_sigma = Type(1e-6);         // Minimum standard deviation to prevent numerical issues
-  Type sigma_N_safe = CppAD::CondExpGt(sigma_N, min_sigma, sigma_N, min_sigma);
-  Type sigma_P_safe = CppAD::CondExpGt(sigma_P, min_sigma, sigma_P, min_sigma);
-  Type sigma_Z_safe = CppAD::CondExpGt(sigma_Z, min_sigma, sigma_Z, min_sigma);
+  Type min_sigma = Type(1e-4);         // Minimum standard deviation to prevent numerical issues
+  Type sigma_N_safe = sigma_N;
+  Type sigma_P_safe = sigma_P;
+  Type sigma_Z_safe = sigma_Z;
+  
+  if(sigma_N < min_sigma) sigma_N_safe = min_sigma;
+  if(sigma_P < min_sigma) sigma_P_safe = min_sigma;
+  if(sigma_Z < min_sigma) sigma_Z_safe = min_sigma;
   
   // Add observation likelihood for all data points
   for(int i = 0; i < n_obs; i++) {
