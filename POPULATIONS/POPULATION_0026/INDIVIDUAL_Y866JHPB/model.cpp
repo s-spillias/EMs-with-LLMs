@@ -110,10 +110,11 @@ Type objective_function<Type>::operator() ()
     P_pred(i) = P_prev + dt * dP_dt;    // Update phytoplankton concentration
     Z_pred(i) = Z_prev + dt * dZ_dt;    // Update zooplankton concentration
     
-    // Ensure non-negative concentrations
-    N_pred(i) = fmax(N_pred(i), Type(1e-8));  // Prevent negative nutrients
-    P_pred(i) = fmax(P_pred(i), Type(1e-8));  // Prevent negative phytoplankton
-    Z_pred(i) = fmax(Z_pred(i), Type(1e-8));  // Prevent negative zooplankton
+    // Ensure non-negative concentrations using smooth transitions
+    Type min_val = Type(1e-8);          // Minimum allowed concentration
+    N_pred(i) = CppAD::CondExpGt(N_pred(i), min_val, N_pred(i), min_val);  // Prevent negative nutrients
+    P_pred(i) = CppAD::CondExpGt(P_pred(i), min_val, P_pred(i), min_val);  // Prevent negative phytoplankton
+    Z_pred(i) = CppAD::CondExpGt(Z_pred(i), min_val, Z_pred(i), min_val);  // Prevent negative zooplankton
   }
   
   // Calculate negative log-likelihood
