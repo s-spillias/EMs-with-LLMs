@@ -104,6 +104,13 @@ Type objective_function<Type>::operator() ()
   }
   
   // Reporting predicted state variables for further analysis
+  SIMULATE {
+    for(int t = 0; t < n; t++){
+      N_dat(t) = N_pred(t);
+      P_dat(t) = P_pred(t);
+      Z_dat(t) = Z_pred(t);
+    }
+  }
   REPORT(N_pred);
   REPORT(P_pred);
   REPORT(Z_pred);
