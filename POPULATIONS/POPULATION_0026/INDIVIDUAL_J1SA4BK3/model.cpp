@@ -110,20 +110,20 @@ Type objective_function<Type>::operator() ()
     Type P_new = P_prev + dt * dP_dt;    // New phytoplankton concentration
     Type Z_new = Z_prev + dt * dZ_dt;    // New zooplankton concentration
     
-    // Use conditional expressions to ensure non-negative values
+    // Ensure non-negative values using simple approach
     Type min_val = Type(1e-8);           // Minimum allowed concentration
-    N_pred(i) = CppAD::CondExpGe(N_new, min_val, N_new, min_val);  // Ensure non-negative nutrients
-    P_pred(i) = CppAD::CondExpGe(P_new, min_val, P_new, min_val);  // Ensure non-negative phytoplankton
-    Z_pred(i) = CppAD::CondExpGe(Z_new, min_val, Z_new, min_val);  // Ensure non-negative zooplankton
+    N_pred(i) = N_new + sqrt(N_new * N_new + min_val * min_val) - sqrt(min_val * min_val);  // Smooth max approximation
+    P_pred(i) = P_new + sqrt(P_new * P_new + min_val * min_val) - sqrt(min_val * min_val);  // Smooth max approximation
+    Z_pred(i) = Z_new + sqrt(Z_new * Z_new + min_val * min_val) - sqrt(min_val * min_val);  // Smooth max approximation
   }
   
   // Calculate likelihood for all observations
   Type min_sigma = Type(0.001);         // Minimum observation error to prevent numerical issues
   
-  // Ensure minimum sigma values using conditional expressions
-  Type sigma_N_safe = CppAD::CondExpGe(sigma_N, min_sigma, sigma_N, min_sigma);  // Numerically stable error for nutrients
-  Type sigma_P_safe = CppAD::CondExpGe(sigma_P, min_sigma, sigma_P, min_sigma);  // Numerically stable error for phytoplankton
-  Type sigma_Z_safe = CppAD::CondExpGe(sigma_Z, min_sigma, sigma_Z, min_sigma);  // Numerically stable error for zooplankton
+  // Ensure minimum sigma values
+  Type sigma_N_safe = sigma_N + sqrt(sigma_N * sigma_N + min_sigma * min_sigma) - sqrt(min_sigma * min_sigma);  // Smooth max for sigma
+  Type sigma_P_safe = sigma_P + sqrt(sigma_P * sigma_P + min_sigma * min_sigma) - sqrt(min_sigma * min_sigma);  // Smooth max for sigma
+  Type sigma_Z_safe = sigma_Z + sqrt(sigma_Z * sigma_Z + min_sigma * min_sigma) - sqrt(min_sigma * min_sigma);  // Smooth max for sigma
   
   // Add observation likelihoods for all data points
   for(int i = 0; i < n_obs; i++) {
@@ -136,19 +136,11 @@ Type objective_function<Type>::operator() ()
     Type log_P_pred_safe = log(P_pred(i) + Type(1e-8));  // Log predicted phytoplankton with small constant
     Type log_Z_pred_safe = log(Z_pred(i) + Type(1e-8));  // Log predicted zooplankton with small constant
     
-    // Check for valid values before adding to likelihood
-    Type nll_N = dnorm(log_N_obs, log_N_pred_safe, sigma_N_safe, true);
-    Type nll_P = dnorm(log_P_obs, log_P_pred_safe, sigma_P_safe, true);
-    Type nll_Z = dnorm(log_Z_obs, log_Z_pred_safe, sigma_Z_safe, true);
-    
-    // Only add finite likelihood contributions
-    nll -= CppAD::CondExpGe(nll_N, Type(-1e10), nll_N, Type(0.0));
-    nll -= CppAD::CondExpGe(nll_P, Type(-1e10), nll_P, Type(0.0));
-    nll -= CppAD::CondExpGe(nll_Z, Type(-1e10), nll_Z, Type(0.0));
+    // Add likelihood contributions
+    nll -= dnorm(log_N_obs, log_N_pred_safe, sigma_N_safe, true);
+    nll -= dnorm(log_P_obs, log_P_pred_safe, sigma_P_safe, true);
+    nll -= dnorm(log_Z_obs, log_Z_pred_safe, sigma_Z_safe, true);
   }
-  
-  // Add penalty if nll becomes infinite or NaN
-  nll = CppAD::CondExpGe(nll, Type(1e10), Type(1e10), nll);
   
   // Report predicted values for output
   REPORT(N_pred);                       // Report predicted nutrient concentrations
