@@ -68,8 +68,8 @@ Type objective_function<Type>::operator() ()
     Type mortality_P = d_P * P_pred(t-1);    // Mortality loss
     Type dP = growth_P - grazing - mortality_P;
     
-    // Equation 3: Zooplankton dynamics (growth via grazing, mortality)
-    Type dZ = eps_Z * grazing - d_Z * Z_pred(t-1);
+    // Equation 3: Zooplankton dynamics (growth via grazing including variable conversion efficiency, mortality)
+    Type dZ = eps_Z * (1 - exp(-mu * P_pred(t-1))) * grazing - d_Z * Z_pred(t-1);
     
     // Equation 4: Nutrient recycling and uptake with saturating recycling efficiency
     // dN/dt = - U * P_pred(t-1) + r*(P_pred(t-1) + Z_pred(t-1))/(1 + beta*(P_pred(t-1) + Z_pred(t-1)))
