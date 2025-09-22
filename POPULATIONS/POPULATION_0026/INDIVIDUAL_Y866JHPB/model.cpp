@@ -32,12 +32,12 @@ Type objective_function<Type>::operator() ()
   Type K_Z = exp(log_K_Z);              // Half-saturation for grazing (g C m^-3), typical range 0.01-1.0
   Type m_P = exp(log_m_P);              // Phytoplankton mortality rate (day^-1), typical range 0.01-0.5
   Type m_Z = exp(log_m_Z);              // Zooplankton mortality rate (day^-1), typical range 0.01-1.0
-  Type e = exp(log_e) / (Type(1.0) + exp(log_e));  // Assimilation efficiency (0-1), typical range 0.1-0.8
-  Type gamma = exp(log_gamma) / (Type(1.0) + exp(log_gamma)); // Recycling efficiency (0-1), typical range 0.1-0.9
+  Type e = Type(0.3) + Type(0.4) * exp(log_e) / (Type(1.0) + exp(log_e));  // Assimilation efficiency (0.3-0.7)
+  Type gamma = Type(0.1) + Type(0.8) * exp(log_gamma) / (Type(1.0) + exp(log_gamma)); // Recycling efficiency (0.1-0.9)
   Type N_in = exp(log_N_in);            // External nutrient input (g C m^-3 day^-1), typical range 0.001-0.1
-  Type sigma_N = exp(log_sigma_N) + Type(1e-6);  // Observation error for N with minimum bound
-  Type sigma_P = exp(log_sigma_P) + Type(1e-6);  // Observation error for P with minimum bound
-  Type sigma_Z = exp(log_sigma_Z) + Type(1e-6);  // Observation error for Z with minimum bound
+  Type sigma_N = exp(log_sigma_N) + Type(0.01);  // Observation error for N with reasonable minimum
+  Type sigma_P = exp(log_sigma_P) + Type(0.01);  // Observation error for P with reasonable minimum
+  Type sigma_Z = exp(log_sigma_Z) + Type(0.01);  // Observation error for Z with reasonable minimum
   
   int n_obs = Time.size();              // Number of observations
   
@@ -70,7 +70,8 @@ Type objective_function<Type>::operator() ()
     
     // Equation 2: Phytoplankton growth with nutrient limitation and carrying capacity
     Type carrying_capacity_effect = Type(1.0) - P_prev / (K_P + Type(1e-8));
-    carrying_capacity_effect = carrying_capacity_effect > Type(0.0) ? carrying_capacity_effect : Type(0.0);
+    // Use smooth transition instead of conditional
+    carrying_capacity_effect = Type(0.5) * (carrying_capacity_effect + sqrt(carrying_capacity_effect * carrying_capacity_effect + Type(1e-8)));
     Type P_growth = r * f_N * P_prev * carrying_capacity_effect;
     
     // Equation 3: Zooplankton functional response (Type II)
@@ -103,11 +104,11 @@ Type objective_function<Type>::operator() ()
     P_pred(i) = P_prev + dt * dP_dt;    // Update phytoplankton concentration
     Z_pred(i) = Z_prev + dt * dZ_dt;    // Update zooplankton concentration
     
-    // Ensure non-negative concentrations using simple max operation
+    // Ensure non-negative concentrations using smooth approximation to max
     Type min_val = Type(1e-8);          // Minimum allowed concentration
-    N_pred(i) = N_pred(i) > min_val ? N_pred(i) : min_val;  // Prevent negative nutrients
-    P_pred(i) = P_pred(i) > min_val ? P_pred(i) : min_val;  // Prevent negative phytoplankton
-    Z_pred(i) = Z_pred(i) > min_val ? Z_pred(i) : min_val;  // Prevent negative zooplankton
+    N_pred(i) = Type(0.5) * (N_pred(i) + min_val + sqrt((N_pred(i) - min_val) * (N_pred(i) - min_val) + Type(1e-8)));
+    P_pred(i) = Type(0.5) * (P_pred(i) + min_val + sqrt((P_pred(i) - min_val) * (P_pred(i) - min_val) + Type(1e-8)));
+    Z_pred(i) = Type(0.5) * (Z_pred(i) + min_val + sqrt((Z_pred(i) - min_val) * (Z_pred(i) - min_val) + Type(1e-8)));
   }
   
   // Calculate negative log-likelihood
@@ -121,21 +122,21 @@ Type objective_function<Type>::operator() ()
   nll += Type(0.001) * pow(log_m_P + Type(2.303), 2);      // Weak penalty around m_P = 0.1
   nll += Type(0.001) * pow(log_m_Z + Type(1.609), 2);      // Weak penalty around m_Z = 0.2
   
-  // Likelihood for nutrient observations (lognormal distribution)
+  // Likelihood for nutrient observations (normal distribution on log scale)
   for(int i = 0; i < n_obs; i++) {
     Type pred_log = log(N_pred(i) + Type(1e-8));  // Log predicted value with stability
     Type obs_log = log(N_dat(i) + Type(1e-8));    // Log observed value with stability
     nll -= dnorm(obs_log, pred_log, sigma_N, true);  // Lognormal likelihood for nutrients
   }
   
-  // Likelihood for phytoplankton observations (lognormal distribution)
+  // Likelihood for phytoplankton observations (normal distribution on log scale)
   for(int i = 0; i < n_obs; i++) {
     Type pred_log = log(P_pred(i) + Type(1e-8));  // Log predicted value with stability
     Type obs_log = log(P_dat(i) + Type(1e-8));    // Log observed value with stability
     nll -= dnorm(obs_log, pred_log, sigma_P, true);  // Lognormal likelihood for phytoplankton
   }
   
-  // Likelihood for zooplankton observations (lognormal distribution)
+  // Likelihood for zooplankton observations (normal distribution on log scale)
   for(int i = 0; i < n_obs; i++) {
     Type pred_log = log(Z_pred(i) + Type(1e-8));  // Log predicted value with stability
     Type obs_log = log(Z_dat(i) + Type(1e-8));    // Log observed value with stability
