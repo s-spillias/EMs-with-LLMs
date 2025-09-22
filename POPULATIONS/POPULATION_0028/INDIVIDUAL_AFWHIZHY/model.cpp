@@ -63,7 +63,7 @@ Type objective_function<Type>::operator() ()
     Type growth_P = eps_P * U * P_pred(t-1) * exp(-alpha * P_pred(t-1)); // Growth contribution, including self-shading effect
     Type grazing = g_Z * pow(Z_pred(t-1), gamma) * P_pred(t-1) / (K_P + P_pred(t-1) + h_Z * P_pred(t-1)); // Grazing loss with predator interference and handling time
     Type mortality_P = d_P * P_pred(t-1);    // Mortality loss
-    Type dP = growth_P - grazing - mortality_P;
+    Type dP = growth_P - grazing - mortality_P - c_P * P_pred(t-1) * P_pred(t-1);
     
     // Equation 3: Zooplankton dynamics (growth via grazing, mortality)
     Type dZ = eps_Z * grazing - d_Z * Z_pred(t-1);
