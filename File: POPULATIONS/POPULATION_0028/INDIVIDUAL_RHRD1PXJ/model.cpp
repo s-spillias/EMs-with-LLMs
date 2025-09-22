@@ -88,14 +88,18 @@ Type objective_function<Type>::operator() ()
       N_pred(t) = (N_pred(t) < eps ? eps : N_pred(t));
       P_pred(t) = (P_pred(t) < eps ? eps : P_pred(t));
       Z_pred(t) = (Z_pred(t) < eps ? eps : Z_pred(t));
-      
-      // LIKELIHOOD CALCULATION: using lognormal error (data are strictly positive)
+   }
+
+   // REPORT predicted time series for later analysis:
+   }
+   
+   // Compute likelihood separately (using predictions computed above) to avoid data leakage
+   for (int t = 1; t < n; t++){
       nll -= dlnorm(N_dat(t), log(N_pred(t)), max(sd_N, Type(1e-3)), true);
       nll -= dlnorm(P_dat(t), log(P_pred(t)), max(sd_P, Type(1e-3)), true);
       nll -= dlnorm(Z_dat(t), log(Z_pred(t)), max(sd_Z, Type(1e-3)), true);
    }
-
-   // REPORT predicted time series for later analysis:
+   
    REPORT(N_pred); // Report predicted nutrient concentrations
    REPORT(P_pred); // Report predicted phytoplankton concentrations
    REPORT(Z_pred); // Report predicted zooplankton concentrations
