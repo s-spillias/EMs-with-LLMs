@@ -43,6 +43,9 @@ Type objective_function<Type>::operator() ()
   PARAMETER(I_L);         // Light intensity modifier scaling nutrient uptake
   PARAMETER(T_opt);       // Optimal temperature for phytoplankton growth (°C)
   PARAMETER(T_sigma);     // Temperature sensitivity standard deviation (°C)
+  PARAMETER(init_N);      // Initial nutrient concentration
+  PARAMETER(init_P);      // Initial phytoplankton concentration
+  PARAMETER(init_Z);      // Initial zooplankton concentration
   vector<Type> temperature(n);
   if(temperature_aux.size() == 0) {
     for(int i = 0; i < n; i++){
@@ -55,10 +58,10 @@ Type objective_function<Type>::operator() ()
   // Initialize predicted state vectors
   vector<Type> N_pred(n), P_pred(n), Z_pred(n);
   
-  // Set initial conditions to the observed first data points
-  N_pred(0) = N_dat(0);
-  P_pred(0) = P_dat(0);
-  Z_pred(0) = Z_dat(0);
+  // Set initial conditions from parameters (to avoid data leakage)
+  N_pred(0) = init_N;
+  P_pred(0) = init_P;
+  Z_pred(0) = init_Z;
   
   Type nll = 0.0;         // Negative log-likelihood accumulator
   Type eps = Type(1e-8);  // Small constant for numerical stability
