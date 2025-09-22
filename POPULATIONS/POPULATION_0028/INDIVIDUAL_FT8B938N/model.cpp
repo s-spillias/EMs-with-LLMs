@@ -42,6 +42,8 @@ Type objective_function<Type>::operator() ()
   PARAMETER(alpha);         // Self-shading coefficient for phytoplankton growth (dimensionless)
   PARAMETER(beta);          // Saturation coefficient for nutrient recycling
   PARAMETER(I_L);         // Light intensity modifier scaling nutrient uptake
+  PARAMETER(I_amp);       // Amplitude for seasonal light variation
+  PARAMETER(I_phase);     // Phase shift for seasonal light variation (radians)
   PARAMETER(cp);          // Coefficient for density-dependent inhibition in grazing (model improvement)
   PARAMETER(K_P3);        // Half-saturation constant for Type III grazing response.
   PARAMETER(K_Pmax);      // Phytoplankton carrying capacity for logistic growth term in phytoplankton dynamics.
