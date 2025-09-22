@@ -66,7 +66,7 @@ Type objective_function<Type>::operator() ()
     // Equation 2: Phytoplankton growth, grazing, and mortality
     Type growth_P = eps_P * (N_pred(t-1) / (K_eps + N_pred(t-1) + eps)) * U * P_pred(t-1) * exp(-alpha * P_pred(t-1)); // Nutrient-dependent conversion efficiency included in growth term
     Type grazing = g_Z * pow(Z_pred(t-1), gamma) * pow(P_pred(t-1), 2) / (pow(K_P3, 2) + pow(P_pred(t-1), 2) + h_Z * P_pred(t-1) + cp * pow(P_pred(t-1), 2)); // Grazing loss with Type III response, incorporating reduced grazing at low prey densities
-    Type mortality_P = d_P * P_pred(t-1);    // Mortality loss
+    Type mortality_P = d_P * P_pred(t-1) + d_P2 * P_pred(t-1) * P_pred(t-1);    // Mortality loss including density-dependent quadratic term
     Type dP = growth_P - grazing - mortality_P;
     
     // Equation 3: Zooplankton dynamics (growth via grazing, mortality) with variable conversion efficiency
