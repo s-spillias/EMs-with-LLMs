@@ -87,10 +87,15 @@ Type objective_function<Type>::operator() ()
     // Equation 5: Zooplankton dynamics - grazing with efficiency, natural mortality
     Type dZ_dt = e * grazing_rate * Z_prev - m_Z * Z_prev;
     
-    // Update predictions using Euler integration
-    N_pred(i) = fmax(N_prev + dt * dN_dt, Type(1e-8)); // Ensure non-negative nutrients
-    P_pred(i) = fmax(P_prev + dt * dP_dt, Type(1e-8)); // Ensure non-negative phytoplankton
-    Z_pred(i) = fmax(Z_prev + dt * dZ_dt, Type(1e-8)); // Ensure non-negative zooplankton
+    // Update predictions using Euler integration with TMB-compatible maximum function
+    Type N_new = N_prev + dt * dN_dt;
+    Type P_new = P_prev + dt * dP_dt;
+    Type Z_new = Z_prev + dt * dZ_dt;
+    
+    // Ensure non-negative values using smooth conditional expressions
+    N_pred(i) = CppAD::CondExpGt(N_new, Type(1e-8), N_new, Type(1e-8)); // Ensure non-negative nutrients
+    P_pred(i) = CppAD::CondExpGt(P_new, Type(1e-8), P_new, Type(1e-8)); // Ensure non-negative phytoplankton
+    Z_pred(i) = CppAD::CondExpGt(Z_new, Type(1e-8), Z_new, Type(1e-8)); // Ensure non-negative zooplankton
   }
   
   // Calculate likelihood for all observations
@@ -99,13 +104,18 @@ Type objective_function<Type>::operator() ()
   Type min_sigma_Z = Type(0.001);       // Minimum observation error for zooplankton
   
   for(int i = 0; i < n_time; i++) {
+    // Use TMB-compatible maximum for sigma values
+    Type sigma_N_safe = CppAD::CondExpGt(sigma_N, min_sigma_N, sigma_N, min_sigma_N);
+    Type sigma_P_safe = CppAD::CondExpGt(sigma_P, min_sigma_P, sigma_P, min_sigma_P);
+    Type sigma_Z_safe = CppAD::CondExpGt(sigma_Z, min_sigma_Z, sigma_Z, min_sigma_Z);
+    
     // Use lognormal likelihood for strictly positive concentrations
     nll -= dnorm(log(N_dat(i) + Type(1e-8)), log(N_pred(i) + Type(1e-8)), 
-                 fmax(sigma_N, min_sigma_N), true); // Nutrient likelihood
+                 sigma_N_safe, true); // Nutrient likelihood
     nll -= dnorm(log(P_dat(i) + Type(1e-8)), log(P_pred(i) + Type(1e-8)), 
-                 fmax(sigma_P, min_sigma_P), true); // Phytoplankton likelihood
+                 sigma_P_safe, true); // Phytoplankton likelihood
     nll -= dnorm(log(Z_dat(i) + Type(1e-8)), log(Z_pred(i) + Type(1e-8)), 
-                 fmax(sigma_Z, min_sigma_Z), true); // Zooplankton likelihood
+                 sigma_Z_safe, true); // Zooplankton likelihood
   }
   
   // Report predictions and parameters
