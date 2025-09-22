@@ -76,9 +76,9 @@ Type objective_function<Type>::operator() ()
   // 5. Likelihood Calculation: Compare model predictions with data using a lognormal error distribution.
   for(int t = 0; t < n; t++){
     Type this_sigma = sigma + Type(1e-8); // Ensuring a fixed minimum error for stability
-    nll -= dlnorm(N_dat[t], log(N_pred[t] + Type(1e-8)), this_sigma, true); // Nutrient likelihood
-    nll -= dlnorm(P_dat[t], log(P_pred[t] + Type(1e-8)), this_sigma, true); // Phytoplankton likelihood
-    nll -= dlnorm(Z_dat[t], log(Z_pred[t] + Type(1e-8)), this_sigma, true); // Zooplankton likelihood
+    nll -= dnorm(log(N_dat[t] + Type(1e-8)), log(N_pred[t] + Type(1e-8)), this_sigma, true) - log(N_dat[t] + Type(1e-8)); // Nutrient likelihood (lognormal)
+    nll -= dnorm(log(P_dat[t] + Type(1e-8)), log(P_pred[t] + Type(1e-8)), this_sigma, true) - log(P_dat[t] + Type(1e-8)); // Phytoplankton likelihood (lognormal)
+    nll -= dnorm(log(Z_dat[t] + Type(1e-8)), log(Z_pred[t] + Type(1e-8)), this_sigma, true) - log(Z_dat[t] + Type(1e-8)); // Zooplankton likelihood (lognormal)
   }
 
   // 6. Reporting: Output predicted concentrations to be analyzed externally.
