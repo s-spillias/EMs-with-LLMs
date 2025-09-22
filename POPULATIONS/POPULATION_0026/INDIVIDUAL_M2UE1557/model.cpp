@@ -26,18 +26,18 @@ Type objective_function<Type>::operator() ()
   
   // Transform parameters to natural scale with small constants for numerical stability
   Type r = exp(log_r);                  // Maximum phytoplankton growth rate (day^-1)
-  Type K_N = exp(log_K_N) + Type(1e-8); // Half-saturation for nutrient uptake (g C m^-3)
+  Type K_N = exp(log_K_N);              // Half-saturation for nutrient uptake (g C m^-3)
   Type m_P = exp(log_m_P);              // Phytoplankton mortality rate (day^-1)
   Type g_max = exp(log_g_max);          // Maximum zooplankton grazing rate (day^-1)
-  Type K_P = exp(log_K_P) + Type(1e-8); // Half-saturation for grazing (g C m^-3)
-  Type e = Type(1.0) / (Type(1.0) + exp(-log_e)); // Assimilation efficiency (0-1, logistic transform)
+  Type K_P = exp(log_K_P);              // Half-saturation for grazing (g C m^-3)
+  Type e = invlogit(log_e);             // Assimilation efficiency (0-1, using TMB's invlogit)
   Type m_Z = exp(log_m_Z);              // Zooplankton mortality rate (day^-1)
-  Type gamma = Type(1.0) / (Type(1.0) + exp(-log_gamma)); // Recycling efficiency from mortality (0-1)
-  Type delta = Type(1.0) / (Type(1.0) + exp(-log_delta)); // Recycling efficiency from excretion (0-1)
+  Type gamma = invlogit(log_gamma);     // Recycling efficiency from mortality (0-1)
+  Type delta = invlogit(log_delta);     // Recycling efficiency from excretion (0-1)
   Type N_in = exp(log_N_in);            // External nutrient input (g C m^-3 day^-1)
-  Type sigma_N = exp(log_sigma_N) + Type(1e-6); // Minimum observation error for nutrients
-  Type sigma_P = exp(log_sigma_P) + Type(1e-6); // Minimum observation error for phytoplankton
-  Type sigma_Z = exp(log_sigma_Z) + Type(1e-6); // Minimum observation error for zooplankton
+  Type sigma_N = exp(log_sigma_N);      // Observation error for nutrients
+  Type sigma_P = exp(log_sigma_P);      // Observation error for phytoplankton
+  Type sigma_Z = exp(log_sigma_Z);      // Observation error for zooplankton
   
   int n_obs = Time.size();              // Number of observations
   
@@ -56,9 +56,14 @@ Type objective_function<Type>::operator() ()
     Type dt = Time(i) - Time(i-1);      // Time step (days)
     
     // Previous time step values (avoid data leakage)
-    Type N_prev = N_pred(i-1) + Type(1e-8); // Add small constant for numerical stability
-    Type P_prev = P_pred(i-1) + Type(1e-8); // Add small constant for numerical stability
-    Type Z_prev = Z_pred(i-1) + Type(1e-8); // Add small constant for numerical stability
+    Type N_prev = N_pred(i-1);          // Previous nutrient concentration
+    Type P_prev = P_pred(i-1);          // Previous phytoplankton concentration
+    Type Z_prev = Z_pred(i-1);          // Previous zooplankton concentration
+    
+    // Add small constants to prevent division by zero
+    N_prev = N_prev + Type(1e-8);
+    P_prev = P_prev + Type(1e-8);
+    Z_prev = Z_prev + Type(1e-8);
     
     // Equation 1: Nutrient-limited phytoplankton growth (Michaelis-Menten kinetics)
     Type phyto_growth = r * (N_prev / (K_N + N_prev)) * P_prev;
@@ -87,15 +92,14 @@ Type objective_function<Type>::operator() ()
     Type dZ_dt = e * grazing - zoo_mortality;
     
     // Update state variables using Euler integration
-    N_pred(i) = N_prev + dt * dN_dt;
-    P_pred(i) = P_prev + dt * dP_dt;
-    Z_pred(i) = Z_prev + dt * dZ_dt;
+    Type N_new = N_prev + dt * dN_dt;
+    Type P_new = P_prev + dt * dP_dt;
+    Type Z_new = Z_prev + dt * dZ_dt;
     
-    // Ensure non-negative concentrations using smooth maximum function
-    Type min_val = Type(1e-8);
-    N_pred(i) = Type(0.5) * (N_pred(i) + sqrt(N_pred(i) * N_pred(i) + min_val * min_val));
-    P_pred(i) = Type(0.5) * (P_pred(i) + sqrt(P_pred(i) * P_pred(i) + min_val * min_val));
-    Z_pred(i) = Type(0.5) * (Z_pred(i) + sqrt(Z_pred(i) * Z_pred(i) + min_val * min_val));
+    // Ensure non-negative concentrations using simple maximum with small positive value
+    N_pred(i) = CppAD::CondExpGt(N_new, Type(1e-8), N_new, Type(1e-8));
+    P_pred(i) = CppAD::CondExpGt(P_new, Type(1e-8), P_new, Type(1e-8));
+    Z_pred(i) = CppAD::CondExpGt(Z_new, Type(1e-8), Z_new, Type(1e-8));
   }
   
   // Calculate negative log-likelihood
@@ -103,36 +107,41 @@ Type objective_function<Type>::operator() ()
   
   // Likelihood for nutrient observations (lognormal distribution)
   for(int i = 0; i < n_obs; i++) {
-    Type pred_log = log(N_pred(i) + Type(1e-8));
-    Type obs_log = log(N_dat(i) + Type(1e-8));
-    nll -= dnorm(obs_log, pred_log, sigma_N, true);
+    Type pred_val = N_pred(i) + Type(1e-8);
+    Type obs_val = N_dat(i) + Type(1e-8);
+    nll -= dnorm(log(obs_val), log(pred_val), sigma_N, true);
   }
   
   // Likelihood for phytoplankton observations (lognormal distribution)
   for(int i = 0; i < n_obs; i++) {
-    Type pred_log = log(P_pred(i) + Type(1e-8));
-    Type obs_log = log(P_dat(i) + Type(1e-8));
-    nll -= dnorm(obs_log, pred_log, sigma_P, true);
+    Type pred_val = P_pred(i) + Type(1e-8);
+    Type obs_val = P_dat(i) + Type(1e-8);
+    nll -= dnorm(log(obs_val), log(pred_val), sigma_P, true);
   }
   
   // Likelihood for zooplankton observations (lognormal distribution)
   for(int i = 0; i < n_obs; i++) {
-    Type pred_log = log(Z_pred(i) + Type(1e-8));
-    Type obs_log = log(Z_dat(i) + Type(1e-8));
-    nll -= dnorm(obs_log, pred_log, sigma_Z, true);
+    Type pred_val = Z_pred(i) + Type(1e-8);
+    Type obs_val = Z_dat(i) + Type(1e-8);
+    nll -= dnorm(log(obs_val), log(pred_val), sigma_Z, true);
+  }
+  
+  // Check for invalid likelihood values
+  if(!isfinite(asDouble(nll))) {
+    nll = Type(1e10);
   }
   
   // Soft biological constraints using penalty functions
   // Constraint 1: Growth rate should be reasonable for phytoplankton
-  if(r > Type(5.0)) nll += Type(10.0) * pow(r - Type(5.0), 2);
+  nll += CppAD::CondExpGt(r, Type(5.0), Type(100.0) * pow(r - Type(5.0), 2), Type(0.0));
   
   // Constraint 2: Assimilation efficiency should be realistic
-  if(e > Type(0.8)) nll += Type(10.0) * pow(e - Type(0.8), 2);
-  if(e < Type(0.1)) nll += Type(10.0) * pow(Type(0.1) - e, 2);
+  nll += CppAD::CondExpGt(e, Type(0.9), Type(100.0) * pow(e - Type(0.9), 2), Type(0.0));
+  nll += CppAD::CondExpLt(e, Type(0.05), Type(100.0) * pow(Type(0.05) - e, 2), Type(0.0));
   
   // Constraint 3: Recycling efficiencies should be reasonable
-  if(gamma > Type(0.9)) nll += Type(10.0) * pow(gamma - Type(0.9), 2);
-  if(delta > Type(0.9)) nll += Type(10.0) * pow(delta - Type(0.9), 2);
+  nll += CppAD::CondExpGt(gamma, Type(0.95), Type(100.0) * pow(gamma - Type(0.95), 2), Type(0.0));
+  nll += CppAD::CondExpGt(delta, Type(0.95), Type(100.0) * pow(delta - Type(0.95), 2), Type(0.0));
   
   // Report predicted values
   REPORT(N_pred);
