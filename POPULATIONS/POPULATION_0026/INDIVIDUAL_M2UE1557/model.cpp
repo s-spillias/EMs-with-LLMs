@@ -96,10 +96,10 @@ Type objective_function<Type>::operator() ()
     Type P_new = P_prev + dt * dP_dt;
     Type Z_new = Z_prev + dt * dZ_dt;
     
-    // Ensure non-negative concentrations using simple maximum with small positive value
-    N_pred(i) = CppAD::CondExpGt(N_new, Type(1e-8), N_new, Type(1e-8));
-    P_pred(i) = CppAD::CondExpGt(P_new, Type(1e-8), P_new, Type(1e-8));
-    Z_pred(i) = CppAD::CondExpGt(Z_new, Type(1e-8), Z_new, Type(1e-8));
+    // Ensure non-negative concentrations using simple approach
+    N_pred(i) = N_new + sqrt(N_new * N_new + Type(1e-16)) - sqrt(Type(1e-16));
+    P_pred(i) = P_new + sqrt(P_new * P_new + Type(1e-16)) - sqrt(Type(1e-16));
+    Z_pred(i) = Z_new + sqrt(Z_new * Z_new + Type(1e-16)) - sqrt(Type(1e-16));
   }
   
   // Calculate negative log-likelihood
@@ -126,22 +126,17 @@ Type objective_function<Type>::operator() ()
     nll -= dnorm(log(obs_val), log(pred_val), sigma_Z, true);
   }
   
-  // Check for invalid likelihood values
-  if(!isfinite(asDouble(nll))) {
-    nll = Type(1e10);
-  }
-  
   // Soft biological constraints using penalty functions
   // Constraint 1: Growth rate should be reasonable for phytoplankton
-  nll += CppAD::CondExpGt(r, Type(5.0), Type(100.0) * pow(r - Type(5.0), 2), Type(0.0));
+  if(r > Type(5.0)) nll += Type(100.0) * pow(r - Type(5.0), 2);
   
   // Constraint 2: Assimilation efficiency should be realistic
-  nll += CppAD::CondExpGt(e, Type(0.9), Type(100.0) * pow(e - Type(0.9), 2), Type(0.0));
-  nll += CppAD::CondExpLt(e, Type(0.05), Type(100.0) * pow(Type(0.05) - e, 2), Type(0.0));
+  if(e > Type(0.9)) nll += Type(100.0) * pow(e - Type(0.9), 2);
+  if(e < Type(0.05)) nll += Type(100.0) * pow(Type(0.05) - e, 2);
   
   // Constraint 3: Recycling efficiencies should be reasonable
-  nll += CppAD::CondExpGt(gamma, Type(0.95), Type(100.0) * pow(gamma - Type(0.95), 2), Type(0.0));
-  nll += CppAD::CondExpGt(delta, Type(0.95), Type(100.0) * pow(delta - Type(0.95), 2), Type(0.0));
+  if(gamma > Type(0.95)) nll += Type(100.0) * pow(gamma - Type(0.95), 2);
+  if(delta > Type(0.95)) nll += Type(100.0) * pow(delta - Type(0.95), 2);
   
   // Report predicted values
   REPORT(N_pred);
