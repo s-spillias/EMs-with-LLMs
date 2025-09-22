@@ -53,10 +53,10 @@ Type objective_function<Type>::operator() ()
   for(int i = 1; i < n_obs; i++) {
     Type dt = Time(i) - Time(i-1);      // Time step size (days)
     
-    // Previous time step values (avoid data leakage)
-    Type N_prev = fmax(N_pred(i-1), Type(1e-8)); // Ensure positive with maximum function
-    Type P_prev = fmax(P_pred(i-1), Type(1e-8)); // Ensure positive with maximum function
-    Type Z_prev = fmax(Z_pred(i-1), Type(1e-8)); // Ensure positive with maximum function
+    // Previous time step values (avoid data leakage) with smooth lower bounds
+    Type N_prev = N_pred(i-1) + Type(1e-8); // Add small constant for numerical stability
+    Type P_prev = P_pred(i-1) + Type(1e-8); // Add small constant for numerical stability
+    Type Z_prev = Z_pred(i-1) + Type(1e-8); // Add small constant for numerical stability
     
     // Equation 1: Phytoplankton growth rate with Michaelis-Menten nutrient limitation
     Type phyto_growth = r * (N_prev / (K_N + N_prev)) * P_prev;
@@ -80,10 +80,15 @@ Type objective_function<Type>::operator() ()
     // Equation 7: Zooplankton dynamics - efficient grazing - mortality  
     Type dZ_dt = e * grazing - m_Z * Z_prev;
     
-    // Update state variables using Euler integration with bounds
-    N_pred(i) = fmax(N_prev + dt * dN_dt, Type(1e-8)); // Forward Euler step for nutrients with lower bound
-    P_pred(i) = fmax(P_prev + dt * dP_dt, Type(1e-8)); // Forward Euler step for phytoplankton with lower bound
-    Z_pred(i) = fmax(Z_prev + dt * dZ_dt, Type(1e-8)); // Forward Euler step for zooplankton with lower bound
+    // Update state variables using Euler integration with smooth lower bounds
+    Type N_new = N_prev + dt * dN_dt;   // Forward Euler step for nutrients
+    Type P_new = P_prev + dt * dP_dt;   // Forward Euler step for phytoplankton
+    Type Z_new = Z_prev + dt * dZ_dt;   // Forward Euler step for zooplankton
+    
+    // Apply smooth lower bounds using sqrt transformation
+    N_pred(i) = (N_new + sqrt(N_new * N_new + Type(4e-16))) / Type(2.0); // Smooth max with 1e-8
+    P_pred(i) = (P_new + sqrt(P_new * P_new + Type(4e-16))) / Type(2.0); // Smooth max with 1e-8
+    Z_pred(i) = (Z_new + sqrt(Z_new * Z_new + Type(4e-16))) / Type(2.0); // Smooth max with 1e-8
   }
   
   // Calculate negative log-likelihood
@@ -94,11 +99,6 @@ Type objective_function<Type>::operator() ()
     nll -= dnorm(N_dat(i), N_pred(i), sigma_N, true); // Nutrient observation likelihood
     nll -= dnorm(P_dat(i), P_pred(i), sigma_P, true); // Phytoplankton observation likelihood  
     nll -= dnorm(Z_dat(i), Z_pred(i), sigma_Z, true); // Zooplankton observation likelihood
-  }
-  
-  // Check for invalid likelihood values
-  if(!isfinite(nll)) {
-    nll = Type(1e10);                   // Return large finite value if NaN or Inf
   }
   
   // Report predicted values for plotting and diagnostics
