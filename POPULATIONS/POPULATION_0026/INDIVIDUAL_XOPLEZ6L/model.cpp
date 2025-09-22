@@ -64,7 +64,7 @@ Type objective_function<Type>::operator() ()
   Z_pred(0) = Z_dat(0);                 // Initial zooplankton concentration
   
   // Small constant to prevent division by zero
-  Type eps = Type(1e-6);
+  Type eps = Type(1e-8);
   
   // Numerical integration using Euler method
   for(int i = 1; i < n_obs; i++) {
@@ -116,13 +116,6 @@ Type objective_function<Type>::operator() ()
   // Calculate negative log-likelihood
   Type nll = Type(0.0);
   
-  // Check for invalid predictions
-  for(int i = 0; i < n_obs; i++) {
-    if(!isfinite(asDouble(N_pred(i))) || !isfinite(asDouble(P_pred(i))) || !isfinite(asDouble(Z_pred(i)))) {
-      return Type(1e10);  // Return large penalty for invalid predictions
-    }
-  }
-  
   // Likelihood for all observations using normal distribution
   for(int i = 0; i < n_obs; i++) {
     nll -= dnorm(N_dat(i), N_pred(i), sigma_N, true);  // Nutrient likelihood
@@ -132,11 +125,6 @@ Type objective_function<Type>::operator() ()
   
   // Add parameter penalties
   nll += penalty;
-  
-  // Check for invalid likelihood
-  if(!isfinite(asDouble(nll))) {
-    return Type(1e10);  // Return large penalty for invalid likelihood
-  }
   
   // Report predictions and parameters
   REPORT(N_pred);                       // Report predicted nutrient concentrations
