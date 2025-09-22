@@ -75,10 +75,10 @@ Type objective_function<Type>::operator() ()
     Type P_prev = P_pred(i-1);          // Previous phytoplankton concentration
     Type Z_prev = Z_pred(i-1);          // Previous zooplankton concentration
     
-    // Ensure positive values with small epsilon
-    N_prev = fmax(N_prev, eps);         // Prevent negative nutrients
-    P_prev = fmax(P_prev, eps);         // Prevent negative phytoplankton
-    Z_prev = fmax(Z_prev, eps);         // Prevent negative zooplankton
+    // Ensure positive values using smooth maximum function
+    N_prev = CppAD::CondExpGt(N_prev, eps, N_prev, eps);  // Prevent negative nutrients
+    P_prev = CppAD::CondExpGt(P_prev, eps, P_prev, eps);  // Prevent negative phytoplankton
+    Z_prev = CppAD::CondExpGt(Z_prev, eps, Z_prev, eps);  // Prevent negative zooplankton
     
     // Equation 1: Phytoplankton growth rate with Michaelis-Menten nutrient limitation
     Type phyto_growth = r * (N_prev / (K + N_prev)) * P_prev;
@@ -107,10 +107,10 @@ Type objective_function<Type>::operator() ()
     P_pred(i) = P_prev + dt * dP_dt;    // Update phytoplankton concentration
     Z_pred(i) = Z_prev + dt * dZ_dt;    // Update zooplankton concentration
     
-    // Ensure predictions remain positive
-    N_pred(i) = fmax(N_pred(i), eps);   // Bound nutrients above zero
-    P_pred(i) = fmax(P_pred(i), eps);   // Bound phytoplankton above zero
-    Z_pred(i) = fmax(Z_pred(i), eps);   // Bound zooplankton above zero
+    // Ensure predictions remain positive using smooth maximum
+    N_pred(i) = CppAD::CondExpGt(N_pred(i), eps, N_pred(i), eps);  // Bound nutrients above zero
+    P_pred(i) = CppAD::CondExpGt(P_pred(i), eps, P_pred(i), eps);  // Bound phytoplankton above zero
+    Z_pred(i) = CppAD::CondExpGt(Z_pred(i), eps, Z_pred(i), eps);  // Bound zooplankton above zero
   }
   
   // Calculate negative log-likelihood
