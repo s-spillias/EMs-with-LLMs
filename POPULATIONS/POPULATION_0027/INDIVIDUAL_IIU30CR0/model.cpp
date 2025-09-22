@@ -1,4 +1,10 @@
 #include <TMB.hpp>
+template<class Type>
+Type dlnorm_custom(Type x, Type meanlog, Type sdlog) {
+  // Returns the log density of the lognormal distribution for x.
+  return -log(x + Type(1e-8)) - log(sdlog) - 0.5 * log(2.0 * 3.14159265358979323846)
+         - pow(log(x + Type(1e-8)) - meanlog, 2) / (Type(2) * sdlog * sdlog);
+}
 
 // 1. Data inputs and model predictions:
 //    (i) time: time in days.
@@ -84,7 +90,7 @@ Type objective_function<Type>::operator()() {
     // Equation 3 (Zooplankton dynamics):
     // Increase from assimilated grazing minus constant mortality (assumed 0.1 day^-1)
     Type assimilation = efficiency_PtoZ * grazing;
-    PREDICTED mortality_rate = Type(0.1); // Constant mortality rate for zooplankton (day^-1)
+    Type mortality_rate = Type(0.1); // Constant mortality rate for zooplankton (day^-1)
     Z_pred(t) = Z_pred(t-1) + dt * (assimilation - mortality_rate * Z_pred(t-1));
 
     // Ensure all predictions remain positive using smooth conditional expressions
@@ -94,9 +100,9 @@ Type objective_function<Type>::operator()() {
 
     // Likelihood calculation (using lognormal error distribution to account for multiplicative error)
     // Observations (_dat) are compared with log-transformed predictions (_pred)
-    nll -= dlnorm(N_dat(t), log(N_pred(t) + Type(1e-8)), sigma_N, true);
-    nll -= dlnorm(P_dat(t), log(P_pred(t) + Type(1e-8)), sigma_P, true);
-    nll -= dlnorm(Z_dat(t), log(Z_pred(t) + Type(1e-8)), sigma_Z, true);
+    nll -= dlnorm_custom(N_dat(t), log(N_pred(t) + Type(1e-8)), sigma_N);
+    nll -= dlnorm_custom(P_dat(t), log(P_pred(t) + Type(1e-8)), sigma_P);
+    nll -= dlnorm_custom(Z_dat(t), log(Z_pred(t) + Type(1e-8)), sigma_Z);
   }
 
   // REPORT predicted trajectories for N, P, and Z (with _pred suffix matching observations _dat)
