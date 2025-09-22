@@ -23,6 +23,7 @@ Type objective_function<Type>::operator() ()
   DATA_VECTOR(N_dat);       // Nutrient observations (g C m^-3)
   DATA_VECTOR(P_dat);       // Phytoplankton observations (g C m^-3)
   DATA_VECTOR(Z_dat);       // Zooplankton observations (g C m^-3)
+  DATA_VECTOR(temp);        // Temperature observations (°C) over time
 
   int n = time.size();
 
@@ -58,9 +59,10 @@ Type objective_function<Type>::operator() ()
   
   // Time integration using Euler's method, ensuring predictions use only past values
   for(int t = 1; t < n; t++){
-    // Equation 1: Nutrient uptake (Michaelis-Menten form) with saturating light limitation
-    // U = v_N * (1 - exp(-I_L)) * N_pred(t-1) / (K_N + N_pred(t-1) + eps)
-    Type U = v_N * (1 - exp(-I_L)) * N_pred(t-1) / (K_N + N_pred(t-1) + eps);
+    // Equation 1: Nutrient uptake (Michaelis-Menten form) with saturating light limitation and temperature effect
+    // Applying temperature correction using Q10 rule: temp_factor = Q10^((temp[t-1]-T_ref)/10)
+    Type temp_factor = pow(Q10, (temp(t-1) - T_ref)/Type(10));
+    Type U = v_N * (1 - exp(-I_L)) * temp_factor * N_pred(t-1) / (K_N + N_pred(t-1) + eps);
     
     // Equation 2: Phytoplankton growth, grazing, and mortality
     Type growth_P = eps_P * (N_pred(t-1) / (K_eps + N_pred(t-1) + eps)) * U * P_pred(t-1) * exp(-alpha * P_pred(t-1)); // Nutrient-dependent conversion efficiency included in growth term
