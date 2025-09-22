@@ -71,9 +71,9 @@ Type objective_function<Type>::operator() ()
     // Equation 3: Zooplankton dynamics (growth via grazing, mortality)
     Type dZ = eps_Z * grazing - d_Z * Z_pred(t-1);
     
-    // Equation 4: Nutrient recycling and uptake with saturating recycling efficiency
-    // dN/dt = - U * P_pred(t-1) + r*(P_pred(t-1) + Z_pred(t-1))/(1 + beta*(P_pred(t-1) + Z_pred(t-1)))
-    Type dN = - U * P_pred(t-1) + r*(P_pred(t-1) + Z_pred(t-1))/(1 + beta*(P_pred(t-1) + Z_pred(t-1)));
+    // Equation 4: Nutrient recycling and uptake with a Michaelis–Menten form for recycling
+    // dN/dt = - U * P_pred(t-1) + r_max*(P_pred(t-1) + Z_pred(t-1))/(K_R + (P_pred(t-1) + Z_pred(t-1)))
+    Type dN = - U * P_pred(t-1) + r_max*(P_pred(t-1) + Z_pred(t-1))/(K_R + (P_pred(t-1) + Z_pred(t-1)));
     
     // Use time step difference (dt) for integration
     Type dt = time(t) - time(t-1);
