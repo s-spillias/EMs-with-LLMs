@@ -31,9 +31,9 @@ Type objective_function<Type>::operator() ()
   Type e = exp(log_e);                  // Grazing efficiency (0-1)
   Type mu_Z = exp(log_mu_Z);            // Zooplankton mortality rate (day^-1)
   Type gamma = exp(log_gamma);          // Nutrient recycling efficiency (0-1)
-  Type sigma_N = exp(log_sigma_N) + Type(1e-4); // Minimum observation error for N
-  Type sigma_P = exp(log_sigma_P) + Type(1e-4); // Minimum observation error for P
-  Type sigma_Z = exp(log_sigma_Z) + Type(1e-4); // Minimum observation error for Z
+  Type sigma_N = exp(log_sigma_N) + Type(0.01); // Minimum observation error for N
+  Type sigma_P = exp(log_sigma_P) + Type(0.01); // Minimum observation error for P
+  Type sigma_Z = exp(log_sigma_Z) + Type(0.01); // Minimum observation error for Z
   
   int n_obs = Time.size();              // Number of observations
   
@@ -42,19 +42,19 @@ Type objective_function<Type>::operator() ()
   vector<Type> P_pred(n_obs);           // Predicted phytoplankton concentration
   vector<Type> Z_pred(n_obs);           // Predicted zooplankton concentration
   
-  // Set initial conditions with minimum bounds
-  N_pred(0) = CppAD::CondExpLt(N_dat(0), Type(1e-6), Type(1e-6), N_dat(0)); // Initial nutrient concentration
-  P_pred(0) = CppAD::CondExpLt(P_dat(0), Type(1e-6), Type(1e-6), P_dat(0)); // Initial phytoplankton concentration
-  Z_pred(0) = CppAD::CondExpLt(Z_dat(0), Type(1e-6), Type(1e-6), Z_dat(0)); // Initial zooplankton concentration
+  // Set initial conditions
+  N_pred(0) = N_dat(0);                 // Initial nutrient concentration
+  P_pred(0) = P_dat(0);                 // Initial phytoplankton concentration
+  Z_pred(0) = Z_dat(0);                 // Initial zooplankton concentration
   
   // Numerical integration using Euler method
   for(int i = 1; i < n_obs; i++) {
     Type dt = Time(i) - Time(i-1);      // Time step (days)
     
     // Previous time step values (avoid data leakage)
-    Type N_prev = N_pred(i-1);          // Previous nutrient concentration
-    Type P_prev = P_pred(i-1);          // Previous phytoplankton concentration
-    Type Z_prev = Z_pred(i-1);          // Previous zooplankton concentration
+    Type N_prev = N_pred(i-1) + Type(1e-8); // Previous nutrient concentration
+    Type P_prev = P_pred(i-1) + Type(1e-8); // Previous phytoplankton concentration
+    Type Z_prev = Z_pred(i-1) + Type(1e-8); // Previous zooplankton concentration
     
     // Functional responses
     Type f_N = N_prev / (K_N + N_prev);  // Michaelis-Menten nutrient limitation (0-1)
@@ -78,47 +78,32 @@ Type objective_function<Type>::operator() ()
     Type dZ_dt = e * grazing - Z_mortality;
     
     // Update state variables
-    Type N_new = N_prev + dt * dN_dt;    // New nutrient concentration
-    Type P_new = P_prev + dt * dP_dt;    // New phytoplankton concentration  
-    Type Z_new = Z_prev + dt * dZ_dt;    // New zooplankton concentration
+    N_pred(i) = N_prev + dt * dN_dt;     // New nutrient concentration
+    P_pred(i) = P_prev + dt * dP_dt;     // New phytoplankton concentration  
+    Z_pred(i) = Z_prev + dt * dZ_dt;     // New zooplankton concentration
     
-    // Ensure non-negative concentrations using CppAD::CondExpLt
-    N_pred(i) = CppAD::CondExpLt(N_new, Type(1e-6), Type(1e-6), N_new); // Minimum nutrient concentration
-    P_pred(i) = CppAD::CondExpLt(P_new, Type(1e-6), Type(1e-6), P_new); // Minimum phytoplankton concentration
-    Z_pred(i) = CppAD::CondExpLt(Z_new, Type(1e-6), Type(1e-6), Z_new); // Minimum zooplankton concentration
+    // Ensure positive concentrations
+    if(N_pred(i) < Type(1e-8)) N_pred(i) = Type(1e-8); // Minimum nutrient concentration
+    if(P_pred(i) < Type(1e-8)) P_pred(i) = Type(1e-8); // Minimum phytoplankton concentration
+    if(Z_pred(i) < Type(1e-8)) Z_pred(i) = Type(1e-8); // Minimum zooplankton concentration
   }
   
-  // Calculate negative log-likelihood
+  // Calculate negative log-likelihood using normal distribution
   Type nll = 0.0;                       // Initialize negative log-likelihood
   
-  // Likelihood for all observations using normal distribution on log scale
+  // Simple normal likelihood on original scale
   for(int i = 0; i < n_obs; i++) {
-    // Add small constants to prevent log(0)
-    Type N_obs_safe = N_dat(i) + Type(1e-8);     // Safe observed nutrient
-    Type P_obs_safe = P_dat(i) + Type(1e-8);     // Safe observed phytoplankton
-    Type Z_obs_safe = Z_dat(i) + Type(1e-8);     // Safe observed zooplankton
-    Type N_pred_safe = N_pred(i) + Type(1e-8);   // Safe predicted nutrient
-    Type P_pred_safe = P_pred(i) + Type(1e-8);   // Safe predicted phytoplankton
-    Type Z_pred_safe = Z_pred(i) + Type(1e-8);   // Safe predicted zooplankton
-    
-    // Normal likelihood on log scale (equivalent to lognormal)
-    nll -= dnorm(log(N_obs_safe), log(N_pred_safe), sigma_N, true);
-    nll -= dnorm(log(P_obs_safe), log(P_pred_safe), sigma_P, true);
-    nll -= dnorm(log(Z_obs_safe), log(Z_pred_safe), sigma_Z, true);
+    // Normal likelihood for each component
+    nll -= dnorm(N_dat(i), N_pred(i), sigma_N, true);
+    nll -= dnorm(P_dat(i), P_pred(i), sigma_P, true);
+    nll -= dnorm(Z_dat(i), Z_pred(i), sigma_Z, true);
   }
   
-  // Parameter bounds using smooth penalties
-  // Growth rate penalty (should be positive but not excessive)
-  nll += Type(0.1) * CppAD::CondExpGt(log_r, Type(2.0), pow(log_r - Type(2.0), 2), Type(0.0)); // Soft upper bound
-  nll += Type(0.1) * CppAD::CondExpLt(log_r, Type(-5.0), pow(log_r - Type(-5.0), 2), Type(0.0)); // Soft lower bound
-  
-  // Grazing efficiency penalty (should be between 0 and 1)
-  nll += Type(0.1) * CppAD::CondExpGt(log_e, Type(0.0), pow(log_e, 2), Type(0.0)); // Soft upper bound at 1.0
-  nll += Type(0.1) * CppAD::CondExpLt(log_e, Type(-3.0), pow(log_e - Type(-3.0), 2), Type(0.0)); // Soft lower bound
-  
-  // Recycling efficiency penalty (should be between 0 and 1)  
-  nll += Type(0.1) * CppAD::CondExpGt(log_gamma, Type(0.0), pow(log_gamma, 2), Type(0.0)); // Soft upper bound at 1.0
-  nll += Type(0.1) * CppAD::CondExpLt(log_gamma, Type(-3.0), pow(log_gamma - Type(-3.0), 2), Type(0.0)); // Soft lower bound
+  // Light parameter penalties to keep parameters reasonable
+  nll += Type(0.01) * pow(log_r, 2);    // Weak penalty on growth rate
+  nll += Type(0.01) * pow(log_g_max, 2); // Weak penalty on grazing rate
+  nll += Type(0.01) * pow(log_mu_P, 2); // Weak penalty on phytoplankton mortality
+  nll += Type(0.01) * pow(log_mu_Z, 2); // Weak penalty on zooplankton mortality
   
   // Report predicted values
   REPORT(N_pred);                       // Report nutrient predictions
