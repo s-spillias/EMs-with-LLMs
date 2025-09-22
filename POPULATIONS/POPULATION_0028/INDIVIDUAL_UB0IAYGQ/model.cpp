@@ -23,7 +23,7 @@ Type objective_function<Type>::operator() ()
   DATA_VECTOR(N_dat);       // Nutrient observations (g C m^-3)
   DATA_VECTOR(P_dat);       // Phytoplankton observations (g C m^-3)
   DATA_VECTOR(Z_dat);       // Zooplankton observations (g C m^-3)
-  DATA_VECTOR(temperature); // Ambient temperature (°C)
+  DATA_VECTOR(temperature_aux); // Ambient temperature (°C) if provided
 
   int n = time.size();
 
@@ -43,6 +43,12 @@ Type objective_function<Type>::operator() ()
   PARAMETER(I_L);         // Light intensity modifier scaling nutrient uptake
   PARAMETER(T_opt);       // Optimal temperature for phytoplankton growth (°C)
   PARAMETER(T_sigma);     // Temperature sensitivity standard deviation (°C)
+  vector<Type> temperature;
+  if(temperature_aux.size() == 0) {
+    temperature = rep(T_opt, n);
+  } else {
+    temperature = temperature_aux;
+  }
 
   // Initialize predicted state vectors
   vector<Type> N_pred(n), P_pred(n), Z_pred(n);
