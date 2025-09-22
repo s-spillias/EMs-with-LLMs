@@ -10,25 +10,15 @@ Type objective_function<Type>::operator() ()
   DATA_VECTOR(P_dat);              // Observed phytoplankton concentrations (g C m^-3)
   DATA_VECTOR(Z_dat);              // Observed zooplankton concentrations (g C m^-3)
 
-  // 2. Parameters: vector 'p' holds all model parameters.
-  //    p[0]: nutrient_input (g C m^-3 day^-1) - input rate of nutrients
-  //    p[1]: kN (g C m^-3) - half-saturation constant for nutrient uptake
-  //    p[2]: mu (day^-1) - maximum phytoplankton growth rate
-  //    p[3]: mP (day^-1) - phytoplankton mortality rate
-  //    p[4]: g (m^3 gC^-1 day^-1) - grazing rate of zooplankton on phytoplankton
-  //    p[5]: mZ (day^-1) - zooplankton mortality rate
-  //    p[6]: epsilon (unitless) - assimilation efficiency of zooplankton
-  //    p[7]: sigma (unitless) - minimum standard deviation for observation error
-  PARAMETER_VECTOR(p);
-
-  Type nutrient_input = p[0];  // Nutrient input rate (g C m^-3 day^-1)
-  Type kN            = p[1];  // Half-saturation constant (g C m^-3)
-  Type mu            = p[2];  // Max phytoplankton growth rate (day^-1)
-  Type mP            = p[3];  // Phytoplankton mortality rate (day^-1)
-  Type g             = p[4];  // Grazing rate (m^3 gC^-1 day^-1)
-  Type mZ            = p[5];  // Zooplankton mortality rate (day^-1)
-  Type epsilon       = p[6];  // Assimilation efficiency (unitless)
-  Type sigma         = p[7];  // Minimum observation error (ensures numerical stability)
+  // 2. Parameters: individual parameters declared separately.
+  PARAMETER(nutrient_input);  // Nutrient input rate (g C m^-3 day^-1)
+  PARAMETER(kN);              // Half-saturation constant (g C m^-3)
+  PARAMETER(mu);              // Maximum phytoplankton growth rate (day^-1)
+  PARAMETER(mP);              // Phytoplankton mortality rate (day^-1)
+  PARAMETER(g);               // Grazing rate (m^3 gC^-1 day^-1)
+  PARAMETER(mZ);              // Zooplankton mortality rate (day^-1)
+  PARAMETER(epsilon);         // Assimilation efficiency (unitless)
+  PARAMETER(sigma);           // Minimum observation error (ensures numerical stability)
 
   Type nll = 0.0; // Negative log-likelihood
 
