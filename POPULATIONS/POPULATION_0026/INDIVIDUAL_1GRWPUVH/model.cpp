@@ -93,10 +93,10 @@ Type objective_function<Type>::operator() ()
     Type P_new = P_prev + dt * dP_dt;
     Type Z_new = Z_prev + dt * dZ_dt;
     
-    // Ensure positive values with smooth lower bounds
-    N_pred(i) = N_new + sqrt(N_new * N_new + Type(1e-16)) / Type(2.0) + Type(1e-8);
-    P_pred(i) = P_new + sqrt(P_new * P_new + Type(1e-16)) / Type(2.0) + Type(1e-8);
-    Z_pred(i) = Z_new + sqrt(Z_new * Z_new + Type(1e-16)) / Type(2.0) + Type(1e-8);
+    // Ensure positive values with smooth lower bounds using absolute value approach
+    N_pred(i) = (N_new + sqrt(N_new * N_new + Type(1e-16))) / Type(2.0) + Type(1e-8);
+    P_pred(i) = (P_new + sqrt(P_new * P_new + Type(1e-16))) / Type(2.0) + Type(1e-8);
+    Z_pred(i) = (Z_new + sqrt(Z_new * Z_new + Type(1e-16))) / Type(2.0) + Type(1e-8);
   }
   
   // Calculate likelihood for all observations with robust error handling
@@ -121,11 +121,6 @@ Type objective_function<Type>::operator() ()
     nll -= dnorm(log(N_obs), log(N_model), sigma_N_safe, true); // Nutrient likelihood
     nll -= dnorm(log(P_obs), log(P_model), sigma_P_safe, true); // Phytoplankton likelihood
     nll -= dnorm(log(Z_obs), log(Z_model), sigma_Z_safe, true); // Zooplankton likelihood
-  }
-  
-  // Check for numerical issues
-  if(!isfinite(asDouble(nll))) {
-    nll = Type(1e10);                   // Return large but finite value if NaN/Inf
   }
   
   // Report predictions and parameters
