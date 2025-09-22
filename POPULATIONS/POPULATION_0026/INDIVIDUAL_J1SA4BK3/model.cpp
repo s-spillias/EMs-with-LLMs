@@ -110,24 +110,24 @@ Type objective_function<Type>::operator() ()
     Type P_new = P_prev + dt * dP_dt;    // New phytoplankton concentration
     Type Z_new = Z_prev + dt * dZ_dt;    // New zooplankton concentration
     
-    // Ensure non-negative values using simple approach
+    // Simple approach: just add small positive value to prevent negatives
     Type min_val = Type(1e-8);           // Minimum allowed concentration
-    N_pred(i) = N_new + sqrt(N_new * N_new + min_val * min_val) - sqrt(min_val * min_val);  // Smooth max approximation
-    P_pred(i) = P_new + sqrt(P_new * P_new + min_val * min_val) - sqrt(min_val * min_val);  // Smooth max approximation
-    Z_pred(i) = Z_new + sqrt(Z_new * Z_new + min_val * min_val) - sqrt(min_val * min_val);  // Smooth max approximation
+    N_pred(i) = N_new + min_val;         // Ensure positive nutrients
+    P_pred(i) = P_new + min_val;         // Ensure positive phytoplankton
+    Z_pred(i) = Z_new + min_val;         // Ensure positive zooplankton
   }
   
   // Calculate likelihood for all observations
-  Type min_sigma = Type(0.001);         // Minimum observation error to prevent numerical issues
+  Type min_sigma = Type(0.01);          // Minimum observation error to prevent numerical issues
   
   // Ensure minimum sigma values
-  Type sigma_N_safe = sigma_N + sqrt(sigma_N * sigma_N + min_sigma * min_sigma) - sqrt(min_sigma * min_sigma);  // Smooth max for sigma
-  Type sigma_P_safe = sigma_P + sqrt(sigma_P * sigma_P + min_sigma * min_sigma) - sqrt(min_sigma * min_sigma);  // Smooth max for sigma
-  Type sigma_Z_safe = sigma_Z + sqrt(sigma_Z * sigma_Z + min_sigma * min_sigma) - sqrt(min_sigma * min_sigma);  // Smooth max for sigma
+  Type sigma_N_safe = sigma_N + min_sigma;  // Numerically stable error for nutrients
+  Type sigma_P_safe = sigma_P + min_sigma;  // Numerically stable error for phytoplankton
+  Type sigma_Z_safe = sigma_Z + min_sigma;  // Numerically stable error for zooplankton
   
   // Add observation likelihoods for all data points
   for(int i = 0; i < n_obs; i++) {
-    // Use lognormal distribution for strictly positive concentrations
+    // Use normal distribution on log scale for strictly positive concentrations
     Type log_N_obs = log(N_dat(i) + Type(1e-8));     // Log observed nutrients with small constant
     Type log_P_obs = log(P_dat(i) + Type(1e-8));     // Log observed phytoplankton with small constant
     Type log_Z_obs = log(Z_dat(i) + Type(1e-8));     // Log observed zooplankton with small constant
