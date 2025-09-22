@@ -22,6 +22,9 @@ Type objective_function<Type>::operator() ()
    DATA_VECTOR(N_dat);    // Observed nutrient concentrations (g C m^-3)
    DATA_VECTOR(P_dat);    // Observed phytoplankton concentrations (g C m^-3)
    DATA_VECTOR(Z_dat);    // Observed zooplankton concentrations (g C m^-3)
+   DATA_SCALAR(N0);       // Initial nutrient concentration (g C m^-3)
+   DATA_SCALAR(P0);       // Initial phytoplankton concentration (g C m^-3)
+   DATA_SCALAR(Z0);       // Initial zooplankton concentration (g C m^-3)
 
    // PARAMETERS FOR OBSERVATION ERRORS:
    PARAMETER(log_sd_N);   // Log measurement error for nutrient (log(g C m^-3))
@@ -55,10 +58,10 @@ Type objective_function<Type>::operator() ()
    vector<Type> P_pred(n); // Predicted phytoplankton concentrations (g C m^-3)
    vector<Type> Z_pred(n); // Predicted zooplankton concentrations (g C m^-3)
 
-   // INITIAL CONDITIONS: set to the first observation (avoid data leakage)
-   N_pred(0) = N_dat(0);
-   P_pred(0) = P_dat(0);
-   Z_pred(0) = Z_dat(0);
+   // INITIAL CONDITIONS: provided by data
+   N_pred(0) = N0;
+   P_pred(0) = P0;
+   Z_pred(0) = Z0;
 
    // Loop over time steps (starting at t = 1 to avoid using current observations)
    for(int t = 1; t < n; t++){
