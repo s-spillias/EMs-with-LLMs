@@ -77,9 +77,9 @@ Type objective_function<Type>::operator() ()
     
     // Equation 5: Likelihood calculations for each observation using a lognormal error distribution.
     // Using a fixed minimum standard deviation (0.1) for numerical stability.
-    nll -= dnorm(log(N_dat(t)), log(N_pred(t) + eps), Type(0.1), true);
-    nll -= dnorm(log(P_dat(t)), log(P_pred(t) + eps), Type(0.1), true);
-    nll -= dnorm(log(Z_dat(t)), log(Z_pred(t) + eps), Type(0.1), true);
+    nll -= dnorm(log(N_dat(t)), log(fmax(N_pred(t) + eps, eps)), Type(0.1), true);
+    nll -= dnorm(log(P_dat(t)), log(fmax(P_pred(t) + eps, eps)), Type(0.1), true);
+    nll -= dnorm(log(Z_dat(t)), log(fmax(Z_pred(t) + eps, eps)), Type(0.1), true);
   }
   
   // Reporting predicted state variables for further analysis
