@@ -33,9 +33,9 @@ Type objective_function<Type>::operator() ()
   Type e = Type(1.0) / (Type(1.0) + exp(-log_e));  // Grazing efficiency (0-1, sigmoid)
   Type gamma = Type(1.0) / (Type(1.0) + exp(-log_gamma)); // Recycling efficiency (0-1, sigmoid)
   Type N_in = exp(log_N_in);            // External nutrient input (0.001-1.0 g C m^-3 day^-1)
-  Type sigma_N = exp(log_sigma_N) + Type(1e-6);  // Minimum observation error for numerical stability
-  Type sigma_P = exp(log_sigma_P) + Type(1e-6);  // Minimum observation error for numerical stability
-  Type sigma_Z = exp(log_sigma_Z) + Type(1e-6);  // Minimum observation error for numerical stability
+  Type sigma_N = exp(log_sigma_N) + Type(1e-4);  // Minimum observation error for numerical stability
+  Type sigma_P = exp(log_sigma_P) + Type(1e-4);  // Minimum observation error for numerical stability
+  Type sigma_Z = exp(log_sigma_Z) + Type(1e-4);  // Minimum observation error for numerical stability
   
   int n_obs = Time.size();              // Number of observations
   
@@ -59,9 +59,9 @@ Type objective_function<Type>::operator() ()
     Type Z_prev = Z_pred(i-1);          // Previous zooplankton concentration
     
     // Add small constants for numerical stability
-    Type N_stable = N_prev + Type(1e-8); // Nutrient with stability constant
-    Type P_stable = P_prev + Type(1e-8); // Phytoplankton with stability constant
-    Type Z_stable = Z_prev + Type(1e-8); // Zooplankton with stability constant
+    Type N_stable = fmax(N_prev, Type(1e-6)); // Nutrient with minimum bound
+    Type P_stable = fmax(P_prev, Type(1e-6)); // Phytoplankton with minimum bound
+    Type Z_stable = fmax(Z_prev, Type(1e-6)); // Zooplankton with minimum bound
     
     // Ecological rate calculations
     Type nutrient_limitation = N_stable / (K_N + N_stable);  // Michaelis-Menten nutrient uptake
@@ -82,16 +82,22 @@ Type objective_function<Type>::operator() ()
     P_pred(i) = P_prev + dt * dP_dt;     // Update phytoplankton concentration
     Z_pred(i) = Z_prev + dt * dZ_dt;     // Update zooplankton concentration
     
-    // Ensure non-negative concentrations with smooth lower bounds
-    N_pred(i) = N_pred(i) + sqrt(N_pred(i) * N_pred(i) + Type(1e-8)) - sqrt(Type(1e-8));
-    P_pred(i) = P_pred(i) + sqrt(P_pred(i) * P_pred(i) + Type(1e-8)) - sqrt(Type(1e-8));
-    Z_pred(i) = Z_pred(i) + sqrt(Z_pred(i) * Z_pred(i) + Type(1e-8)) - sqrt(Type(1e-8));
+    // Ensure non-negative concentrations with simple bounds
+    N_pred(i) = fmax(N_pred(i), Type(1e-6));  // Minimum nutrient concentration
+    P_pred(i) = fmax(P_pred(i), Type(1e-6));  // Minimum phytoplankton concentration
+    Z_pred(i) = fmax(Z_pred(i), Type(1e-6));  // Minimum zooplankton concentration
   }
   
   // Likelihood calculation using normal distribution
   Type nll = 0.0;                       // Initialize negative log-likelihood
   
   for(int i = 0; i < n_obs; i++) {
+    // Check for valid predictions before likelihood calculation
+    if(!isfinite(N_pred(i)) || !isfinite(P_pred(i)) || !isfinite(Z_pred(i))) {
+      nll += Type(1e6);                 // Large penalty for invalid predictions
+      continue;
+    }
+    
     // Nutrient observations likelihood
     nll -= dnorm(N_dat(i), N_pred(i), sigma_N, true);
     // Phytoplankton observations likelihood  
@@ -101,10 +107,15 @@ Type objective_function<Type>::operator() ()
   }
   
   // Biological parameter bounds using smooth penalties
-  nll += Type(0.5) * pow((log_r - log(Type(1.0))) / Type(2.0), 2);      // Penalize extreme growth rates
-  nll += Type(0.5) * pow((log_g_max - log(Type(1.0))) / Type(2.0), 2);  // Penalize extreme grazing rates
-  nll += Type(0.5) * pow((log_K_N - log(Type(0.1))) / Type(2.0), 2);    // Penalize extreme half-saturation
-  nll += Type(0.5) * pow((log_K_P - log(Type(0.1))) / Type(2.0), 2);    // Penalize extreme half-saturation
+  nll += Type(0.1) * pow((log_r - log(Type(1.0))) / Type(2.0), 2);      // Penalize extreme growth rates
+  nll += Type(0.1) * pow((log_g_max - log(Type(1.0))) / Type(2.0), 2);  // Penalize extreme grazing rates
+  nll += Type(0.1) * pow((log_K_N - log(Type(0.1))) / Type(2.0), 2);    // Penalize extreme half-saturation
+  nll += Type(0.1) * pow((log_K_P - log(Type(0.1))) / Type(2.0), 2);    // Penalize extreme half-saturation
+  
+  // Check for finite likelihood
+  if(!isfinite(nll)) {
+    nll = Type(1e6);                    // Return large value if likelihood is not finite
+  }
   
   // Report predicted values for output
   REPORT(N_pred);                       // Report predicted nutrient concentrations
