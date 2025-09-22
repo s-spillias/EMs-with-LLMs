@@ -88,20 +88,20 @@ Type objective_function<Type>::operator() ()
     P_pred(i) = P_prev + dt * dP_dt;    // Phytoplankton concentration at next time step
     Z_pred(i) = Z_prev + dt * dZ_dt;    // Zooplankton concentration at next time step
     
-    // Ensure non-negative concentrations for biological realism
-    N_pred(i) = fmax(N_pred(i), eps);   // Prevent negative nutrient concentrations
-    P_pred(i) = fmax(P_pred(i), eps);   // Prevent negative phytoplankton concentrations
-    Z_pred(i) = fmax(Z_pred(i), eps);   // Prevent negative zooplankton concentrations
+    // Ensure non-negative concentrations for biological realism using conditional statements
+    N_pred(i) = CppAD::CondExpGt(N_pred(i), eps, N_pred(i), eps); // Prevent negative nutrient concentrations
+    P_pred(i) = CppAD::CondExpGt(P_pred(i), eps, P_pred(i), eps); // Prevent negative phytoplankton concentrations
+    Z_pred(i) = CppAD::CondExpGt(Z_pred(i), eps, Z_pred(i), eps); // Prevent negative zooplankton concentrations
   }
   
   // Calculate negative log-likelihood
   Type nll = Type(0.0);                 // Initialize negative log-likelihood
   
-  // Add minimum standard deviations to prevent numerical issues
+  // Add minimum standard deviations to prevent numerical issues using conditional statements
   Type min_sigma = Type(1e-6);          // Minimum observation error to prevent numerical instability
-  Type sigma_N_safe = fmax(sigma_N, min_sigma); // Safe nutrient observation error
-  Type sigma_P_safe = fmax(sigma_P, min_sigma); // Safe phytoplankton observation error  
-  Type sigma_Z_safe = fmax(sigma_Z, min_sigma); // Safe zooplankton observation error
+  Type sigma_N_safe = CppAD::CondExpGt(sigma_N, min_sigma, sigma_N, min_sigma); // Safe nutrient observation error
+  Type sigma_P_safe = CppAD::CondExpGt(sigma_P, min_sigma, sigma_P, min_sigma); // Safe phytoplankton observation error  
+  Type sigma_Z_safe = CppAD::CondExpGt(sigma_Z, min_sigma, sigma_Z, min_sigma); // Safe zooplankton observation error
   
   // Likelihood contributions from all observations
   for(int i = 0; i < n_obs; i++) {
