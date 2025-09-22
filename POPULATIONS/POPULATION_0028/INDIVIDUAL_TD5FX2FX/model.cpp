@@ -36,6 +36,7 @@ Type objective_function<Type>::operator() ()
   PARAMETER(d_Z);           // Zooplankton mortality rate (day^-1)
   PARAMETER(eps_Z);         // Zooplankton conversion efficiency from grazed phytoplankton biomass (dimensionless)
   PARAMETER(gamma);         // Exponent for zooplankton grazing capturing predator interference (dimensionless)
+  PARAMETER(c_grazing);     // Density-dependent grazing inhibition coefficient, reduces grazing efficiency at high P densities
   PARAMETER(r);             // Remineralization rate (day^-1)
   PARAMETER(alpha);         // Self-shading coefficient for phytoplankton growth (dimensionless)
   PARAMETER(beta);          // Saturation coefficient for nutrient recycling
