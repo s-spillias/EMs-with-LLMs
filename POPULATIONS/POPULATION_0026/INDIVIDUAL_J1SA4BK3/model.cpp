@@ -105,10 +105,16 @@ Type objective_function<Type>::operator() ()
     // dZ/dt = zoo_growth - zoo_mortality
     Type dZ_dt = zoo_growth - zoo_mortality;
     
-    // Update state variables using Euler integration
-    N_pred(i) = fmax(N_prev + dt * dN_dt, Type(1e-8));  // Ensure non-negative nutrients
-    P_pred(i) = fmax(P_prev + dt * dP_dt, Type(1e-8));  // Ensure non-negative phytoplankton
-    Z_pred(i) = fmax(Z_prev + dt * dZ_dt, Type(1e-8));  // Ensure non-negative zooplankton
+    // Update state variables using Euler integration with smooth lower bounds
+    Type N_new = N_prev + dt * dN_dt;    // New nutrient concentration
+    Type P_new = P_prev + dt * dP_dt;    // New phytoplankton concentration
+    Type Z_new = Z_prev + dt * dZ_dt;    // New zooplankton concentration
+    
+    // Use smooth approximation to max function: max(x, min_val) ≈ min_val + log(1 + exp(x - min_val))
+    Type min_val = Type(1e-8);           // Minimum allowed concentration
+    N_pred(i) = min_val + log(Type(1.0) + exp(N_new - min_val));  // Ensure non-negative nutrients
+    P_pred(i) = min_val + log(Type(1.0) + exp(P_new - min_val));  // Ensure non-negative phytoplankton
+    Z_pred(i) = min_val + log(Type(1.0) + exp(Z_new - min_val));  // Ensure non-negative zooplankton
   }
   
   // Calculate likelihood for all observations
@@ -116,9 +122,10 @@ Type objective_function<Type>::operator() ()
   Type min_sigma_P = Type(0.001);       // Minimum observation error to prevent numerical issues
   Type min_sigma_Z = Type(0.001);       // Minimum observation error to prevent numerical issues
   
-  Type sigma_N_safe = fmax(sigma_N, min_sigma_N);  // Numerically stable error for nutrients
-  Type sigma_P_safe = fmax(sigma_P, min_sigma_P);  // Numerically stable error for phytoplankton
-  Type sigma_Z_safe = fmax(sigma_Z, min_sigma_Z);  // Numerically stable error for zooplankton
+  // Use smooth approximation for max function on sigma values
+  Type sigma_N_safe = min_sigma_N + log(Type(1.0) + exp(sigma_N - min_sigma_N));  // Numerically stable error for nutrients
+  Type sigma_P_safe = min_sigma_P + log(Type(1.0) + exp(sigma_P - min_sigma_P));  // Numerically stable error for phytoplankton
+  Type sigma_Z_safe = min_sigma_Z + log(Type(1.0) + exp(sigma_Z - min_sigma_Z));  // Numerically stable error for zooplankton
   
   // Add observation likelihoods for all data points
   for(int i = 0; i < n_obs; i++) {
