@@ -45,9 +45,9 @@ Type objective_function<Type>::operator() ()
   vector<Type> Z_pred(n_obs);           // Predicted zooplankton concentration
   
   // Set initial conditions from first observation with minimum bounds
-  N_pred(0) = N_dat(0) + Type(1e-6);   // Initial nutrient concentration
-  P_pred(0) = P_dat(0) + Type(1e-6);   // Initial phytoplankton concentration
-  Z_pred(0) = Z_dat(0) + Type(1e-6);   // Initial zooplankton concentration
+  N_pred(0) = N_dat(0);                 // Initial nutrient concentration
+  P_pred(0) = P_dat(0);                 // Initial phytoplankton concentration
+  Z_pred(0) = Z_dat(0);                 // Initial zooplankton concentration
   
   // Numerical integration using Euler method
   for(int i = 1; i < n_obs; i++) {
@@ -64,9 +64,9 @@ Type objective_function<Type>::operator() ()
     Z_prev = Z_prev + Type(1e-8);       // Numerical stability for zooplankton
     
     // Ecological process rates
-    Type nutrient_limitation = N_prev / (K + N_prev); // Michaelis-Menten nutrient uptake
+    Type nutrient_limitation = N_prev / (K + N_prev + Type(1e-8)); // Michaelis-Menten nutrient uptake
     Type phyto_growth = r * nutrient_limitation * P_prev; // Nutrient-limited phytoplankton growth
-    Type grazing_rate = g * P_prev / (h + P_prev) * Z_prev; // Type II functional response grazing
+    Type grazing_rate = g * P_prev / (h + P_prev + Type(1e-8)) * Z_prev; // Type II functional response grazing
     Type phyto_mortality = m_p * P_prev; // Phytoplankton natural mortality
     Type zoo_mortality = m_z * Z_prev;   // Zooplankton natural mortality
     Type nutrient_recycling = d * (phyto_mortality + zoo_mortality); // Remineralization
@@ -85,10 +85,10 @@ Type objective_function<Type>::operator() ()
     P_pred(i) = P_prev + dt * dP_dt;    // Update phytoplankton concentration
     Z_pred(i) = Z_prev + dt * dZ_dt;    // Update zooplankton concentration
     
-    // Ensure non-negative concentrations using smooth lower bounds
-    N_pred(i) = N_pred(i) + Type(1e-8); // Prevent negative nutrients
-    P_pred(i) = P_pred(i) + Type(1e-8); // Prevent negative phytoplankton
-    Z_pred(i) = Z_pred(i) + Type(1e-8); // Prevent negative zooplankton
+    // Ensure non-negative concentrations with lower bounds
+    if(N_pred(i) < Type(1e-8)) N_pred(i) = Type(1e-8); // Prevent negative nutrients
+    if(P_pred(i) < Type(1e-8)) P_pred(i) = Type(1e-8); // Prevent negative phytoplankton
+    if(Z_pred(i) < Type(1e-8)) Z_pred(i) = Type(1e-8); // Prevent negative zooplankton
   }
   
   // Calculate negative log-likelihood
@@ -129,11 +129,6 @@ Type objective_function<Type>::operator() ()
   if(m_z > Type(1.0)) penalty += Type(10.0) * pow(m_z - Type(1.0), 2);
   
   nll += penalty;                       // Add penalties to objective function
-  
-  // Check for numerical issues and return large finite value if needed
-  if(CppAD::isnan(nll) || CppAD::isinf(nll)) {
-    nll = Type(1e10);                   // Return large finite value if NaN/Inf
-  }
   
   // Report predicted values and parameters
   REPORT(N_pred);                       // Report predicted nutrient concentrations
