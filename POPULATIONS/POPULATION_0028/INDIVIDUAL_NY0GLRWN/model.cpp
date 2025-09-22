@@ -60,7 +60,7 @@ Type objective_function<Type>::operator() ()
     
     // Equation 2: Phytoplankton growth, grazing, and mortality
     Type growth_P = eps_P * U * P_pred(t-1) * exp(-alpha * P_pred(t-1)); // Growth contribution, including self-shading effect
-    Type grazing = g_Z * pow(Z_pred(t-1), gamma) * P_pred(t-1) / (K_P + P_pred(t-1) + eps); // Grazing loss with predator interference
+    Type grazing = g_Z * pow(Z_pred(t-1), gamma) * pow(P_pred(t-1), 2) / (K_P2 + pow(P_pred(t-1), 2) + eps); // Sigmoidal Type III grazing loss with predator interference
     Type mortality_P = d_P * P_pred(t-1);    // Mortality loss
     Type dP = growth_P - grazing - mortality_P;
     
