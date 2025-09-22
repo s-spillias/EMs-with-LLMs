@@ -33,9 +33,9 @@ Type objective_function<Type>::operator() ()
   Type e = Type(1.0) / (Type(1.0) + exp(-log_e));  // Growth efficiency (0-1), typical range 0.1-0.8
   Type gamma = Type(1.0) / (Type(1.0) + exp(-log_gamma)); // Recycling efficiency (0-1), typical range 0.1-0.9
   Type N_in = exp(log_N_in);            // External nutrient input (g C m^-3 day^-1), typical range 0.001-0.1
-  Type sigma_N = exp(log_sigma_N) + Type(1e-6);  // Observation error for N with minimum bound
-  Type sigma_P = exp(log_sigma_P) + Type(1e-6);  // Observation error for P with minimum bound  
-  Type sigma_Z = exp(log_sigma_Z) + Type(1e-6);  // Observation error for Z with minimum bound
+  Type sigma_N = exp(log_sigma_N) + Type(1e-4);  // Observation error for N with minimum bound
+  Type sigma_P = exp(log_sigma_P) + Type(1e-4);  // Observation error for P with minimum bound  
+  Type sigma_Z = exp(log_sigma_Z) + Type(1e-4);  // Observation error for Z with minimum bound
   
   // Initialize state variables
   int n_obs = Time.size();
@@ -43,25 +43,30 @@ Type objective_function<Type>::operator() ()
   vector<Type> P_pred(n_obs);           // Predicted phytoplankton concentration
   vector<Type> Z_pred(n_obs);           // Predicted zooplankton concentration
   
-  // Set initial conditions from first observation
-  N_pred(0) = N_dat(0);                 // Initial nutrient concentration
-  P_pred(0) = P_dat(0);                 // Initial phytoplankton concentration
-  Z_pred(0) = Z_dat(0);                 // Initial zooplankton concentration
+  // Set initial conditions from first observation with bounds
+  N_pred(0) = CppAD::CondExpGt(N_dat(0), Type(1e-6), N_dat(0), Type(1e-6));  // Initial nutrient concentration
+  P_pred(0) = CppAD::CondExpGt(P_dat(0), Type(1e-6), P_dat(0), Type(1e-6));  // Initial phytoplankton concentration
+  Z_pred(0) = CppAD::CondExpGt(Z_dat(0), Type(1e-6), Z_dat(0), Type(1e-6));  // Initial zooplankton concentration
   
   // Numerical integration using Euler method
   for(int i = 1; i < n_obs; i++) {
     Type dt = Time(i) - Time(i-1);      // Time step size (days)
     
-    // Previous time step values (avoid data leakage)
-    Type N_prev = N_pred(i-1) + Type(1e-8);  // Add small constant for numerical stability
-    Type P_prev = P_pred(i-1) + Type(1e-8);  // Add small constant for numerical stability
-    Type Z_prev = Z_pred(i-1) + Type(1e-8);  // Add small constant for numerical stability
+    // Previous time step values (avoid data leakage) with bounds
+    Type N_prev = N_pred(i-1) + Type(1e-6);  // Add small constant for numerical stability
+    Type P_prev = P_pred(i-1) + Type(1e-6);  // Add small constant for numerical stability
+    Type Z_prev = Z_pred(i-1) + Type(1e-6);  // Add small constant for numerical stability
+    
+    // Bound concentrations to prevent extreme values
+    N_prev = CppAD::CondExpGt(N_prev, Type(10.0), Type(10.0), N_prev);
+    P_prev = CppAD::CondExpGt(P_prev, Type(10.0), Type(10.0), P_prev);
+    Z_prev = CppAD::CondExpGt(Z_prev, Type(10.0), Type(10.0), Z_prev);
     
     // Equation 1: Nutrient limitation function (Michaelis-Menten kinetics)
-    Type f_N = N_prev / (K_N + N_prev);
+    Type f_N = N_prev / (K_N + N_prev + Type(1e-6));
     
     // Equation 2: Grazing function (Type II functional response)
-    Type f_P = P_prev / (K_P + P_prev);
+    Type f_P = P_prev / (K_P + P_prev + Type(1e-6));
     
     // Equation 3: Phytoplankton growth rate (nutrient-limited)
     Type growth_P = r * f_N * P_prev;
@@ -82,53 +87,84 @@ Type objective_function<Type>::operator() ()
     // Equation 8: Zooplankton dynamics
     Type dZ_dt = e * grazing - mu_Z * Z_prev;
     
-    // Update state variables using Euler integration
+    // Update state variables using Euler integration with bounds
     N_pred(i) = N_prev + dt * dN_dt;    // Nutrient concentration at time i
     P_pred(i) = P_prev + dt * dP_dt;    // Phytoplankton concentration at time i
     Z_pred(i) = Z_prev + dt * dZ_dt;    // Zooplankton concentration at time i
     
-    // Ensure non-negative concentrations using smooth maximum function
-    Type min_val = Type(1e-8);          // Minimum allowed concentration
-    N_pred(i) = (N_pred(i) + sqrt(N_pred(i) * N_pred(i) + min_val * min_val)) / Type(2.0);
-    P_pred(i) = (P_pred(i) + sqrt(P_pred(i) * P_pred(i) + min_val * min_val)) / Type(2.0);
-    Z_pred(i) = (Z_pred(i) + sqrt(Z_pred(i) * Z_pred(i) + min_val * min_val)) / Type(2.0);
+    // Ensure non-negative concentrations with minimum bounds
+    N_pred(i) = CppAD::CondExpGt(N_pred(i), Type(1e-6), N_pred(i), Type(1e-6));
+    P_pred(i) = CppAD::CondExpGt(P_pred(i), Type(1e-6), P_pred(i), Type(1e-6));
+    Z_pred(i) = CppAD::CondExpGt(Z_pred(i), Type(1e-6), Z_pred(i), Type(1e-6));
+    
+    // Prevent extreme values that could cause numerical issues
+    N_pred(i) = CppAD::CondExpGt(N_pred(i), Type(10.0), Type(10.0), N_pred(i));
+    P_pred(i) = CppAD::CondExpGt(P_pred(i), Type(10.0), Type(10.0), P_pred(i));
+    Z_pred(i) = CppAD::CondExpGt(Z_pred(i), Type(10.0), Type(10.0), Z_pred(i));
   }
   
   // Calculate negative log-likelihood
   Type nll = Type(0.0);
   
-  // Likelihood for nutrient observations (lognormal distribution)
+  // Likelihood for nutrient observations (normal distribution on log scale)
   for(int i = 0; i < n_obs; i++) {
-    Type N_obs = N_dat(i) + Type(1e-8);  // Add small constant to prevent log(0)
-    Type N_model = N_pred(i) + Type(1e-8); // Add small constant to prevent log(0)
-    nll -= dnorm(log(N_obs), log(N_model), sigma_N, true);
+    Type N_obs = N_dat(i) + Type(1e-6);  // Add small constant to prevent log(0)
+    Type N_model = N_pred(i) + Type(1e-6); // Add small constant to prevent log(0)
+    Type log_N_obs = log(N_obs);
+    Type log_N_model = log(N_model);
+    
+    // Check for finite values before adding to likelihood
+    Type residual = log_N_obs - log_N_model;
+    Type likelihood_contrib = Type(0.5) * pow(residual / sigma_N, 2) + log(sigma_N);
+    
+    // Only add finite contributions
+    nll += CppAD::CondExpGt(abs(likelihood_contrib), Type(100.0), Type(100.0), likelihood_contrib);
   }
   
-  // Likelihood for phytoplankton observations (lognormal distribution)
+  // Likelihood for phytoplankton observations (normal distribution on log scale)
   for(int i = 0; i < n_obs; i++) {
-    Type P_obs = P_dat(i) + Type(1e-8);  // Add small constant to prevent log(0)
-    Type P_model = P_pred(i) + Type(1e-8); // Add small constant to prevent log(0)
-    nll -= dnorm(log(P_obs), log(P_model), sigma_P, true);
+    Type P_obs = P_dat(i) + Type(1e-6);  // Add small constant to prevent log(0)
+    Type P_model = P_pred(i) + Type(1e-6); // Add small constant to prevent log(0)
+    Type log_P_obs = log(P_obs);
+    Type log_P_model = log(P_model);
+    
+    // Check for finite values before adding to likelihood
+    Type residual = log_P_obs - log_P_model;
+    Type likelihood_contrib = Type(0.5) * pow(residual / sigma_P, 2) + log(sigma_P);
+    
+    // Only add finite contributions
+    nll += CppAD::CondExpGt(abs(likelihood_contrib), Type(100.0), Type(100.0), likelihood_contrib);
   }
   
-  // Likelihood for zooplankton observations (lognormal distribution)
+  // Likelihood for zooplankton observations (normal distribution on log scale)
   for(int i = 0; i < n_obs; i++) {
-    Type Z_obs = Z_dat(i) + Type(1e-8);  // Add small constant to prevent log(0)
-    Type Z_model = Z_pred(i) + Type(1e-8); // Add small constant to prevent log(0)
-    nll -= dnorm(log(Z_obs), log(Z_model), sigma_Z, true);
+    Type Z_obs = Z_dat(i) + Type(1e-6);  // Add small constant to prevent log(0)
+    Type Z_model = Z_pred(i) + Type(1e-6); // Add small constant to prevent log(0)
+    Type log_Z_obs = log(Z_obs);
+    Type log_Z_model = log(Z_model);
+    
+    // Check for finite values before adding to likelihood
+    Type residual = log_Z_obs - log_Z_model;
+    Type likelihood_contrib = Type(0.5) * pow(residual / sigma_Z, 2) + log(sigma_Z);
+    
+    // Only add finite contributions
+    nll += CppAD::CondExpGt(abs(likelihood_contrib), Type(100.0), Type(100.0), likelihood_contrib);
   }
   
   // Soft biological constraints using penalty functions
   // Constraint 1: Growth rate should be reasonable for phytoplankton
-  if(r > Type(3.0)) nll += Type(10.0) * pow(r - Type(3.0), 2);
+  nll += CppAD::CondExpGt(r, Type(3.0), Type(10.0) * pow(r - Type(3.0), 2), Type(0.0));
   
   // Constraint 2: Mortality rates should not exceed growth rates
-  if(mu_P > r) nll += Type(10.0) * pow(mu_P - r, 2);
-  if(mu_Z > g_max) nll += Type(10.0) * pow(mu_Z - g_max, 2);
+  nll += CppAD::CondExpGt(mu_P, r, Type(10.0) * pow(mu_P - r, 2), Type(0.0));
+  nll += CppAD::CondExpGt(mu_Z, g_max, Type(10.0) * pow(mu_Z - g_max, 2), Type(0.0));
   
   // Constraint 3: Half-saturation constants should be reasonable
-  if(K_N > Type(2.0)) nll += Type(5.0) * pow(K_N - Type(2.0), 2);
-  if(K_P > Type(1.0)) nll += Type(5.0) * pow(K_P - Type(1.0), 2);
+  nll += CppAD::CondExpGt(K_N, Type(2.0), Type(5.0) * pow(K_N - Type(2.0), 2), Type(0.0));
+  nll += CppAD::CondExpGt(K_P, Type(1.0), Type(5.0) * pow(K_P - Type(1.0), 2), Type(0.0));
+  
+  // Final check to ensure nll is finite
+  nll = CppAD::CondExpGt(abs(nll), Type(1e6), Type(1e6), nll);
   
   // Report predicted values and parameters
   REPORT(N_pred);                       // Predicted nutrient concentrations
