@@ -92,51 +92,39 @@ Type objective_function<Type>::operator() ()
     Type dZ_dt = e * grazing - zoo_mortality;
     
     // Update state variables using Euler integration
-    Type N_new = N_prev + dt * dN_dt;
-    Type P_new = P_prev + dt * dP_dt;
-    Type Z_new = Z_prev + dt * dZ_dt;
+    N_pred(i) = N_prev + dt * dN_dt;
+    P_pred(i) = P_prev + dt * dP_dt;
+    Z_pred(i) = Z_prev + dt * dZ_dt;
     
-    // Ensure non-negative concentrations using simple approach
-    N_pred(i) = N_new + sqrt(N_new * N_new + Type(1e-16)) - sqrt(Type(1e-16));
-    P_pred(i) = P_new + sqrt(P_new * P_new + Type(1e-16)) - sqrt(Type(1e-16));
-    Z_pred(i) = Z_new + sqrt(Z_new * Z_new + Type(1e-16)) - sqrt(Type(1e-16));
+    // Simple approach to ensure non-negative concentrations
+    if(N_pred(i) < Type(1e-8)) N_pred(i) = Type(1e-8);
+    if(P_pred(i) < Type(1e-8)) P_pred(i) = Type(1e-8);
+    if(Z_pred(i) < Type(1e-8)) Z_pred(i) = Type(1e-8);
   }
   
   // Calculate negative log-likelihood
   Type nll = Type(0.0);
   
-  // Likelihood for nutrient observations (lognormal distribution)
+  // Likelihood for nutrient observations (normal distribution on log scale)
   for(int i = 0; i < n_obs; i++) {
-    Type pred_val = N_pred(i) + Type(1e-8);
-    Type obs_val = N_dat(i) + Type(1e-8);
-    nll -= dnorm(log(obs_val), log(pred_val), sigma_N, true);
+    Type pred_log = log(N_pred(i) + Type(1e-8));
+    Type obs_log = log(N_dat(i) + Type(1e-8));
+    nll -= dnorm(obs_log, pred_log, sigma_N, true);
   }
   
-  // Likelihood for phytoplankton observations (lognormal distribution)
+  // Likelihood for phytoplankton observations (normal distribution on log scale)
   for(int i = 0; i < n_obs; i++) {
-    Type pred_val = P_pred(i) + Type(1e-8);
-    Type obs_val = P_dat(i) + Type(1e-8);
-    nll -= dnorm(log(obs_val), log(pred_val), sigma_P, true);
+    Type pred_log = log(P_pred(i) + Type(1e-8));
+    Type obs_log = log(P_dat(i) + Type(1e-8));
+    nll -= dnorm(obs_log, pred_log, sigma_P, true);
   }
   
-  // Likelihood for zooplankton observations (lognormal distribution)
+  // Likelihood for zooplankton observations (normal distribution on log scale)
   for(int i = 0; i < n_obs; i++) {
-    Type pred_val = Z_pred(i) + Type(1e-8);
-    Type obs_val = Z_dat(i) + Type(1e-8);
-    nll -= dnorm(log(obs_val), log(pred_val), sigma_Z, true);
+    Type pred_log = log(Z_pred(i) + Type(1e-8));
+    Type obs_log = log(Z_dat(i) + Type(1e-8));
+    nll -= dnorm(obs_log, pred_log, sigma_Z, true);
   }
-  
-  // Soft biological constraints using penalty functions
-  // Constraint 1: Growth rate should be reasonable for phytoplankton
-  if(r > Type(5.0)) nll += Type(100.0) * pow(r - Type(5.0), 2);
-  
-  // Constraint 2: Assimilation efficiency should be realistic
-  if(e > Type(0.9)) nll += Type(100.0) * pow(e - Type(0.9), 2);
-  if(e < Type(0.05)) nll += Type(100.0) * pow(Type(0.05) - e, 2);
-  
-  // Constraint 3: Recycling efficiencies should be reasonable
-  if(gamma > Type(0.95)) nll += Type(100.0) * pow(gamma - Type(0.95), 2);
-  if(delta > Type(0.95)) nll += Type(100.0) * pow(delta - Type(0.95), 2);
   
   // Report predicted values
   REPORT(N_pred);
