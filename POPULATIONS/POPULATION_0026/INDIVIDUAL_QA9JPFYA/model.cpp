@@ -85,10 +85,10 @@ Type objective_function<Type>::operator() ()
     P_pred(i) = P_prev + dt * dP_dt;    // Update phytoplankton concentration
     Z_pred(i) = Z_prev + dt * dZ_dt;    // Update zooplankton concentration
     
-    // Ensure non-negative concentrations
-    N_pred(i) = fmax(N_pred(i), Type(1e-8)); // Prevent negative nutrients
-    P_pred(i) = fmax(P_pred(i), Type(1e-8)); // Prevent negative phytoplankton
-    Z_pred(i) = fmax(Z_pred(i), Type(1e-8)); // Prevent negative zooplankton
+    // Ensure non-negative concentrations using smooth approximation
+    N_pred(i) = CppAD::CondExpGt(N_pred(i), Type(1e-8), N_pred(i), Type(1e-8)); // Prevent negative nutrients
+    P_pred(i) = CppAD::CondExpGt(P_pred(i), Type(1e-8), P_pred(i), Type(1e-8)); // Prevent negative phytoplankton
+    Z_pred(i) = CppAD::CondExpGt(Z_pred(i), Type(1e-8), Z_pred(i), Type(1e-8)); // Prevent negative zooplankton
   }
   
   // Calculate negative log-likelihood
@@ -119,14 +119,14 @@ Type objective_function<Type>::operator() ()
   Type penalty = Type(0.0);             // Initialize penalty term
   
   // Penalty for unrealistic growth rate (should be < 5 day^-1)
-  if(r > Type(5.0)) penalty += Type(10.0) * pow(r - Type(5.0), 2);
+  penalty += CppAD::CondExpGt(r, Type(5.0), Type(10.0) * pow(r - Type(5.0), 2), Type(0.0));
   
   // Penalty for unrealistic grazing rate (should be < 2 day^-1)  
-  if(g > Type(2.0)) penalty += Type(10.0) * pow(g - Type(2.0), 2);
+  penalty += CppAD::CondExpGt(g, Type(2.0), Type(10.0) * pow(g - Type(2.0), 2), Type(0.0));
   
   // Penalty for unrealistic mortality rates (should be < 1 day^-1)
-  if(m_p > Type(1.0)) penalty += Type(10.0) * pow(m_p - Type(1.0), 2);
-  if(m_z > Type(1.0)) penalty += Type(10.0) * pow(m_z - Type(1.0), 2);
+  penalty += CppAD::CondExpGt(m_p, Type(1.0), Type(10.0) * pow(m_p - Type(1.0), 2), Type(0.0));
+  penalty += CppAD::CondExpGt(m_z, Type(1.0), Type(10.0) * pow(m_z - Type(1.0), 2), Type(0.0));
   
   nll += penalty;                       // Add penalties to objective function
   
