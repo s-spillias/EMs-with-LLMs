@@ -106,9 +106,10 @@ Type objective_function<Type>::operator() ()
 #ifdef SIMULATE
   // Simulate observations from predictions (using a lognormal distribution)
   SIMULATE {
-    N_dat(0) = exp(rnorm(log(N_pred(0) + eps), 0.1));
-    P_dat(0) = exp(rnorm(log(P_pred(0) + eps), 0.1));
-    Z_dat(0) = exp(rnorm(log(Z_pred(0) + eps), 0.1));
+    // Preserve initial conditions to avoid data leakage
+    N_dat(0) = N_pred(0);
+    P_dat(0) = P_pred(0);
+    Z_dat(0) = Z_pred(0);
     for(int t = 1; t < n; t++){
       N_dat(t) = exp(rnorm(log(N_pred(t) + eps), 0.1));
       P_dat(t) = exp(rnorm(log(P_pred(t) + eps), 0.1));
