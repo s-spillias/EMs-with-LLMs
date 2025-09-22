@@ -23,7 +23,7 @@ Type objective_function<Type>::operator() ()
   DATA_VECTOR(N_dat);       // Nutrient observations (g C m^-3)
   DATA_VECTOR(P_dat);       // Phytoplankton observations (g C m^-3)
   DATA_VECTOR(Z_dat);       // Zooplankton observations (g C m^-3)
-  DATA_VECTOR(temp);        // Temperature observations (°C) over time
+  DATA_VECTOR(temp_in);        // Temperature observations (°C) over time; if empty, use T_ref
 
   int n = time.size();
 
@@ -48,6 +48,17 @@ Type objective_function<Type>::operator() ()
   PARAMETER(T_ref);       // Reference temperature (°C) for scaling metabolic rates in the Q10 formulation.
   PARAMETER(K_P3);        // Half-saturation constant for Type III grazing response.
 
+  // Create temperature vector: if temp_in is empty, fill with T_ref
+  vector<Type> temp;
+  if(temp_in.size() == 0) {
+    temp = vector<Type>(time.size());
+    for(int i = 0; i < time.size(); i++){
+      temp(i) = T_ref;
+    }
+  } else {
+    temp = temp_in;
+  }
+  
   // Initialize predicted state vectors
   vector<Type> N_pred(n), P_pred(n), Z_pred(n);
   
