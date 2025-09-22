@@ -103,6 +103,9 @@ Type objective_function<Type>::operator() ()
   REPORT(N_pred);
   REPORT(P_pred);
   REPORT(Z_pred);
+  ADREPORT(N_pred);
+  ADREPORT(P_pred);
+  ADREPORT(Z_pred);
 
   return nll;
 }
