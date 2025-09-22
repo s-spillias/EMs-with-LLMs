@@ -58,7 +58,7 @@ Type objective_function<Type>::operator() ()
     // Equation 2: Phytoplankton growth, grazing, and mortality
     // Compute nutrient-dependent efficiency: effective efficiency increases with higher nutrient availability.
     Type eps_eff = eps_P + f_eps * (N_pred(t-1) / (K_eff + N_pred(t-1) + eps));
-    Type growth_P = eps_eff * U * P_pred(t-1); // Growth contribution
+    Type growth_P = eps_eff * U * P_pred(t-1) * exp(-alpha * P_pred(t-1)); // Growth contribution with density dependence
     Type grazing = g_Z * (P_pred(t-1) * P_pred(t-1)) / (K_P*K_P + P_pred(t-1) * P_pred(t-1)); // Grazing loss using Holling type III response
     Type mortality_P = d_P * P_pred(t-1);    // Mortality loss
     Type dP = growth_P - grazing - mortality_P;
