@@ -28,9 +28,9 @@ Type objective_function<Type>::operator() ()
   Type m_P = exp(log_m_P);              // Phytoplankton mortality rate (day^-1), natural death and sinking
   Type g_max = exp(log_g_max);          // Maximum grazing rate (day^-1), zooplankton feeding capacity
   Type K_P = exp(log_K_P);              // Half-saturation for grazing (g C m^-3), prey handling limitations
-  Type e = Type(1.0) / (Type(1.0) + exp(-log_e)); // Assimilation efficiency (0-1), sigmoid transformation for bounds
+  Type e = invlogit(log_e);             // Assimilation efficiency (0-1), using TMB's invlogit function
   Type m_Z = exp(log_m_Z);              // Zooplankton mortality rate (day^-1), natural death and higher predation
-  Type gamma = Type(1.0) / (Type(1.0) + exp(-log_gamma)); // Recycling efficiency (0-1), fraction of dead biomass recycled
+  Type gamma = invlogit(log_gamma);     // Recycling efficiency (0-1), using TMB's invlogit function
   Type sigma_N = exp(log_sigma_N);      // Observation error for nutrients, measurement uncertainty
   Type sigma_P = exp(log_sigma_P);      // Observation error for phytoplankton, sampling and measurement error
   Type sigma_Z = exp(log_sigma_Z);      // Observation error for zooplankton, sampling and measurement error
@@ -84,24 +84,24 @@ Type objective_function<Type>::operator() ()
     Type dZ_dt = e * grazing_rate - Z_mortality;
     
     // Update predictions using Euler integration
-    N_pred(i) = N_prev + dt * dN_dt;    // Nutrient concentration at next time step
-    P_pred(i) = P_prev + dt * dP_dt;    // Phytoplankton concentration at next time step
-    Z_pred(i) = Z_prev + dt * dZ_dt;    // Zooplankton concentration at next time step
+    Type N_new = N_prev + dt * dN_dt;   // Nutrient concentration at next time step
+    Type P_new = P_prev + dt * dP_dt;   // Phytoplankton concentration at next time step
+    Type Z_new = Z_prev + dt * dZ_dt;   // Zooplankton concentration at next time step
     
-    // Ensure non-negative concentrations for biological realism using conditional statements
-    N_pred(i) = CppAD::CondExpGt(N_pred(i), eps, N_pred(i), eps); // Prevent negative nutrient concentrations
-    P_pred(i) = CppAD::CondExpGt(P_pred(i), eps, P_pred(i), eps); // Prevent negative phytoplankton concentrations
-    Z_pred(i) = CppAD::CondExpGt(Z_pred(i), eps, Z_pred(i), eps); // Prevent negative zooplankton concentrations
+    // Ensure non-negative concentrations for biological realism
+    N_pred(i) = (N_new > eps) ? N_new : eps; // Prevent negative nutrient concentrations
+    P_pred(i) = (P_new > eps) ? P_new : eps; // Prevent negative phytoplankton concentrations
+    Z_pred(i) = (Z_new > eps) ? Z_new : eps; // Prevent negative zooplankton concentrations
   }
   
   // Calculate negative log-likelihood
   Type nll = Type(0.0);                 // Initialize negative log-likelihood
   
-  // Add minimum standard deviations to prevent numerical issues using conditional statements
+  // Add minimum standard deviations to prevent numerical issues
   Type min_sigma = Type(1e-6);          // Minimum observation error to prevent numerical instability
-  Type sigma_N_safe = CppAD::CondExpGt(sigma_N, min_sigma, sigma_N, min_sigma); // Safe nutrient observation error
-  Type sigma_P_safe = CppAD::CondExpGt(sigma_P, min_sigma, sigma_P, min_sigma); // Safe phytoplankton observation error  
-  Type sigma_Z_safe = CppAD::CondExpGt(sigma_Z, min_sigma, sigma_Z, min_sigma); // Safe zooplankton observation error
+  Type sigma_N_safe = (sigma_N > min_sigma) ? sigma_N : min_sigma; // Safe nutrient observation error
+  Type sigma_P_safe = (sigma_P > min_sigma) ? sigma_P : min_sigma; // Safe phytoplankton observation error  
+  Type sigma_Z_safe = (sigma_Z > min_sigma) ? sigma_Z : min_sigma; // Safe zooplankton observation error
   
   // Likelihood contributions from all observations
   for(int i = 0; i < n_obs; i++) {
@@ -116,14 +116,14 @@ Type objective_function<Type>::operator() ()
   }
   
   // Add weak priors to prevent extreme parameter values
-  nll -= dnorm(log_r, Type(log(0.5)), Type(2.0), true);        // Prior on growth rate
-  nll -= dnorm(log_K_N, Type(log(0.1)), Type(2.0), true);      // Prior on nutrient half-saturation
-  nll -= dnorm(log_m_P, Type(log(0.1)), Type(2.0), true);      // Prior on phytoplankton mortality
-  nll -= dnorm(log_g_max, Type(log(0.5)), Type(2.0), true);    // Prior on maximum grazing rate
-  nll -= dnorm(log_K_P, Type(log(0.1)), Type(2.0), true);      // Prior on grazing half-saturation
-  nll -= dnorm(log_e, Type(0.0), Type(2.0), true);             // Prior on assimilation efficiency
-  nll -= dnorm(log_m_Z, Type(log(0.1)), Type(2.0), true);      // Prior on zooplankton mortality
-  nll -= dnorm(log_gamma, Type(0.0), Type(2.0), true);         // Prior on recycling efficiency
+  nll -= dnorm(log_r, Type(-0.693), Type(1.0), true);        // Prior on growth rate
+  nll -= dnorm(log_K_N, Type(-2.303), Type(1.0), true);      // Prior on nutrient half-saturation
+  nll -= dnorm(log_m_P, Type(-2.303), Type(1.0), true);      // Prior on phytoplankton mortality
+  nll -= dnorm(log_g_max, Type(-0.693), Type(1.0), true);    // Prior on maximum grazing rate
+  nll -= dnorm(log_K_P, Type(-2.303), Type(1.0), true);      // Prior on grazing half-saturation
+  nll -= dnorm(log_e, Type(0.0), Type(1.0), true);           // Prior on assimilation efficiency
+  nll -= dnorm(log_m_Z, Type(-2.303), Type(1.0), true);      // Prior on zooplankton mortality
+  nll -= dnorm(log_gamma, Type(-0.405), Type(1.0), true);    // Prior on recycling efficiency
   
   // Report predictions and derived quantities
   REPORT(N_pred);                       // Report predicted nutrient concentrations
