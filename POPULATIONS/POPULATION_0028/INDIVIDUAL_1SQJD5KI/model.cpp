@@ -56,6 +56,11 @@ Type objective_function<Type>::operator() ()
   P_pred(0) = P_dat(0);
   Z_pred(0) = Z_dat(0);
   
+  // Likelihood for initial predictions to explicitly predict observed data at t = 0
+  nll -= dnorm(log(N_dat(0)), log((N_pred(0) + eps) > eps ? (N_pred(0) + eps) : eps), Type(0.1), true);
+  nll -= dnorm(log(P_dat(0)), log((P_pred(0) + eps) > eps ? (P_pred(0) + eps) : eps), Type(0.1), true);
+  nll -= dnorm(log(Z_dat(0)), log((Z_pred(0) + eps) > eps ? (Z_pred(0) + eps) : eps), Type(0.1), true);
+  
   vector<Type> temp_used(n);
   if(temp.size() == 0){
     for(int i = 0; i < n; i++){
