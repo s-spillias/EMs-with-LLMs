@@ -23,7 +23,7 @@ Type objective_function<Type>::operator() ()
   DATA_VECTOR(N_dat);       // Nutrient observations (g C m^-3)
   DATA_VECTOR(P_dat);       // Phytoplankton observations (g C m^-3)
   DATA_VECTOR(Z_dat);       // Zooplankton observations (g C m^-3)
-  DATA_SCALAR(temp);        // Environmental temperature (°C)
+  DATA_VECTOR(temp);        // Environmental temperature (°C)
 
   int n = time.size();
 
@@ -76,7 +76,7 @@ Type objective_function<Type>::operator() ()
     
     // Equation 4: Nutrient recycling and uptake with saturating recycling efficiency modified by temperature
     // dN/dt = - U * P_pred(t-1) + r * temp_factor * (P_pred(t-1) + Z_pred(t-1))/(1 + beta*(P_pred(t-1) + Z_pred(t-1)))
-    Type temp_factor = pow(Q10, (temp - T_ref)/Type(10));
+    Type temp_factor = pow(Q10, (temp(t-1) - T_ref)/Type(10));
     Type dN = - U * P_pred(t-1) + r * temp_factor * (P_pred(t-1) + Z_pred(t-1))/(1 + beta*(P_pred(t-1) + Z_pred(t-1)));
     
     // Use time step difference (dt) for integration
