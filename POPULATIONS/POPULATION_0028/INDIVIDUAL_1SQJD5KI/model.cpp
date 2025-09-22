@@ -70,7 +70,6 @@ Type objective_function<Type>::operator() ()
     temp_used = temp;
   }
   
-  Type nll = 0.0;         // Negative log-likelihood accumulator
   Type eps = Type(1e-8);  // Small constant for numerical stability
   
   // Time integration using Euler's method, ensuring predictions use only past values
