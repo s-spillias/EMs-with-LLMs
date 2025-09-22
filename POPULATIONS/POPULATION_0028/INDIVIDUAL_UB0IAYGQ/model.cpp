@@ -23,6 +23,7 @@ Type objective_function<Type>::operator() ()
   DATA_VECTOR(N_dat);       // Nutrient observations (g C m^-3)
   DATA_VECTOR(P_dat);       // Phytoplankton observations (g C m^-3)
   DATA_VECTOR(Z_dat);       // Zooplankton observations (g C m^-3)
+  DATA_VECTOR(temperature); // Ambient temperature (°C)
 
   int n = time.size();
 
@@ -40,6 +41,8 @@ Type objective_function<Type>::operator() ()
   PARAMETER(alpha);         // Self-shading coefficient for phytoplankton growth (dimensionless)
   PARAMETER(beta);          // Saturation coefficient for nutrient recycling
   PARAMETER(I_L);         // Light intensity modifier scaling nutrient uptake
+  PARAMETER(T_opt);       // Optimal temperature for phytoplankton growth (°C)
+  PARAMETER(T_sigma);     // Temperature sensitivity standard deviation (°C)
 
   // Initialize predicted state vectors
   vector<Type> N_pred(n), P_pred(n), Z_pred(n);
@@ -59,7 +62,8 @@ Type objective_function<Type>::operator() ()
     Type U = v_N * I_L * N_pred(t-1) / (K_N + N_pred(t-1) + eps);
     
     // Equation 2: Phytoplankton growth, grazing, and mortality
-    Type growth_P = eps_P * U * P_pred(t-1) * exp(-alpha * P_pred(t-1)); // Growth contribution, including self-shading effect
+    Type T_effect = exp(- pow(temperature(t-1) - T_opt, Type(2)) / (Type(2) * T_sigma * T_sigma));
+    Type growth_P = eps_P * U * P_pred(t-1) * exp(-alpha * P_pred(t-1)) * T_effect; // Growth contribution, including self-shading and temperature effect
     Type grazing = g_Z * pow(Z_pred(t-1), gamma) * P_pred(t-1) / (K_P + P_pred(t-1) + eps); // Grazing loss with predator interference
     Type mortality_P = d_P * P_pred(t-1);    // Mortality loss
     Type dP = growth_P - grazing - mortality_P;
