@@ -91,10 +91,11 @@ Type objective_function<Type>::operator() ()
     P_pred(i) = P_prev + dt * dP_dt;
     Z_pred(i) = Z_prev + dt * dZ_dt;
     
-    // Ensure non-negative concentrations
-    N_pred(i) = fmax(N_pred(i), Type(1e-8));
-    P_pred(i) = fmax(P_pred(i), Type(1e-8));
-    Z_pred(i) = fmax(Z_pred(i), Type(1e-8));
+    // Ensure non-negative concentrations using smooth maximum function
+    Type min_val = Type(1e-8);
+    N_pred(i) = Type(0.5) * (N_pred(i) + sqrt(N_pred(i) * N_pred(i) + min_val * min_val));
+    P_pred(i) = Type(0.5) * (P_pred(i) + sqrt(P_pred(i) * P_pred(i) + min_val * min_val));
+    Z_pred(i) = Type(0.5) * (Z_pred(i) + sqrt(Z_pred(i) * Z_pred(i) + min_val * min_val));
   }
   
   // Calculate negative log-likelihood
