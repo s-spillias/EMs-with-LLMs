@@ -106,6 +106,9 @@ Type objective_function<Type>::operator()() {
   }
 
   // REPORT predicted trajectories for N, P, and Z (with _pred suffix matching observations _dat)
+  if(nll != nll) { 
+    nll += Type(1e10); 
+  }
   REPORT(N_pred);
   REPORT(P_pred);
   REPORT(Z_pred);
