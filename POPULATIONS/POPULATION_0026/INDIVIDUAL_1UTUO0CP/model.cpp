@@ -82,10 +82,10 @@ Type objective_function<Type>::operator() ()
     P_pred(i) = P_prev + dt * dP_dt;     // New phytoplankton concentration  
     Z_pred(i) = Z_prev + dt * dZ_dt;     // New zooplankton concentration
     
-    // Ensure non-negative concentrations
-    N_pred(i) = fmax(N_pred(i), Type(1e-8)); // Minimum nutrient concentration
-    P_pred(i) = fmax(P_pred(i), Type(1e-8)); // Minimum phytoplankton concentration
-    Z_pred(i) = fmax(Z_pred(i), Type(1e-8)); // Minimum zooplankton concentration
+    // Ensure non-negative concentrations using CppAD::CondExpGt
+    N_pred(i) = CppAD::CondExpGt(N_pred(i), Type(1e-8), N_pred(i), Type(1e-8)); // Minimum nutrient concentration
+    P_pred(i) = CppAD::CondExpGt(P_pred(i), Type(1e-8), P_pred(i), Type(1e-8)); // Minimum phytoplankton concentration
+    Z_pred(i) = CppAD::CondExpGt(Z_pred(i), Type(1e-8), Z_pred(i), Type(1e-8)); // Minimum zooplankton concentration
   }
   
   // Calculate negative log-likelihood
@@ -103,18 +103,24 @@ Type objective_function<Type>::operator() ()
     nll -= dnorm(log(Z_dat(i) + Type(1e-8)), log(Z_pred(i) + Type(1e-8)), sigma_Z, true);
   }
   
-  // Parameter bounds using smooth penalties
+  // Parameter bounds using smooth penalties with CppAD::CondExpGt
   // Growth rate penalty (should be positive but not excessive)
-  nll += Type(0.5) * pow(fmax(Type(0.0), log_r - Type(2.0)), 2); // Soft upper bound at ~7.4 day^-1
-  nll += Type(0.5) * pow(fmax(Type(0.0), Type(-5.0) - log_r), 2); // Soft lower bound at ~0.007 day^-1
+  Type r_upper_penalty = CppAD::CondExpGt(log_r - Type(2.0), Type(0.0), log_r - Type(2.0), Type(0.0));
+  Type r_lower_penalty = CppAD::CondExpGt(Type(-5.0) - log_r, Type(0.0), Type(-5.0) - log_r, Type(0.0));
+  nll += Type(0.5) * pow(r_upper_penalty, 2); // Soft upper bound at ~7.4 day^-1
+  nll += Type(0.5) * pow(r_lower_penalty, 2); // Soft lower bound at ~0.007 day^-1
   
   // Grazing efficiency penalty (should be between 0 and 1)
-  nll += Type(0.5) * pow(fmax(Type(0.0), log_e - Type(0.0)), 2); // Soft upper bound at 1.0
-  nll += Type(0.5) * pow(fmax(Type(0.0), Type(-3.0) - log_e), 2); // Soft lower bound at ~0.05
+  Type e_upper_penalty = CppAD::CondExpGt(log_e - Type(0.0), Type(0.0), log_e - Type(0.0), Type(0.0));
+  Type e_lower_penalty = CppAD::CondExpGt(Type(-3.0) - log_e, Type(0.0), Type(-3.0) - log_e, Type(0.0));
+  nll += Type(0.5) * pow(e_upper_penalty, 2); // Soft upper bound at 1.0
+  nll += Type(0.5) * pow(e_lower_penalty, 2); // Soft lower bound at ~0.05
   
   // Recycling efficiency penalty (should be between 0 and 1)  
-  nll += Type(0.5) * pow(fmax(Type(0.0), log_gamma - Type(0.0)), 2); // Soft upper bound at 1.0
-  nll += Type(0.5) * pow(fmax(Type(0.0), Type(-3.0) - log_gamma), 2); // Soft lower bound at ~0.05
+  Type gamma_upper_penalty = CppAD::CondExpGt(log_gamma - Type(0.0), Type(0.0), log_gamma - Type(0.0), Type(0.0));
+  Type gamma_lower_penalty = CppAD::CondExpGt(Type(-3.0) - log_gamma, Type(0.0), Type(-3.0) - log_gamma, Type(0.0));
+  nll += Type(0.5) * pow(gamma_upper_penalty, 2); // Soft upper bound at 1.0
+  nll += Type(0.5) * pow(gamma_lower_penalty, 2); // Soft lower bound at ~0.05
   
   // Report predicted values
   REPORT(N_pred);                       // Report nutrient predictions
