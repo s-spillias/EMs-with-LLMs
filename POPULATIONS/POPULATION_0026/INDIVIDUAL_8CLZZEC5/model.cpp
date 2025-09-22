@@ -83,15 +83,10 @@ Type objective_function<Type>::operator() ()
     // Equation 8: Zooplankton dynamics (growth from grazing, natural mortality)
     Type dZ_dt = e * grazing_rate - Z_mortality;
     
-    // Update predictions using Euler integration
-    Type N_new = N_prev + dt * dN_dt;   // Nutrient concentration at next time step
-    Type P_new = P_prev + dt * dP_dt;   // Phytoplankton concentration at next time step
-    Type Z_new = Z_prev + dt * dZ_dt;   // Zooplankton concentration at next time step
-    
-    // Ensure non-negative concentrations for biological realism
-    N_pred(i) = (N_new > eps) ? N_new : eps; // Prevent negative nutrient concentrations
-    P_pred(i) = (P_new > eps) ? P_new : eps; // Prevent negative phytoplankton concentrations
-    Z_pred(i) = (Z_new > eps) ? Z_new : eps; // Prevent negative zooplankton concentrations
+    // Update predictions using Euler integration with smooth lower bounds
+    N_pred(i) = exp(log(N_prev + eps) + dt * dN_dt / (N_prev + eps)); // Log-space integration for positivity
+    P_pred(i) = exp(log(P_prev + eps) + dt * dP_dt / (P_prev + eps)); // Log-space integration for positivity
+    Z_pred(i) = exp(log(Z_prev + eps) + dt * dZ_dt / (Z_prev + eps)); // Log-space integration for positivity
   }
   
   // Calculate negative log-likelihood
@@ -99,9 +94,9 @@ Type objective_function<Type>::operator() ()
   
   // Add minimum standard deviations to prevent numerical issues
   Type min_sigma = Type(1e-6);          // Minimum observation error to prevent numerical instability
-  Type sigma_N_safe = (sigma_N > min_sigma) ? sigma_N : min_sigma; // Safe nutrient observation error
-  Type sigma_P_safe = (sigma_P > min_sigma) ? sigma_P : min_sigma; // Safe phytoplankton observation error  
-  Type sigma_Z_safe = (sigma_Z > min_sigma) ? sigma_Z : min_sigma; // Safe zooplankton observation error
+  Type sigma_N_safe = sigma_N + min_sigma; // Safe nutrient observation error
+  Type sigma_P_safe = sigma_P + min_sigma; // Safe phytoplankton observation error  
+  Type sigma_Z_safe = sigma_Z + min_sigma; // Safe zooplankton observation error
   
   // Likelihood contributions from all observations
   for(int i = 0; i < n_obs; i++) {
