@@ -110,5 +110,6 @@ Type objective_function<Type>::operator()() {
   REPORT(P_pred);
   REPORT(Z_pred);
 
+  ADREPORT(nll);
   return nll;
 }
