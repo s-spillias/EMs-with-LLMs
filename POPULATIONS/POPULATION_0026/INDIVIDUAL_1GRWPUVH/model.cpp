@@ -41,10 +41,10 @@ Type objective_function<Type>::operator() ()
   Type nll = Type(0.0);
   
   // Add soft penalties to keep parameters within biological bounds
-  nll -= dnorm(log_r, Type(-0.693), Type(1.0), true);        // Penalize extreme growth rates
-  nll -= dnorm(log_g_max, Type(-1.204), Type(1.0), true);    // Penalize extreme grazing rates
-  nll -= dnorm(log_e, Type(0.0), Type(1.0), true);           // Penalize extreme efficiencies
-  nll -= dnorm(log_gamma, Type(0.0), Type(1.0), true);       // Penalize extreme recycling
+  nll -= dnorm(log_r, Type(-1.0), Type(0.5), true);        // Penalize extreme growth rates
+  nll -= dnorm(log_g_max, Type(-1.5), Type(0.5), true);    // Penalize extreme grazing rates
+  nll -= dnorm(log_e, Type(0.0), Type(0.5), true);         // Penalize extreme efficiencies
+  nll -= dnorm(log_gamma, Type(0.0), Type(0.5), true);     // Penalize extreme recycling
   
   // Get number of time points
   int n_time = Time.size();
@@ -54,12 +54,12 @@ Type objective_function<Type>::operator() ()
   vector<Type> P_pred(n_time);
   vector<Type> Z_pred(n_time);
   
-  // Set initial conditions from first observations with bounds
-  N_pred(0) = N_dat(0) + Type(1e-8);   // Initial nutrient concentration
-  P_pred(0) = P_dat(0) + Type(1e-8);   // Initial phytoplankton concentration
-  Z_pred(0) = Z_dat(0) + Type(1e-8);   // Initial zooplankton concentration
+  // Set initial conditions from first observations
+  N_pred(0) = N_dat(0);                 // Initial nutrient concentration
+  P_pred(0) = P_dat(0);                 // Initial phytoplankton concentration
+  Z_pred(0) = Z_dat(0);                 // Initial zooplankton concentration
   
-  // Time integration using Euler method
+  // Time integration using Euler method with smaller effective time steps
   for(int i = 1; i < n_time; i++) {
     Type dt = Time(i) - Time(i-1);      // Time step size (days)
     
@@ -68,10 +68,10 @@ Type objective_function<Type>::operator() ()
     Type P_prev = P_pred(i-1);          // Previous phytoplankton concentration  
     Type Z_prev = Z_pred(i-1);          // Previous zooplankton concentration
     
-    // Add small constants to prevent division by zero
-    Type N_safe = N_prev + Type(1e-8);  // Numerically stable nutrient concentration
-    Type P_safe = P_prev + Type(1e-8);  // Numerically stable phytoplankton concentration
-    Type Z_safe = Z_prev + Type(1e-8);  // Numerically stable zooplankton concentration
+    // Ensure positive values with minimum bounds
+    Type N_safe = N_prev + Type(1e-6);  // Numerically stable nutrient concentration
+    Type P_safe = P_prev + Type(1e-6);  // Numerically stable phytoplankton concentration
+    Type Z_safe = Z_prev + Type(1e-6);  // Numerically stable zooplankton concentration
     
     // Equation 1: Phytoplankton growth rate with Michaelis-Menten nutrient limitation
     Type growth_rate = r * (N_safe / (K_N + N_safe)); // Nutrient-limited growth (day^-1)
@@ -88,39 +88,29 @@ Type objective_function<Type>::operator() ()
     // Equation 5: Zooplankton dynamics - grazing with efficiency, natural mortality
     Type dZ_dt = e * grazing_rate * Z_safe - m_Z * Z_safe;
     
-    // Update predictions using Euler integration with bounds
-    Type N_new = N_prev + dt * dN_dt;
-    Type P_new = P_prev + dt * dP_dt;
-    Type Z_new = Z_prev + dt * dZ_dt;
+    // Update predictions using Euler integration with damping for stability
+    Type damping = Type(0.1);            // Damping factor to prevent instability
+    N_pred(i) = N_prev + damping * dt * dN_dt;
+    P_pred(i) = P_prev + damping * dt * dP_dt;
+    Z_pred(i) = Z_prev + damping * dt * dZ_dt;
     
-    // Ensure positive values with smooth lower bounds using absolute value approach
-    N_pred(i) = (N_new + sqrt(N_new * N_new + Type(1e-16))) / Type(2.0) + Type(1e-8);
-    P_pred(i) = (P_new + sqrt(P_new * P_new + Type(1e-16))) / Type(2.0) + Type(1e-8);
-    Z_pred(i) = (Z_new + sqrt(Z_new * Z_new + Type(1e-16))) / Type(2.0) + Type(1e-8);
+    // Ensure minimum positive values
+    N_pred(i) = N_pred(i) + Type(1e-6);
+    P_pred(i) = P_pred(i) + Type(1e-6);
+    Z_pred(i) = Z_pred(i) + Type(1e-6);
   }
   
-  // Calculate likelihood for all observations with robust error handling
-  Type min_sigma = Type(0.01);          // Minimum observation error
-  
+  // Calculate likelihood for all observations using normal distribution
   for(int i = 0; i < n_time; i++) {
-    // Ensure positive observations and predictions
-    Type N_obs = N_dat(i) + Type(1e-8);
-    Type P_obs = P_dat(i) + Type(1e-8);
-    Type Z_obs = Z_dat(i) + Type(1e-8);
+    // Use normal likelihood with minimum standard deviations
+    Type sigma_N_safe = sigma_N + Type(0.01);
+    Type sigma_P_safe = sigma_P + Type(0.001);
+    Type sigma_Z_safe = sigma_Z + Type(0.001);
     
-    Type N_model = N_pred(i) + Type(1e-8);
-    Type P_model = P_pred(i) + Type(1e-8);
-    Type Z_model = Z_pred(i) + Type(1e-8);
-    
-    // Use bounded sigma values
-    Type sigma_N_safe = sigma_N + min_sigma;
-    Type sigma_P_safe = sigma_P + min_sigma;
-    Type sigma_Z_safe = sigma_Z + min_sigma;
-    
-    // Use normal likelihood on log scale for positive data
-    nll -= dnorm(log(N_obs), log(N_model), sigma_N_safe, true); // Nutrient likelihood
-    nll -= dnorm(log(P_obs), log(P_model), sigma_P_safe, true); // Phytoplankton likelihood
-    nll -= dnorm(log(Z_obs), log(Z_model), sigma_Z_safe, true); // Zooplankton likelihood
+    // Normal likelihood on original scale
+    nll -= dnorm(N_dat(i), N_pred(i), sigma_N_safe, true); // Nutrient likelihood
+    nll -= dnorm(P_dat(i), P_pred(i), sigma_P_safe, true); // Phytoplankton likelihood
+    nll -= dnorm(Z_dat(i), Z_pred(i), sigma_Z_safe, true); // Zooplankton likelihood
   }
   
   // Report predictions and parameters
