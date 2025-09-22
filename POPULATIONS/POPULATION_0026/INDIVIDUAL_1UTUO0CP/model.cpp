@@ -120,11 +120,6 @@ Type objective_function<Type>::operator() ()
   nll += Type(0.1) * CppAD::CondExpGt(log_gamma, Type(0.0), pow(log_gamma, 2), Type(0.0)); // Soft upper bound at 1.0
   nll += Type(0.1) * CppAD::CondExpLt(log_gamma, Type(-3.0), pow(log_gamma - Type(-3.0), 2), Type(0.0)); // Soft lower bound
   
-  // Check for numerical issues
-  if(!isfinite(asDouble(nll))) {
-    nll = Type(1e10);                   // Return large but finite value if NaN/Inf
-  }
-  
   // Report predicted values
   REPORT(N_pred);                       // Report nutrient predictions
   REPORT(P_pred);                       // Report phytoplankton predictions
