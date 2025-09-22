@@ -23,7 +23,7 @@ Type objective_function<Type>::operator() ()
   PARAMETER(log_sigma_P);               // Log observation error standard deviation for phytoplankton
   PARAMETER(log_sigma_Z);               // Log observation error standard deviation for zooplankton
   
-  // Transform parameters to natural scale with bounds checking
+  // Transform parameters to natural scale
   Type r = exp(log_r);                  // Maximum phytoplankton growth rate (0.1-5.0 day^-1)
   Type K_N = exp(log_K_N);              // Nutrient half-saturation (0.01-1.0 g C m^-3)
   Type g_max = exp(log_g_max);          // Maximum grazing rate (0.1-3.0 day^-1)
@@ -39,14 +39,6 @@ Type objective_function<Type>::operator() ()
   
   // Add small constants for numerical stability
   Type eps = Type(1e-8);
-  
-  // Check for valid parameter values
-  if(!isfinite(asDouble(r)) || !isfinite(asDouble(K_N)) || !isfinite(asDouble(g_max)) || 
-     !isfinite(asDouble(K_P)) || !isfinite(asDouble(m_P)) || !isfinite(asDouble(m_Z)) ||
-     !isfinite(asDouble(e)) || !isfinite(asDouble(gamma)) || !isfinite(asDouble(N_in)) ||
-     !isfinite(asDouble(sigma_N)) || !isfinite(asDouble(sigma_P)) || !isfinite(asDouble(sigma_Z))) {
-    return Type(1e10);  // Return large penalty for invalid parameters
-  }
   
   // Initialize negative log-likelihood
   Type nll = Type(0.0);
@@ -107,15 +99,10 @@ Type objective_function<Type>::operator() ()
     P_pred(i) = P_prev + dt * dP_dt;   // New phytoplankton concentration
     Z_pred(i) = Z_prev + dt * dZ_dt;   // New zooplankton concentration
     
-    // Ensure non-negative concentrations
+    // Ensure non-negative concentrations using simple conditional checks
     if(N_pred(i) < eps) N_pred(i) = eps;
     if(P_pred(i) < eps) P_pred(i) = eps;
     if(Z_pred(i) < eps) Z_pred(i) = eps;
-    
-    // Check for numerical issues
-    if(!isfinite(asDouble(N_pred(i))) || !isfinite(asDouble(P_pred(i))) || !isfinite(asDouble(Z_pred(i)))) {
-      return Type(1e10);  // Return large penalty for numerical issues
-    }
   }
   
   // Calculate likelihood using normal distribution with safe standard deviations
@@ -126,16 +113,9 @@ Type objective_function<Type>::operator() ()
   
   // Add observation likelihood for all data points
   for(int i = 0; i < n_obs; i++) {
-    Type nll_N = -dnorm(N_dat(i), N_pred(i), sigma_N_safe, true);  // Nutrient likelihood
-    Type nll_P = -dnorm(P_dat(i), P_pred(i), sigma_P_safe, true);  // Phytoplankton likelihood
-    Type nll_Z = -dnorm(Z_dat(i), Z_pred(i), sigma_Z_safe, true);  // Zooplankton likelihood
-    
-    // Check for numerical issues in likelihood calculation
-    if(!isfinite(asDouble(nll_N)) || !isfinite(asDouble(nll_P)) || !isfinite(asDouble(nll_Z))) {
-      return Type(1e10);  // Return large penalty for numerical issues
-    }
-    
-    nll += nll_N + nll_P + nll_Z;
+    nll -= dnorm(N_dat(i), N_pred(i), sigma_N_safe, true);  // Nutrient likelihood
+    nll -= dnorm(P_dat(i), P_pred(i), sigma_P_safe, true);  // Phytoplankton likelihood
+    nll -= dnorm(Z_dat(i), Z_pred(i), sigma_Z_safe, true);  // Zooplankton likelihood
   }
   
   // Report predictions and parameters
