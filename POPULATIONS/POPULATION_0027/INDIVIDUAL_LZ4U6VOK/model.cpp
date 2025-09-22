@@ -47,16 +47,20 @@ Type objective_function<Type>::operator() ()
   Type sd_N = exp(log_sd_N);
   Type sd_P = exp(log_sd_P);
   Type sd_Z = exp(log_sd_Z);
+  // Initial conditions (log transformed to ensure positivity)
+  PARAMETER(log_N0); // log initial nutrient concentration (g C m^-3)
+  PARAMETER(log_P0); // log initial phytoplankton concentration (g C m^-3)
+  PARAMETER(log_Z0); // log initial zooplankton concentration (g C m^-3)
 
   int n = time.size();
 
-  // Initialize predictions with observed initial state values
+  // Initialize predictions with initial condition parameters
   vector<Type> N_pred(n);
   vector<Type> P_pred(n);
   vector<Type> Z_pred(n);
-  N_pred(0) = N_dat(0);
-  P_pred(0) = P_dat(0);
-  Z_pred(0) = Z_dat(0);
+  N_pred(0) = exp(log_N0); // initial nutrient concentration
+  P_pred(0) = exp(log_P0); // initial phytoplankton concentration
+  Z_pred(0) = exp(log_Z0); // initial zooplankton concentration
 
   // Small constant to ensure numerical stability
   Type eps = Type(1e-8);
