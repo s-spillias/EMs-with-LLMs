@@ -54,21 +54,26 @@ Type objective_function<Type>::operator() ()
     Type dt = Time(i) - Time(i-1);      // Time step size (days)
     
     // Previous time step values (avoid data leakage)
-    Type N_prev = N_pred(i-1) + eps;    // Previous nutrient concentration with stability constant
-    Type P_prev = P_pred(i-1) + eps;    // Previous phytoplankton concentration with stability constant  
-    Type Z_prev = Z_pred(i-1) + eps;    // Previous zooplankton concentration with stability constant
+    Type N_prev = N_pred(i-1);          // Previous nutrient concentration
+    Type P_prev = P_pred(i-1);          // Previous phytoplankton concentration  
+    Type Z_prev = Z_pred(i-1);          // Previous zooplankton concentration
+    
+    // Add small epsilon for numerical stability in denominators
+    Type N_safe = N_prev + eps;         // Safe nutrient concentration for calculations
+    Type P_safe = P_prev + eps;         // Safe phytoplankton concentration for calculations
+    Type Z_safe = Z_prev + eps;         // Safe zooplankton concentration for calculations
     
     // Equation 1: Phytoplankton growth rate with Michaelis-Menten nutrient limitation
-    Type growth_rate = r * (N_prev / (K_N + N_prev)) * P_prev;
+    Type growth_rate = r * (N_safe / (K_N + N_safe)) * P_safe;
     
     // Equation 2: Zooplankton grazing rate with Type II functional response
-    Type grazing_rate = g_max * (P_prev / (K_P + P_prev)) * Z_prev;
+    Type grazing_rate = g_max * (P_safe / (K_P + P_safe)) * Z_safe;
     
     // Equation 3: Phytoplankton natural mortality
-    Type P_mortality = m_P * P_prev;
+    Type P_mortality = m_P * P_safe;
     
     // Equation 4: Zooplankton natural mortality  
-    Type Z_mortality = m_Z * Z_prev;
+    Type Z_mortality = m_Z * Z_safe;
     
     // Equation 5: Nutrient recycling from mortality
     Type recycling = gamma * (P_mortality + Z_mortality);
@@ -83,10 +88,15 @@ Type objective_function<Type>::operator() ()
     // Equation 8: Zooplankton dynamics (growth from grazing, natural mortality)
     Type dZ_dt = e * grazing_rate - Z_mortality;
     
-    // Update predictions using Euler integration with smooth lower bounds
-    N_pred(i) = exp(log(N_prev + eps) + dt * dN_dt / (N_prev + eps)); // Log-space integration for positivity
-    P_pred(i) = exp(log(P_prev + eps) + dt * dP_dt / (P_prev + eps)); // Log-space integration for positivity
-    Z_pred(i) = exp(log(Z_prev + eps) + dt * dZ_dt / (Z_prev + eps)); // Log-space integration for positivity
+    // Update predictions using Euler integration
+    Type N_new = N_prev + dt * dN_dt;   // Nutrient concentration at next time step
+    Type P_new = P_prev + dt * dP_dt;   // Phytoplankton concentration at next time step
+    Type Z_new = Z_prev + dt * dZ_dt;   // Zooplankton concentration at next time step
+    
+    // Ensure non-negative concentrations using smooth approximation
+    N_pred(i) = sqrt(N_new * N_new + eps * eps); // Smooth positive approximation
+    P_pred(i) = sqrt(P_new * P_new + eps * eps); // Smooth positive approximation
+    Z_pred(i) = sqrt(Z_new * Z_new + eps * eps); // Smooth positive approximation
   }
   
   // Calculate negative log-likelihood
