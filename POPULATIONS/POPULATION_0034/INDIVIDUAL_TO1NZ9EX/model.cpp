@@ -90,9 +90,10 @@ Type objective_function<Type>::operator() ()
     // ---- LIKELIHOOD ----
     Type nll = 0.0;
     for(int t=0; t<n; t++){
-        nll -= dlnorm(cots_dat(t) + Type(1e-8), log(cots_pred(t) + Type(1e-8)), sd_obs, true);
-        nll -= dlnorm(fast_dat(t) + Type(1e-8), log(fast_pred(t) + Type(1e-8)), sd_obs, true);
-        nll -= dlnorm(slow_dat(t) + Type(1e-8), log(slow_pred(t) + Type(1e-8)), sd_obs, true);
+        // TMB uses dlnorm internally with parameterization: x, meanlog, sdlog
+        nll -= dlnorm(Type(cots_dat(t) + 1e-8), log(cots_pred(t) + Type(1e-8)), sd_obs, true);
+        nll -= dlnorm(Type(fast_dat(t) + 1e-8), log(fast_pred(t) + Type(1e-8)), sd_obs, true);
+        nll -= dlnorm(Type(slow_dat(t) + 1e-8), log(slow_pred(t) + Type(1e-8)), sd_obs, true);
     }
 
     // ---- REPORT SECTION ----
