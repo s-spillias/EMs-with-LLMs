@@ -35,15 +35,23 @@ Type objective_function<Type>::operator() ()
     PARAMETER(log_sd_slow);   // Obs error sd for slow coral (% cover, log scale)
 
     // ============================
-    // TRANSFORM PARAMETERS
+    // TRANSFORM PARAMETERS WITH SAFEGUARDS
     // ============================
-    Type r_cots = exp(log_r_cots);     // Ensure positivity
-    Type K_cots = exp(log_K_cots);
-    Type r_fast = exp(log_r_fast);
-    Type r_slow = exp(log_r_slow);
-    Type sd_cots = exp(log_sd_cots) + Type(1e-6);
-    Type sd_fast = exp(log_sd_fast) + Type(1e-6);
-    Type sd_slow = exp(log_sd_slow) + Type(1e-6);
+    Type r_cots = exp(CppAD::CondExpNaN(log_r_cots, Type(-1.0), log_r_cots, log_r_cots));
+    r_cots = CppAD::CondExpLt(r_cots, Type(1e-8), Type(1e-8), r_cots);
+
+    Type K_cots = exp(CppAD::CondExpNaN(log_K_cots, Type(0.0), log_K_cots, log_K_cots));
+    K_cots = CppAD::CondExpLt(K_cots, Type(1e-8), Type(1e-8), K_cots);
+
+    Type r_fast = exp(CppAD::CondExpNaN(log_r_fast, Type(-1.0), log_r_fast, log_r_fast));
+    r_fast = CppAD::CondExpLt(r_fast, Type(1e-8), Type(1e-8), r_fast);
+
+    Type r_slow = exp(CppAD::CondExpNaN(log_r_slow, Type(-1.0), log_r_slow, log_r_slow));
+    r_slow = CppAD::CondExpLt(r_slow, Type(1e-8), Type(1e-8), r_slow);
+
+    Type sd_cots = exp(CppAD::CondExpNaN(log_sd_cots, Type(-1.0), log_sd_cots, log_sd_cots)) + Type(1e-6);
+    Type sd_fast = exp(CppAD::CondExpNaN(log_sd_fast, Type(-1.0), log_sd_fast, log_sd_fast)) + Type(1e-6);
+    Type sd_slow = exp(CppAD::CondExpNaN(log_sd_slow, Type(-1.0), log_sd_slow, log_sd_slow)) + Type(1e-6);
 
     int n = cots_dat.size();
 
@@ -57,36 +65,34 @@ Type objective_function<Type>::operator() ()
     // ============================
     // INITIAL CONDITIONS
     // ============================
-    cots_pred(0) = cots_dat(0);
-    fast_pred(0) = fast_dat(0);
-    slow_pred(0) = slow_dat(0);
+    cots_pred(0) = CppAD::CondExpNaN(cots_dat(0), Type(1e-8), cots_dat(0), cots_dat(0));
+    fast_pred(0) = CppAD::CondExpNaN(fast_dat(0), Type(1e-8), fast_dat(0), fast_dat(0));
+    slow_pred(0) = CppAD::CondExpNaN(slow_dat(0), Type(1e-8), slow_dat(0), slow_dat(0));
 
     // ============================
     // PROCESS MODEL
     // ============================
-    Type mean_sst = sum(sst_dat) / Type(n); // manually compute mean
+    Type mean_sst = sum(sst_dat) / Type(n); // mean SST as baseline
 
     for(int t=1; t<n; t++){
-        // 1. Environmental modification of growth by SST (smooth effect around mean)
+        // 1. Environmental modification by SST
         Type sst_dev = sst_dat(t-1) - mean_sst; 
         Type sst_effect = exp(theta_sst * sst_dev);
 
-        // 2. COTS dynamics (boom-bust cycles with density-dependence, immigration, and resource limitation)
+        // 2. COTS dynamics
         Type resource_avail = fast_pred(t-1)/100.0 + 0.3 * slow_pred(t-1)/100.0;
-        // clamp to max 1.0
-        resource_avail = CppAD::CondExpLt(resource_avail, Type(1.0), resource_avail, Type(1.0));
-        cots_pred(t) = cots_pred(t-1) +
-                       r_cots * cots_pred(t-1) * (1 - cots_pred(t-1)/K_cots) * sst_effect * resource_avail +
-                       cotsimm_dat(t-1);
+        resource_avail = CppAD::CondExpGt(resource_avail, Type(1.0), Type(1.0), resource_avail);
 
-        // Enforce non-negativity floor
+        Type growth_term = r_cots * cots_pred(t-1) * (1 - cots_pred(t-1)/K_cots) * sst_effect;
+        cots_pred(t) = cots_pred(t-1) + growth_term * resource_avail + cotsimm_dat(t-1);
+
         cots_pred(t) = CppAD::CondExpLt(cots_pred(t), Type(1e-8), Type(1e-8), cots_pred(t));
 
-        // 3. Coral consumption by COTS (Holling type II functional response)
+        // 3. Coral consumption
         Type cons_fast = (alpha_fast * cots_pred(t-1) * fast_pred(t-1)) / (1.0 + attack_fast * fast_pred(t-1));
         Type cons_slow = (alpha_slow * cots_pred(t-1) * slow_pred(t-1)) / (1.0 + attack_slow * slow_pred(t-1));
 
-        // 4. Coral dynamics (logistic growth with predation losses and competition)
+        // 4. Coral dynamics
         fast_pred(t) = fast_pred(t-1) +
                        r_fast * fast_pred(t-1) * (1 - (fast_pred(t-1) + beta_fast*slow_pred(t-1))/100.0) -
                        cons_fast;
@@ -95,7 +101,6 @@ Type objective_function<Type>::operator() ()
                        r_slow * slow_pred(t-1) * (1 - (slow_pred(t-1) + beta_slow*fast_pred(t-1))/100.0) -
                        cons_slow;
 
-        // Apply bounds (0–100% cover floor/ceiling)
         fast_pred(t) = CppAD::CondExpLt(fast_pred(t), Type(1e-8), Type(1e-8),
                           CppAD::CondExpGt(fast_pred(t), Type(100.0), Type(100.0), fast_pred(t)));
         slow_pred(t) = CppAD::CondExpLt(slow_pred(t), Type(1e-8), Type(1e-8),
@@ -103,11 +108,10 @@ Type objective_function<Type>::operator() ()
     }
 
     // ============================
-    // LIKELIHOOD (OBSERVATION MODEL)
+    // LIKELIHOOD
     // ============================
     Type nll = 0.0;
 
-    // COTS - lognormal error (skip zeros)
     for(int t=0; t<n; t++){
         if(cots_dat(t) > 0){
             nll -= dnorm(log(cots_dat(t)),
@@ -115,20 +119,12 @@ Type objective_function<Type>::operator() ()
                          sd_cots,
                          true) - log(cots_dat(t));
         }
-    }
-
-    // Fast coral - lognormal error (skip zeros)
-    for(int t=0; t<n; t++){
         if(fast_dat(t) > 0){
             nll -= dnorm(log(fast_dat(t)),
                          log(fast_pred(t) + Type(1e-8)),
                          sd_fast,
                          true) - log(fast_dat(t));
         }
-    }
-
-    // Slow coral - lognormal error (skip zeros)
-    for(int t=0; t<n; t++){
         if(slow_dat(t) > 0){
             nll -= dnorm(log(slow_dat(t)),
                          log(slow_pred(t) + Type(1e-8)),
