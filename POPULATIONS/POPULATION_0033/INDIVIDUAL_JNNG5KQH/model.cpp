@@ -53,6 +53,13 @@ Type objective_function<Type>::operator() () {
   
   // Avoid division by zero with small constant
   Type tiny = Type(1e-8);
+
+  // Precompute mean SST (since mean() is not available)
+  Type mean_sst = 0.0;
+  for(int i=0; i<n; i++){
+    mean_sst += sst_dat(i);
+  }
+  mean_sst /= n;
   
   // =========================
   //  STATE VARIABLES
@@ -71,8 +78,8 @@ Type objective_function<Type>::operator() () {
   // =========================
   for(int t=1; t<n; t++){
     
-    // Temperature effect (centered by mean)
-    Type sst_effect = 1.0 + beta_sst * (sst_dat(t-1) - mean(sst_dat));
+    // Temperature effect (centered by mean SST)
+    Type sst_effect = Type(1.0) + beta_sst * (sst_dat(t-1) - mean_sst);
     
     // Coral-dependent feeding functional response (Holling type II)
     Type total_coral = fast_pred(t-1) + slow_pred(t-1) + tiny;
@@ -80,7 +87,7 @@ Type objective_function<Type>::operator() () {
     Type feeding_rate_slow = (alpha_slow * slow_pred(t-1)) / (h + total_coral);
     
     // COTS population dynamics (logistic + immigration + environment-modified mortality)
-    Type growth_cots = r_cots * cots_pred(t-1) * (1.0 - cots_pred(t-1)/K_cots);
+    Type growth_cots = r_cots * cots_pred(t-1) * (Type(1.0) - cots_pred(t-1)/K_cots);
     Type mortality_cots = m_cots * sst_effect * cots_pred(t-1);
     Type immigration = cotsimm_dat(t-1);
     
@@ -88,15 +95,15 @@ Type objective_function<Type>::operator() () {
     cots_pred(t) = CppAD::CondExpGt(cots_pred(t), tiny, cots_pred(t), tiny); // enforce positivity
     
     // Coral dynamics (grazing mortality from COTS + slow background recovery)
-    fast_pred(t) = fast_pred(t-1) - feeding_rate_fast * cots_pred(t-1) + 0.05 * (100.0 - fast_pred(t-1)) / 100.0;
-    slow_pred(t) = slow_pred(t-1) - feeding_rate_slow * cots_pred(t-1) + 0.01 * (100.0 - slow_pred(t-1)) / 100.0;
+    fast_pred(t) = fast_pred(t-1) - feeding_rate_fast * cots_pred(t-1) + Type(0.05) * (Type(100.0) - fast_pred(t-1)) / Type(100.0);
+    slow_pred(t) = slow_pred(t-1) - feeding_rate_slow * cots_pred(t-1) + Type(0.01) * (Type(100.0) - slow_pred(t-1)) / Type(100.0);
     
     // enforce positivity and bounds [0,100] for corals
     fast_pred(t) = CppAD::CondExpGt(fast_pred(t), tiny, fast_pred(t), tiny);
-    fast_pred(t) = CppAD::CondExpLt(fast_pred(t), 100.0, fast_pred(t), 100.0);
+    fast_pred(t) = CppAD::CondExpLt(fast_pred(t), Type(100.0), fast_pred(t), Type(100.0));
     
     slow_pred(t) = CppAD::CondExpGt(slow_pred(t), tiny, slow_pred(t), tiny);
-    slow_pred(t) = CppAD::CondExpLt(slow_pred(t), 100.0, slow_pred(t), 100.0);
+    slow_pred(t) = CppAD::CondExpLt(slow_pred(t), Type(100.0), slow_pred(t), Type(100.0));
   }
   
   // =========================
