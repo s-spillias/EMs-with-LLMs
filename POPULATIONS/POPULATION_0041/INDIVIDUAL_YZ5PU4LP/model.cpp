@@ -160,6 +160,11 @@ Type objective_function<Type>::operator() ()
   vector<Type> F_frac(T);   // Fast coral fraction (0..1)
   vector<Type> S_frac(T);   // Slow coral fraction (0..1)
 
+  // Explicit prediction vectors required by validator
+  vector<Type> cots_pred(T); // COTS model prediction aligned to cots_dat (ind m^-2)
+  vector<Type> fast_pred(T); // Fast coral prediction aligned to fast_dat (% cover)
+  vector<Type> slow_pred(T); // Slow coral prediction aligned to slow_dat (% cover)
+
   // Initialize coral fractions from K with smooth decomposition that ensures F0+S0 <= K
   Type pF0 = invlogit_fun(logit_F0);       // (0..1)
   Type F0 = K * pF0;                       // share up to K
@@ -169,16 +174,21 @@ Type objective_function<Type>::operator() ()
   S_frac(0) = S0;
   A_pred(0) = A0;
 
+  // Initialize predictions for t=0
+  cots_pred(0) = A_pred(0);                 // COTS ind m^-2
+  fast_pred(0) = F_frac(0) * Type(100.0);   // Fast coral %
+  slow_pred(0) = S_frac(0) * Type(100.0);   // Slow coral %
+
   // -------------------- Likelihood and penalties --------------------
   Type nll = 0.0;
   Type pen_states = 0.0;
 
-  // ---- t = 0 observation likelihood ----
+  // ---- t = 0 observation likelihood using *_pred variables ----
   // COTS lognormal
-  nll -= dnorm(log(cots_dat(0) + eps), log(A_pred(0) + eps), sigma_cots, true);
+  nll -= dnorm(log(cots_dat(0) + eps), log(cots_pred(0) + eps), sigma_cots, true);
   // Coral percent normals
-  nll -= dnorm(fast_dat(0), F_frac(0) * Type(100.0), sigma_fast, true);
-  nll -= dnorm(slow_dat(0), S_frac(0) * Type(100.0), sigma_slow, true);
+  nll -= dnorm(fast_dat(0), fast_pred(0), sigma_fast, true);
+  nll -= dnorm(slow_dat(0), slow_pred(0), sigma_slow, true);
 
   // State soft penalties at t=0
   pen_states += barrier_pen(F_frac(0), Type(0.0), K);
@@ -241,29 +251,26 @@ Type objective_function<Type>::operator() ()
     S_frac(t) = S_curr;
     A_pred(t) = A_curr + eps; // strictly positive
 
-    // Observation likelihood at time t
-    nll -= dnorm(log(cots_dat(t) + eps), log(A_pred(t) + eps), sigma_cots, true);
-    nll -= dnorm(fast_dat(t), F_frac(t) * Type(100.0), sigma_fast, true);
-    nll -= dnorm(slow_dat(t), S_frac(t) * Type(100.0), sigma_slow, true);
+    // Build predictions for time t
+    cots_pred(t) = A_pred(t);                 // COTS ind m^-2
+    fast_pred(t) = F_frac(t) * Type(100.0);   // Fast coral %
+    slow_pred(t) = S_frac(t) * Type(100.0);   // Slow coral %
+
+    // Observation likelihood at time t using *_pred
+    nll -= dnorm(log(cots_dat(t) + eps), log(cots_pred(t) + eps), sigma_cots, true);
+    nll -= dnorm(fast_dat(t), fast_pred(t), sigma_fast, true);
+    nll -= dnorm(slow_dat(t), slow_pred(t), sigma_slow, true);
   }
 
   // Add soft penalties
   nll += pen_w * pen_states;
 
   // -------------------- Reporting --------------------
-  // Model predictions aligned to data (use required _pred suffix; corals reported in percent)
-  vector<Type> fast_pred(T);
-  vector<Type> slow_pred(T);
-  vector<Type> cots_pred(T);
-  for (int t = 0; t < T; ++t) {
-    fast_pred(t) = F_frac(t) * Type(100.0); // % cover (fast coral)
-    slow_pred(t) = S_frac(t) * Type(100.0); // % cover (slow coral)
-    cots_pred(t) = A_pred(t);               // ind m^-2 (COTS)
-  }
+  // Model predictions aligned to data (use required _pred suffix)
   REPORT(A_pred);        // internal COTS state (ind m^-2)
-  REPORT(cots_pred);     // COTS abundance prediction aligned to cots_dat (ind m^-2)
-  REPORT(fast_pred);     // fast coral percent prediction
-  REPORT(slow_pred);     // slow coral percent prediction
+  REPORT(cots_pred);     // COTS abundance prediction (ind m^-2)
+  REPORT(fast_pred);     // Fast coral percent prediction
+  REPORT(slow_pred);     // Slow coral percent prediction
   REPORT(Year);          // report time for alignment
   REPORT(K);             // realized carrying capacity
   REPORT(alpha);         // realized preference
