@@ -76,40 +76,45 @@ Type objective_function<Type>::operator() () {
   // =========================
   //  PROCESS MODEL
   // =========================
-  // Initial conditions as explicit prediction equations
-  cots_pred(0) = exp(init_cots);   // Initial predicted COTS density
-  fast_pred(0) = exp(init_fast);   // Initial predicted fast coral cover
-  slow_pred(0) = exp(init_slow);   // Initial predicted slow coral cover
-
-  // Dynamic predictions
-  for(int t=1; t<n; t++){
+  for(int t=0; t<n; t++){
     
-    // Temperature effect (centered by mean SST)
-    Type sst_effect = Type(1.0) + beta_sst * (sst_dat(t-1) - mean_sst);
-    
-    // Coral-dependent feeding functional response (Holling type II)
-    Type total_coral = fast_pred(t-1) + slow_pred(t-1) + tiny;
-    Type feeding_rate_fast = (alpha_fast * fast_pred(t-1)) / (h + total_coral);
-    Type feeding_rate_slow = (alpha_slow * slow_pred(t-1)) / (h + total_coral);
-    
-    // COTS population dynamics (logistic + immigration + environment-modified mortality)
-    Type growth_cots = r_cots * cots_pred(t-1) * (Type(1.0) - cots_pred(t-1)/K_cots);
-    Type mortality_cots = m_cots * sst_effect * cots_pred(t-1);
-    Type immigration = cotsimm_dat(t-1);
-    
-    cots_pred(t) = cots_pred(t-1) + growth_cots - mortality_cots + immigration;
-    cots_pred(t) = CppAD::CondExpGt(cots_pred(t), tiny, cots_pred(t), tiny); // enforce positivity
-    
-    // Coral dynamics (grazing mortality from COTS + slow background recovery)
-    fast_pred(t) = fast_pred(t-1) - feeding_rate_fast * cots_pred(t-1) + Type(0.05) * (Type(100.0) - fast_pred(t-1)) / Type(100.0);
-    slow_pred(t) = slow_pred(t-1) - feeding_rate_slow * cots_pred(t-1) + Type(0.01) * (Type(100.0) - slow_pred(t-1)) / Type(100.0);
-    
-    // enforce positivity and bounds [0,100] for corals
-    fast_pred(t) = CppAD::CondExpGt(fast_pred(t), tiny, fast_pred(t), tiny);
-    fast_pred(t) = CppAD::CondExpLt(fast_pred(t), Type(100.0), fast_pred(t), Type(100.0));
-    
-    slow_pred(t) = CppAD::CondExpGt(slow_pred(t), tiny, slow_pred(t), tiny);
-    slow_pred(t) = CppAD::CondExpLt(slow_pred(t), Type(100.0), slow_pred(t), Type(100.0));
+    if(t == 0){
+      // Initial conditions from free parameters
+      cots_pred(0) = exp(init_cots);
+      fast_pred(0) = exp(init_fast);
+      slow_pred(0) = exp(init_slow);
+      
+    } else {
+      
+      // Temperature effect (centered by mean SST)
+      Type sst_effect = Type(1.0) + beta_sst * (sst_dat(t-1) - mean_sst);
+      
+      // Coral-dependent feeding functional response (Holling type II)
+      Type total_coral = fast_pred(t-1) + slow_pred(t-1) + tiny;
+      Type feeding_rate_fast = (alpha_fast * fast_pred(t-1)) / (h + total_coral);
+      Type feeding_rate_slow = (alpha_slow * slow_pred(t-1)) / (h + total_coral);
+      
+      // COTS population dynamics (logistic + immigration + environment-modified mortality)
+      Type growth_cots = r_cots * cots_pred(t-1) * (Type(1.0) - cots_pred(t-1)/K_cots);
+      Type mortality_cots = m_cots * sst_effect * cots_pred(t-1);
+      Type immigration = cotsimm_dat(t-1);
+      
+      cots_pred(t) = cots_pred(t-1) + growth_cots - mortality_cots + immigration;
+      cots_pred(t) = CppAD::CondExpGt(cots_pred(t), tiny, cots_pred(t), tiny); // enforce positivity
+      
+      // Coral dynamics (grazing mortality from COTS + slow background recovery)
+      fast_pred(t) = fast_pred(t-1) - feeding_rate_fast * cots_pred(t-1) + 
+                     Type(0.05) * (Type(100.0) - fast_pred(t-1)) / Type(100.0);
+      slow_pred(t) = slow_pred(t-1) - feeding_rate_slow * cots_pred(t-1) + 
+                     Type(0.01) * (Type(100.0) - slow_pred(t-1)) / Type(100.0);
+      
+      // enforce positivity and bounds [0,100] for corals
+      fast_pred(t) = CppAD::CondExpGt(fast_pred(t), tiny, fast_pred(t), tiny);
+      fast_pred(t) = CppAD::CondExpLt(fast_pred(t), Type(100.0), fast_pred(t), Type(100.0));
+      
+      slow_pred(t) = CppAD::CondExpGt(slow_pred(t), tiny, slow_pred(t), tiny);
+      slow_pred(t) = CppAD::CondExpLt(slow_pred(t), Type(100.0), slow_pred(t), Type(100.0));
+    }
   }
   
   // =========================
@@ -138,8 +143,8 @@ Type objective_function<Type>::operator() () {
 
 /*
 EQUATION SUMMARY:
-1. Initial conditions are explicit predictions: cots_pred(0), fast_pred(0), slow_pred(0).
-2. COTS growth: logistic growth with carrying capacity + immigration - mortality.
+1. Initial conditions are explicit predictions (t=0): cots_pred(0), fast_pred(0), slow_pred(0).
+2. For t>0, COTS growth: logistic with carrying capacity + immigration - mortality.
 3. Mortality is modified by SST via a smooth multiplicative effect.
 4. Feeding on corals follows a Holling type II functional response.
 5. Fast coral dynamics: losses from COTS feeding + background recovery.
