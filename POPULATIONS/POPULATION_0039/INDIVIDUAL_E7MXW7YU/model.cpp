@@ -109,26 +109,26 @@ Type objective_function<Type>::operator() ()
 
     // COTS - lognormal error
     for(int t=0; t<n; t++){
-        nll -= dnorm(log(cots_dat(t) + Type(1e-8)),
-                     log(cots_pred(t) + Type(1e-8)),
-                     sd_cots,
-                     true);
+        nll -= dlnorm(cots_dat(t) + Type(1e-8),
+                      log(cots_pred(t) + Type(1e-8)),
+                      sd_cots,
+                      true);
     }
 
     // Fast coral - lognormal error
     for(int t=0; t<n; t++){
-        nll -= dnorm(log(fast_dat(t) + Type(1e-8)),
-                     log(fast_pred(t) + Type(1e-8)),
-                     sd_fast,
-                     true);
+        nll -= dlnorm(fast_dat(t) + Type(1e-8),
+                      log(fast_pred(t) + Type(1e-8)),
+                      sd_fast,
+                      true);
     }
 
     // Slow coral - lognormal error
     for(int t=0; t<n; t++){
-        nll -= dnorm(log(slow_dat(t) + Type(1e-8)),
-                     log(slow_pred(t) + Type(1e-8)),
-                     sd_slow,
-                     true);
+        nll -= dlnorm(slow_dat(t) + Type(1e-8),
+                      log(slow_pred(t) + Type(1e-8)),
+                      sd_slow,
+                      true);
     }
 
     // ============================
