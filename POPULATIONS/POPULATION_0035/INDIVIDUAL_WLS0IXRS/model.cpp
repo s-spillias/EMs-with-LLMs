@@ -1,5 +1,11 @@
 #include <TMB.hpp>
 
+template<class Type>
+Type dlnorm_custom(Type x, Type meanlog, Type sd, int give_log) {
+  Type log_density = -log(x) - log(sd) - Type(0.5)*log(2.0 * M_PI) - Type(0.5)*pow((log(x) - meanlog) / sd, Type(2.0));
+  return give_log ? log_density : exp(log_density);
+}
+
 // 1. Data and parameters input:
 //    - DATA_VECTOR: time series data (years)
 //    - DATA_VECTOR: cots_dat: observed COTS densities (individuals/m2)
@@ -83,13 +89,13 @@ Type objective_function<Type>::operator() ()
   // - Data are strictly positive so log-transformation is used.
   // - Minimum SD (min_sd) prevents numerical issues when variances are small.
   for(int t = 0; t < n; t++){
-    Type sd_cots = fmax(min_sd, Type(0.1));
-    Type sd_fast = fmax(min_sd, Type(0.1));
-    Type sd_slow = fmax(min_sd, Type(0.1));
+    Type sd_cots = (min_sd > Type(0.1) ? min_sd : Type(0.1));
+    Type sd_fast = (min_sd > Type(0.1) ? min_sd : Type(0.1));
+    Type sd_slow = (min_sd > Type(0.1) ? min_sd : Type(0.1));
     
-    nll -= dlnorm(cots_dat(t), log(cots_pred(t)), sd_cots, true);  // COTS likelihood
-    nll -= dlnorm(fast_dat(t), log(fast_pred(t)), sd_fast, true);   // Fast coral likelihood
-    nll -= dlnorm(slow_dat(t), log(slow_pred(t)), sd_slow, true);     // Slow coral likelihood
+    nll -= dlnorm_custom(cots_dat(t), log(cots_pred(t)), sd_cots, true);  // COTS likelihood
+    nll -= dlnorm_custom(fast_dat(t), log(fast_pred(t)), sd_fast, true);   // Fast coral likelihood
+    nll -= dlnorm_custom(slow_dat(t), log(slow_pred(t)), sd_slow, true);     // Slow coral likelihood
   }
   
   // 6. Reporting model predictions for diagnostics
