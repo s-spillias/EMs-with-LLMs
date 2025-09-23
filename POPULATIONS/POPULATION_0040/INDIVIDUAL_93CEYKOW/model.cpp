@@ -260,9 +260,15 @@ Type objective_function<Type>::operator() ()
     Type F_temp = F + growthF - pF - (mF + mF_bleach) * F;
     Type S_temp = S + growthS - pS - (mS + mS_bleach) * S;
 
-    // Smooth non-negativity via softplus offset (keeps >0 without hard cutoff)
-    Type F_next = softplus(F_temp) + eps;
-    Type S_next = softplus(S_temp) + eps;
+    // Smooth non-negativity via softplus (keeps >0 without hard cutoff)
+    Type xF = softplus(F_temp) + eps;
+    Type xS = softplus(S_temp) + eps;
+
+    // Smooth projection to keep cover within [0,1) and F+S < 1:
+    // Use a softmax-like normalization with 'free space' of 1.
+    Type denom_space = Type(1.0) + xF + xS; // > 1 ensures sum < 1
+    Type F_next = xF / denom_space;
+    Type S_next = xS / denom_space;
 
     // Advance states
     A = A_next;
