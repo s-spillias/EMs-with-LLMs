@@ -21,8 +21,10 @@ Type objective_function<Type>::operator() ()
     // ============================
     PARAMETER(log_r_cots);    // Intrinsic growth rate of COTS (log scale, year^-1)
     PARAMETER(log_K_cots);    // Carrying capacity of COTS (log scale, indiv/m^2)
-    PARAMETER(alpha_fast);    // COTS predation efficiency on fast coral (% lost per indiv/m^2)
-    PARAMETER(alpha_slow);    // COTS predation efficiency on slow coral (% lost per indiv/m^2)
+    PARAMETER(alpha_fast);    // Attack rate coefficient on fast coral (Holling-II)
+    PARAMETER(alpha_slow);    // Attack rate coefficient on slow coral (Holling-II)
+    PARAMETER(attack_fast);   // Saturation/handling coefficient for fast coral (Holling-II)
+    PARAMETER(attack_slow);   // Saturation/handling coefficient for slow coral (Holling-II)
     PARAMETER(log_r_fast);    // Growth rate of fast coral (log scale, year^-1)
     PARAMETER(log_r_slow);    // Growth rate of slow coral (log scale, year^-1)
     PARAMETER(beta_fast);     // Competition coefficient on fast coral recovery
@@ -80,9 +82,9 @@ Type objective_function<Type>::operator() ()
         // Enforce non-negativity
         cots_pred(t) = CppAD::CondExpLt(cots_pred(t), Type(1e-8), Type(1e-8), cots_pred(t));
 
-        // 3. Coral consumption by COTS
-        Type cons_fast = alpha_fast * cots_pred(t-1) * fast_pred(t-1);
-        Type cons_slow = alpha_slow * cots_pred(t-1) * slow_pred(t-1);
+        // 3. Coral consumption by COTS (Holling type II functional response)
+        Type cons_fast = (alpha_fast * cots_pred(t-1) * fast_pred(t-1)) / (1.0 + attack_fast * fast_pred(t-1));
+        Type cons_slow = (alpha_slow * cots_pred(t-1) * slow_pred(t-1)) / (1.0 + attack_slow * slow_pred(t-1));
 
         // 4. Coral dynamics (logistic growth with predation losses and competition)
         fast_pred(t) = fast_pred(t-1) +
