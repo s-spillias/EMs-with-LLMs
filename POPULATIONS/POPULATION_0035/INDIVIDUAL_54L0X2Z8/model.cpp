@@ -1,4 +1,7 @@
 #include <TMB.hpp>
+template<class Type>
+Type objective_function<Type>::operator() ()
+{
 
 // 1. Data Section:
 //    - Year: Time (year)
@@ -80,3 +83,4 @@ REPORT(fast_pred);
 REPORT(slow_pred);
 
 return nll;
+}
