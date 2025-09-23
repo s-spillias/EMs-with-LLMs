@@ -2,7 +2,7 @@
 
 // Helper functions for numerical stability
 // Use TMB-provided invlogit; do not redefine to avoid conflicts.
-// Stable softplus without using std::log1p (works with AD types)
+// A smooth nonlinearity for positivity without using std::log1p (works with AD types)
 template<class Type>
 Type softplus(Type x){
   Type zero = Type(0);
@@ -237,7 +237,9 @@ Type objective_function<Type>::operator() ()
                    + eta_imm * imm_prev;
     Type mortal_starv = m_starv_max * (Type(1.0) - g_food);
     Type surv_factor  = exp( - mA - mortal_starv );
-    Type A_next = A * surv_factor + recruit;
+    Type A_next_raw = A * surv_factor + recruit;
+    // Smooth positivity for A to avoid pathological negative due to numerical issues
+    Type A_next = softplus(A_next_raw) + eps;
 
     // 5) Feeding (Holling type II with preference-weighted availability)
     Type avail = prefF * F + prefS * S;
@@ -260,12 +262,11 @@ Type objective_function<Type>::operator() ()
     Type F_temp = F + growthF - pF - (mF + mF_bleach) * F;
     Type S_temp = S + growthS - pS - (mS + mS_bleach) * S;
 
-    // Smooth non-negativity via softplus (keeps >0 without hard cutoff)
+    // Smooth non-negativity and compositional projection to keep F,S in (0,1) and F+S<1
     Type xF = softplus(F_temp) + eps;
     Type xS = softplus(S_temp) + eps;
 
-    // Smooth projection to keep cover within [0,1) and F+S < 1:
-    // Use a softmax-like normalization with 'free space' of 1.
+    // Smooth projection with 'free space' of 1
     Type denom_space = Type(1.0) + xF + xS; // > 1 ensures sum < 1
     Type F_next = xF / denom_space;
     Type S_next = xS / denom_space;
@@ -292,22 +293,18 @@ Type objective_function<Type>::operator() ()
     Type mu_cots = log(cots_pred(t) + eps);
     nll -= dnorm(y_cots, mu_cots, sigma_cots, true);
 
-    // Fast coral: logit-normal on fractions
+    // Fast coral: logit-normal on fractions (use eps inside transform; no hard clamping)
     Type y_fast_frac = (fast_dat(t) / Type(100.0));
-    Type y_fast_clamp = CppAD::CondExpLt(y_fast_frac, eps, eps, CppAD::CondExpGt(y_fast_frac, Type(1.0)-eps, Type(1.0)-eps, y_fast_frac));
     Type p_fast_frac = (fast_pred(t) / Type(100.0));
-    Type p_fast_clamp = CppAD::CondExpLt(p_fast_frac, eps, eps, CppAD::CondExpGt(p_fast_frac, Type(1.0)-eps, Type(1.0)-eps, p_fast_frac));
-    Type z_fast = log( y_fast_clamp + eps ) - log( Type(1.0) - y_fast_clamp + eps );
-    Type mu_fast = log( p_fast_clamp + eps ) - log( Type(1.0) - p_fast_clamp + eps );
+    Type z_fast = log( y_fast_frac + eps ) - log( Type(1.0) - y_fast_frac + eps );
+    Type mu_fast = log( p_fast_frac + eps ) - log( Type(1.0) - p_fast_frac + eps );
     nll -= dnorm(z_fast, mu_fast, sigma_fast, true);
 
-    // Slow coral: logit-normal on fractions
+    // Slow coral: logit-normal on fractions (use eps inside transform; no hard clamping)
     Type y_slow_frac = (slow_dat(t) / Type(100.0));
-    Type y_slow_clamp = CppAD::CondExpLt(y_slow_frac, eps, eps, CppAD::CondExpGt(y_slow_frac, Type(1.0)-eps, Type(1.0)-eps, y_slow_frac));
     Type p_slow_frac = (slow_pred(t) / Type(100.0));
-    Type p_slow_clamp = CppAD::CondExpLt(p_slow_frac, eps, eps, CppAD::CondExpGt(p_slow_frac, Type(1.0)-eps, Type(1.0)-eps, p_slow_frac));
-    Type z_slow = log( y_slow_clamp + eps ) - log( Type(1.0) - y_slow_clamp + eps );
-    Type mu_slow = log( p_slow_clamp + eps ) - log( Type(1.0) - p_slow_clamp + eps );
+    Type z_slow = log( y_slow_frac + eps ) - log( Type(1.0) - y_slow_frac + eps );
+    Type mu_slow = log( p_slow_frac + eps ) - log( Type(1.0) - p_slow_frac + eps );
     nll -= dnorm(z_slow, mu_slow, sigma_slow, true);
 
     // SST: Gaussian likelihood (identity prediction)
