@@ -31,10 +31,10 @@ Type objective_function<Type>::operator() () {
   PARAMETER(beta_sst);            // effect of SST anomaly on COTS survival (unitless)
   PARAMETER(log_phi);             // process error (log SD)
 
-  // Initial condition parameters (avoid data leakage)
-  PARAMETER(init_cots);           // Initial value for COTS density (ind/m2)
-  PARAMETER(init_fast);           // Initial cover for fast coral (%)
-  PARAMETER(init_slow);           // Initial cover for slow coral (%)
+  // Initial condition parameters (avoid data leakage from observations)
+  PARAMETER(init_cots);           // Initial value for COTS density (ind/m2, log scale)
+  PARAMETER(init_fast);           // Initial cover for fast coral (%, log scale)
+  PARAMETER(init_slow);           // Initial cover for slow coral (%, log scale)
   
   // Observation error parameters
   PARAMETER(log_obs_sigma_cots);  // observation error of COTS (log SD)
@@ -73,14 +73,15 @@ Type objective_function<Type>::operator() () {
   vector<Type> fast_pred(n);
   vector<Type> slow_pred(n);
   
-  // initialize with free parameters, not observations
-  cots_pred(0) = exp(init_cots);   // enforce positivity
-  fast_pred(0) = exp(init_fast);   // enforce positivity
-  slow_pred(0) = exp(init_slow);   // enforce positivity
-  
   // =========================
   //  PROCESS MODEL
   // =========================
+  // Initial conditions as explicit prediction equations
+  cots_pred(0) = exp(init_cots);   // Initial predicted COTS density
+  fast_pred(0) = exp(init_fast);   // Initial predicted fast coral cover
+  slow_pred(0) = exp(init_slow);   // Initial predicted slow coral cover
+
+  // Dynamic predictions
   for(int t=1; t<n; t++){
     
     // Temperature effect (centered by mean SST)
@@ -137,9 +138,10 @@ Type objective_function<Type>::operator() () {
 
 /*
 EQUATION SUMMARY:
-1. COTS growth: logistic growth with carrying capacity + immigration - mortality
-2. Mortality is modified by SST via a smooth multiplicative effect
-3. Feeding on corals follows a Holling type II functional response
-4. Fast coral dynamics: losses from COTS feeding + background recovery
-5. Slow coral dynamics: losses from COTS feeding + background recovery
+1. Initial conditions are explicit predictions: cots_pred(0), fast_pred(0), slow_pred(0).
+2. COTS growth: logistic growth with carrying capacity + immigration - mortality.
+3. Mortality is modified by SST via a smooth multiplicative effect.
+4. Feeding on corals follows a Holling type II functional response.
+5. Fast coral dynamics: losses from COTS feeding + background recovery.
+6. Slow coral dynamics: losses from COTS feeding + background recovery.
 */
