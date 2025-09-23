@@ -1,8 +1,18 @@
 #include <TMB.hpp>
 
 // Helper functions for numerical stability
-template<class Type> Type invlogit(Type x){ return Type(1) / (Type(1) + exp(-x)); } // numerically stable logistic
-template<class Type> Type softplus(Type x){ return log1p(exp(x)); } // smooth positive transform
+// Use TMB-provided invlogit; do not redefine to avoid conflicts.
+// Stable softplus without using std::log1p (works with AD types)
+template<class Type>
+Type softplus(Type x){
+  Type zero = Type(0);
+  // softplus(x) = max(0,x) + log(1 + exp(-|x|)) implemented with AD-safe conditionals
+  return CppAD::CondExpGt(
+    x, zero,
+    x + log(Type(1) + exp(-x)),
+    log(Type(1) + exp(x))
+  );
+}
 
 /* 
 Model overview and equations (all time indices t refer to rows in the data; Year is the time key):
