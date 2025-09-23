@@ -254,11 +254,14 @@ Type objective_function<Type>::operator() ()
   // Model predictions aligned to data (use required _pred suffix; corals reported in percent)
   vector<Type> fast_pred(T);
   vector<Type> slow_pred(T);
+  vector<Type> cots_pred(T);
   for (int t = 0; t < T; ++t) {
-    fast_pred(t) = F_frac(t) * Type(100.0); // % cover
-    slow_pred(t) = S_frac(t) * Type(100.0); // % cover
+    fast_pred(t) = F_frac(t) * Type(100.0); // % cover (fast coral)
+    slow_pred(t) = S_frac(t) * Type(100.0); // % cover (slow coral)
+    cots_pred(t) = A_pred(t);               // ind m^-2 (COTS)
   }
   REPORT(A_pred);        // internal COTS state (ind m^-2)
+  REPORT(cots_pred);     // COTS abundance prediction aligned to cots_dat (ind m^-2)
   REPORT(fast_pred);     // fast coral percent prediction
   REPORT(slow_pred);     // slow coral percent prediction
   REPORT(Year);          // report time for alignment
@@ -270,6 +273,7 @@ Type objective_function<Type>::operator() ()
 
   // Required names for ControlFile.R evaluation
   ADREPORT(A_pred);
+  ADREPORT(cots_pred);
   ADREPORT(fast_pred);
   ADREPORT(slow_pred);
 
