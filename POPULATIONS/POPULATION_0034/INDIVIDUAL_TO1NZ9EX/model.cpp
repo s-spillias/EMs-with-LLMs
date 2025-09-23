@@ -55,32 +55,32 @@ Type objective_function<Type>::operator() ()
     for(int t=1; t<n; t++){
         // Available coral resources
         Type coral_total_prev = fast_pred(t-1) + slow_pred(t-1) + Type(1e-8);
-        Type free_space = CppAD::fmax(Type(0.0), 100.0 - coral_total_prev);
+        Type free_space = fmax(Type(0.0), Type(100.0) - coral_total_prev);
 
         // Functional response for predation (Holling type II-like)
         Type coral_consumed_fast = (attack_fast * cots_pred(t-1) * fast_pred(t-1)) /
-                                   (1.0 + handling * (attack_fast * fast_pred(t-1) + attack_slow * slow_pred(t-1)) + Type(1e-8));
+                                   (Type(1.0) + handling * (attack_fast * fast_pred(t-1) + attack_slow * slow_pred(t-1)) + Type(1e-8));
 
         Type coral_consumed_slow = (attack_slow * cots_pred(t-1) * slow_pred(t-1)) /
-                                   (1.0 + handling * (attack_fast * fast_pred(t-1) + attack_slow * slow_pred(t-1)) + Type(1e-8));
+                                   (Type(1.0) + handling * (attack_fast * fast_pred(t-1) + attack_slow * slow_pred(t-1)) + Type(1e-8));
 
         // Coral growth influenced by SST
         Type sst_dev = sst_dat(t) - Type(27.0); // reference optimum ~27C
         Type growth_modifier = exp(-env_sst * sst_dev * sst_dev);
 
-        Type fast_growth = regrow_fast * fast_pred(t-1) * (free_space/100.0) * growth_modifier;
-        Type slow_growth = regrow_slow * slow_pred(t-1) * (free_space/100.0) * growth_modifier;
+        Type fast_growth = regrow_fast * fast_pred(t-1) * (free_space/Type(100.0)) * growth_modifier;
+        Type slow_growth = regrow_slow * slow_pred(t-1) * (free_space/Type(100.0)) * growth_modifier;
 
         // Coral updates
-        fast_pred(t) = CppAD::fmax(Type(0.0), fast_pred(t-1) + fast_growth - coral_consumed_fast);
-        slow_pred(t) = CppAD::fmax(Type(0.0), slow_pred(t-1) + slow_growth - coral_consumed_slow);
+        fast_pred(t) = fmax(Type(0.0), fast_pred(t-1) + fast_growth - coral_consumed_fast);
+        slow_pred(t) = fmax(Type(0.0), slow_pred(t-1) + slow_growth - coral_consumed_slow);
 
         // COTS population dynamics
-        Type carrying_capacity = cots_K * (fast_pred(t-1) + 0.5*slow_pred(t-1) + Type(1e-8));
-        Type logistic_growth = cots_r * cots_pred(t-1) * (1.0 - cots_pred(t-1)/carrying_capacity);
+        Type carrying_capacity = cots_K * (fast_pred(t-1) + Type(0.5)*slow_pred(t-1) + Type(1e-8));
+        Type logistic_growth = cots_r * cots_pred(t-1) * (Type(1.0) - cots_pred(t-1)/carrying_capacity);
         Type mortality = cots_m * cots_pred(t-1);
 
-        cots_pred(t) = CppAD::fmax(Type(1e-8),
+        cots_pred(t) = fmax(Type(1e-8),
                                    cots_pred(t-1) + logistic_growth - mortality +
                                    cotsimm_dat(t) );
     }
@@ -88,9 +88,9 @@ Type objective_function<Type>::operator() ()
     // ---- LIKELIHOOD ----
     Type nll = 0.0;
     for(int t=0; t<n; t++){
-        nll -= dlnorm(cots_dat(t) + Type(1e-8), log(cots_pred(t) + Type(1e-8)), sd_obs, true);
-        nll -= dlnorm(fast_dat(t) + Type(1e-8), log(fast_pred(t) + Type(1e-8)), sd_obs, true);
-        nll -= dlnorm(slow_dat(t) + Type(1e-8), log(slow_pred(t) + Type(1e-8)), sd_obs, true);
+        nll -= dlognorm(cots_dat(t) + Type(1e-8), log(cots_pred(t) + Type(1e-8)), sd_obs, true);
+        nll -= dlognorm(fast_dat(t) + Type(1e-8), log(fast_pred(t) + Type(1e-8)), sd_obs, true);
+        nll -= dlognorm(slow_dat(t) + Type(1e-8), log(slow_pred(t) + Type(1e-8)), sd_obs, true);
     }
 
     // ---- REPORT SECTION ----
