@@ -30,6 +30,11 @@ Type objective_function<Type>::operator() () {
   PARAMETER(log_m_cots);          // baseline COTS mortality (log scale, year^-1)
   PARAMETER(beta_sst);            // effect of SST anomaly on COTS survival (unitless)
   PARAMETER(log_phi);             // process error (log SD)
+
+  // Initial condition parameters (avoid data leakage)
+  PARAMETER(init_cots);           // Initial value for COTS density (ind/m2)
+  PARAMETER(init_fast);           // Initial cover for fast coral (%)
+  PARAMETER(init_slow);           // Initial cover for slow coral (%)
   
   // Observation error parameters
   PARAMETER(log_obs_sigma_cots);  // observation error of COTS (log SD)
@@ -68,10 +73,10 @@ Type objective_function<Type>::operator() () {
   vector<Type> fast_pred(n);
   vector<Type> slow_pred(n);
   
-  // initialize with observed first value
-  cots_pred(0) = cots_dat(0);
-  fast_pred(0) = fast_dat(0);
-  slow_pred(0) = slow_dat(0);
+  // initialize with free parameters, not observations
+  cots_pred(0) = exp(init_cots);   // enforce positivity
+  fast_pred(0) = exp(init_fast);   // enforce positivity
+  slow_pred(0) = exp(init_slow);   // enforce positivity
   
   // =========================
   //  PROCESS MODEL
@@ -123,6 +128,9 @@ Type objective_function<Type>::operator() () {
   REPORT(cots_pred);
   REPORT(fast_pred);
   REPORT(slow_pred);
+  ADREPORT(cots_pred);
+  ADREPORT(fast_pred);
+  ADREPORT(slow_pred);
   
   return nll;
 }
