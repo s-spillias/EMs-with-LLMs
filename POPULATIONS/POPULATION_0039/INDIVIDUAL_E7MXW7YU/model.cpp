@@ -79,7 +79,7 @@ Type objective_function<Type>::operator() ()
                        r_cots * cots_pred(t-1) * (1 - cots_pred(t-1)/K_cots) * sst_effect * resource_avail +
                        cotsimm_dat(t-1);
 
-        // Enforce non-negativity
+        // Enforce non-negativity floor
         cots_pred(t) = CppAD::CondExpLt(cots_pred(t), Type(1e-8), Type(1e-8), cots_pred(t));
 
         // 3. Coral consumption by COTS (Holling type II functional response)
@@ -95,7 +95,7 @@ Type objective_function<Type>::operator() ()
                        r_slow * slow_pred(t-1) * (1 - (slow_pred(t-1) + beta_slow*fast_pred(t-1))/100.0) -
                        cons_slow;
 
-        // Enforce bounds (0-100% cover)
+        // Apply bounds (0–100% cover floor/ceiling)
         fast_pred(t) = CppAD::CondExpLt(fast_pred(t), Type(1e-8), Type(1e-8),
                           CppAD::CondExpGt(fast_pred(t), Type(100.0), Type(100.0), fast_pred(t)));
         slow_pred(t) = CppAD::CondExpLt(slow_pred(t), Type(1e-8), Type(1e-8),
@@ -107,28 +107,34 @@ Type objective_function<Type>::operator() ()
     // ============================
     Type nll = 0.0;
 
-    // COTS - lognormal error
+    // COTS - lognormal error (skip zeros)
     for(int t=0; t<n; t++){
-        nll -= dnorm(log(cots_dat(t) + Type(1e-8)),
-                     log(cots_pred(t) + Type(1e-8)),
-                     sd_cots,
-                     true) - log(cots_dat(t) + Type(1e-8));
+        if(cots_dat(t) > 0){
+            nll -= dnorm(log(cots_dat(t)),
+                         log(cots_pred(t) + Type(1e-8)),
+                         sd_cots,
+                         true) - log(cots_dat(t));
+        }
     }
 
-    // Fast coral - lognormal error
+    // Fast coral - lognormal error (skip zeros)
     for(int t=0; t<n; t++){
-        nll -= dnorm(log(fast_dat(t) + Type(1e-8)),
-                     log(fast_pred(t) + Type(1e-8)),
-                     sd_fast,
-                     true) - log(fast_dat(t) + Type(1e-8));
+        if(fast_dat(t) > 0){
+            nll -= dnorm(log(fast_dat(t)),
+                         log(fast_pred(t) + Type(1e-8)),
+                         sd_fast,
+                         true) - log(fast_dat(t));
+        }
     }
 
-    // Slow coral - lognormal error
+    // Slow coral - lognormal error (skip zeros)
     for(int t=0; t<n; t++){
-        nll -= dnorm(log(slow_dat(t) + Type(1e-8)),
-                     log(slow_pred(t) + Type(1e-8)),
-                     sd_slow,
-                     true) - log(slow_dat(t) + Type(1e-8));
+        if(slow_dat(t) > 0){
+            nll -= dnorm(log(slow_dat(t)),
+                         log(slow_pred(t) + Type(1e-8)),
+                         sd_slow,
+                         true) - log(slow_dat(t));
+        }
     }
 
     // ============================
