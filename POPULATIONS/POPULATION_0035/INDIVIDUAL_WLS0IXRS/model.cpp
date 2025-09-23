@@ -25,7 +25,7 @@ Type objective_function<Type>::operator() ()
   DATA_VECTOR(slow_dat);           // Slow-growing coral cover (%)
   DATA_VECTOR(sst_dat);            // Sea-surface temperature (°C)
   DATA_VECTOR(cotsimm_dat);        // Larval immigration rate (individuals/m2/year)
-  DATA_SCALAR(min_sd);             // Minimum standard deviation for numerical stability
+  Type min_sd = Type(0.1);         // Minimum standard deviation for numerical stability (default)
 
   int n = time.size();             // Number of time steps
   
