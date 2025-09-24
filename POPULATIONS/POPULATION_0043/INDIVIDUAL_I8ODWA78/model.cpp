@@ -167,24 +167,24 @@ Type objective_function<Type>::operator() ()
   // -------------------------
   // STATE TRAJECTORIES
   // -------------------------
-  vector<Type> cots_dat_pred(T); // predicted COTS density (ind m^-2)
-  vector<Type> fast_dat_pred(T); // predicted fast coral cover (%)
-  vector<Type> slow_dat_pred(T); // predicted slow coral cover (%)
+  vector<Type> cots_pred(T); // predicted COTS density (ind m^-2)
+  vector<Type> fast_pred(T); // predicted fast coral cover (%)
+  vector<Type> slow_pred(T); // predicted slow coral cover (%)
 
   // Auxiliary reports
   vector<Type> food_index(T);     // weighted coral proportion
   vector<Type> temp_perf(T);      // COTS thermal performance (0-1)
   vector<Type> bleach_excess(T);  // unitless soft exceedance of bleaching threshold
 
-  // Initialize states (year 0)
+  // Initialize states (year 0) from parameters only (no data leakage)
   Type C = exp(log_C0);                              // ind m^-2
   Type f = invlogit_stable(logit_f0);                // proportion (0-1)
   Type s = invlogit_stable(logit_s0);                // proportion (0-1)
-  cots_dat_pred(0) = C;
-  fast_dat_pred(0) = (f * Type(100.0));
-  slow_dat_pred(0) = (s * Type(100.0));
+  cots_pred(0) = C;
+  fast_pred(0) = (f * Type(100.0));
+  slow_pred(0) = (s * Type(100.0));
 
-  // Initialize auxiliaries for t=0 based on previous-year drivers (use current SST as approximation for report only)
+  // Initialize auxiliaries for t=0 using the first-year SST/forcings (covariates are allowed)
   food_index(0) = w_f * f + w_s * s;
   temp_perf(0)  = exp(-Type(0.5) * pow((sst_dat(0) - T_opt) / (sigma_T + eps), 2.0)); // 0..1
   bleach_excess(0) = softplus((sst_dat(0) - T_bleach) / (deltaT + eps), Type(5.0));   // unitless
@@ -213,7 +213,7 @@ Type objective_function<Type>::operator() ()
   //    s_{t+1} = s_t + Growth_s,t - Cons_s,t - Bleach_s,t
   // -------------------------
   for (int t = 1; t < T; t++) {
-    // Drivers from previous time step (t-1) to avoid data leakage
+    // Drivers from previous time step (t-1) to avoid data leakage from current observations
     Type sst = sst_dat(t-1);              // °C
     Type imm = cotsimm_dat(t-1);          // ind m^-2 yr^-1
 
@@ -258,10 +258,10 @@ Type objective_function<Type>::operator() ()
     f = f_next;
     s = s_next;
 
-    // Store predictions (match observation names and timing)
-    cots_dat_pred(t) = C;
-    fast_dat_pred(t) = f * Type(100.0);
-    slow_dat_pred(t) = s * Type(100.0);
+    // Store predictions (match time axis; do not use observations)
+    cots_pred(t) = C;
+    fast_pred(t) = f * Type(100.0);
+    slow_pred(t) = s * Type(100.0);
 
     // Store auxiliaries (for reporting/diagnostics)
     food_index(t) = W;
@@ -277,18 +277,18 @@ Type objective_function<Type>::operator() ()
   for (int t = 0; t < T; t++) {
     // COTS (lognormal)
     Type y_c = cots_dat(t);
-    Type mu_c = cots_dat_pred(t);
+    Type mu_c = cots_pred(t);
     // Ensure positivity in transforms
     nll -= dnorm(log(y_c + eps), log(mu_c + eps), sd_cots, true);
 
     // Fast coral (logit-normal on proportions)
     Type y_f = (fast_dat(t) / Type(100.0));
-    Type mu_f = (fast_dat_pred(t) / Type(100.0));
+    Type mu_f = (fast_pred(t) / Type(100.0));
     nll -= dnorm(logit_stable(y_f), logit_stable(mu_f), sd_fast, true);
 
     // Slow coral (logit-normal)
     Type y_s = (slow_dat(t) / Type(100.0));
-    Type mu_s = (slow_dat_pred(t) / Type(100.0));
+    Type mu_s = (slow_pred(t) / Type(100.0));
     nll -= dnorm(logit_stable(y_s), logit_stable(mu_s), sd_slow, true);
   }
 
@@ -326,9 +326,9 @@ Type objective_function<Type>::operator() ()
   // REPORTING
   // -------------------------
   REPORT(Year);             // time axis
-  REPORT(cots_dat_pred);    // predicted COTS density (ind m^-2)
-  REPORT(fast_dat_pred);    // predicted fast coral cover (%)
-  REPORT(slow_dat_pred);    // predicted slow coral cover (%)
+  REPORT(cots_pred);        // predicted COTS density (ind m^-2)
+  REPORT(fast_pred);        // predicted fast coral cover (%)
+  REPORT(slow_pred);        // predicted slow coral cover (%)
   REPORT(food_index);       // weighted coral proportion (0-1)
   REPORT(temp_perf);        // COTS temperature performance (0-1)
   REPORT(bleach_excess);    // unitless soft exceedance
