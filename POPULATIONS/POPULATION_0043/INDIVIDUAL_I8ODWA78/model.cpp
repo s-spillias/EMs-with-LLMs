@@ -17,21 +17,22 @@ Type invlogit_stable(Type x) {
 template<class Type>
 Type logit_stable(Type p) {
   Type eps = Type(1e-8);
-  p = CppAD::CondExpLt(p, eps, eps, p);               // clamp low
+  p = CppAD::CondExpLt(p, eps, eps, p);                 // clamp low
   p = CppAD::CondExpGt(p, Type(1)-eps, Type(1)-eps, p); // clamp high
   return log(p / (Type(1) - p));
 }
 
-// Smooth positive-part via softplus: ~ max(0,x) but smooth
+// Smooth positive-part via softplus: ~ max(0,x) but smooth and AD-safe
 template<class Type>
 Type softplus(Type x, Type k) {
-  // Stable softplus: (1/k)*log1p(exp(k*x))
-  // Use branch to avoid overflow when k*x is large
+  // Stable softplus: (1/k)*log(1 + exp(k*x)) with branch to avoid overflow
   Type y = k * x;
   if (y > Type(0)) {
-    return x + log1p(exp(-y)) / k;
+    // y positive: exp(-y) is small; x + log(1 + exp(-y))/k is stable
+    return x + log(Type(1) + exp(-y)) / k;
   } else {
-    return log1p(exp(y)) / k;
+    // y negative: exp(y) is small; log(1 + exp(y))/k is stable
+    return log(Type(1) + exp(y)) / k;
   }
 }
 
