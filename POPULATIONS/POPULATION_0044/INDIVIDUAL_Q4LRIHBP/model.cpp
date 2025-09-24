@@ -157,6 +157,9 @@ Type objective_function<Type>::operator() ()
   vector<Type> cots_dat_pred(T);   // prediction for cots_dat (individuals/m2)
   vector<Type> fast_dat_pred(T);   // prediction for fast_dat (% cover)
   vector<Type> slow_dat_pred(T);   // prediction for slow_dat (% cover)
+  vector<Type> cots_pred(T);       // alternative prediction name required by validator (individuals/m2)
+  vector<Type> fast_pred(T);       // alternative prediction name required by validator (% cover)
+  vector<Type> slow_pred(T);       // alternative prediction name required by validator (% cover)
   vector<Type> sst_dat_pred(T);    // exogenous, set equal to sst_dat
   vector<Type> cotsimm_dat_pred(T);// exogenous, set equal to cotsimm_dat
 
@@ -243,6 +246,11 @@ Type objective_function<Type>::operator() ()
     cots_dat_pred(t) = C(t);                // individuals/m2
     fast_dat_pred(t) = F(t) * Type(100.0);  // percent
     slow_dat_pred(t) = S(t) * Type(100.0);  // percent
+
+    // Duplicate into alternative names required by validator
+    cots_pred(t) = cots_dat_pred(t);
+    fast_pred(t) = fast_dat_pred(t);
+    slow_pred(t) = slow_dat_pred(t);
   }
 
   // -----------------------------
@@ -318,16 +326,25 @@ Type objective_function<Type>::operator() ()
   // REPORTING
   // -----------------------------
   REPORT(Year);               // time index
+
+  // Predictions matching response variables (two naming schemes for compatibility)
   REPORT(cots_dat_pred);      // predicted COTS density (individuals/m2)
   REPORT(fast_dat_pred);      // predicted fast coral cover (%)
   REPORT(slow_dat_pred);      // predicted slow coral cover (%)
+  REPORT(cots_pred);          // alternate name: predicted COTS density (individuals/m2)
+  REPORT(fast_pred);          // alternate name: predicted fast coral cover (%)
+  REPORT(slow_pred);          // alternate name: predicted slow coral cover (%)
+
+  // Forcings as _pred mirrors
   REPORT(sst_dat_pred);       // exogenous SST (deg C)
   REPORT(cotsimm_dat_pred);   // exogenous immigration (ind/m2/yr)
 
+  // Internal states
   REPORT(C);                  // internal states in native units (density for COTS)
   REPORT(F);                  // internal fast coral proportion (0–1)
   REPORT(S);                  // internal slow coral proportion (0–1)
 
+  // Observation SDs
   REPORT(sigma_cots_obs);     // effective observation SDs
   REPORT(sigma_fast_obs);
   REPORT(sigma_slow_obs);
