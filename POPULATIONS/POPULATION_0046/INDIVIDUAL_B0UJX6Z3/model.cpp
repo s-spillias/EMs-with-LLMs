@@ -41,7 +41,7 @@ Type coral_recovery = exp(log_coral_recovery); // (5) Coral recovery rate
 int n = cots_dat.size();
 
 // Vectors for predictions (_pred variables)
-vector<Type> n_pred(n);      // Predicted COTS density
+vector<Type> cots_pred(n);      // Predicted COTS density
 vector<Type> fast_pred(n);   // Predicted fast coral cover (%)
 vector<Type> slow_pred(n);   // Predicted slow coral cover (%)
 
@@ -49,7 +49,7 @@ vector<Type> slow_pred(n);   // Predicted slow coral cover (%)
 Type nll = 0.0;
 
 // Set initial conditions using data from time step 0
-n_pred(0) = cots_dat(0);
+cots_pred(0) = cots_dat(0);
 fast_pred(0) = fast_dat(0);
 slow_pred(0) = slow_dat(0);
 
@@ -57,11 +57,11 @@ slow_pred(0) = slow_dat(0);
 for (int t = 1; t < n; t++) {
     // 1. Outbreak trigger function: a smooth saturating function transitioning at the threshold.
     //    Equation: outbreak_factor = 1/(1 + exp(-(n_pred(t-1) - threshold)/smoothing))
-    Type outbreak_factor = 1.0 / (1.0 + exp(-(n_pred(t-1) - threshold) / (smoothing + Type(1e-8))));
+    Type outbreak_factor = 1.0 / (1.0 + exp(-(cots_pred(t-1) - threshold) / (smoothing + Type(1e-8))));
     
     // 2. COTS dynamics:
     //    Equation: n_pred(t) = n_pred(t-1) + (r*outbreak_factor - m) * n_pred(t-1) + cotsimm_dat(t-1)
-    n_pred(t) = n_pred(t-1) + r * outbreak_factor * n_pred(t-1) - m * n_pred(t-1) + cotsimm_dat(t-1);
+    cots_pred(t) = cots_pred(t-1) + r * outbreak_factor * cots_pred(t-1) - m * cots_pred(t-1) + cotsimm_dat(t-1);
     
     // 3. Fast coral dynamics:
     //    Equation: fast_pred(t) = fast_pred(t-1) - alpha*outbreak_factor*n_pred(t-1)*fast_pred(t-1)
@@ -77,13 +77,13 @@ for (int t = 1; t < n; t++) {
     
     // 5. Likelihood: Using lognormal likelihood for observational data (ensuring positivity via small constant)
     //    A fixed standard deviation of 0.1 (minimum observation error) is assumed.
-    nll += density::ldnorm(cots_dat(t), log(n_pred(t) + Type(1e-8)), Type(0.1));
+    nll += density::ldnorm(cots_dat(t), log(cots_pred(t) + Type(1e-8)), Type(0.1));
     nll += density::ldnorm(fast_dat(t), log(fast_pred(t) + Type(1e-8)), Type(0.1));
     nll += density::ldnorm(slow_dat(t), log(slow_pred(t) + Type(1e-8)), Type(0.1));
 }
 
 // Reporting predicted values for diagnostic purposes (the _pred variables)
-REPORT(n_pred);     // Report of COTS predictions
+REPORT(cots_pred);     // Report of COTS predictions
 REPORT(fast_pred);  // Report of fast coral predictions
 REPORT(slow_pred);  // Report of slow coral predictions
 
