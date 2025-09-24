@@ -20,7 +20,11 @@ Type objective_function<Type>::operator() () {
   // Initialization for predictions
   int n = cots_dat.size();
   vector<Type> cots_pred(n);
+  vector<Type> fast_pred(n);
+  vector<Type> slow_pred(n);
   cots_pred(0) = cots_dat(0);  // initial condition from data
+  fast_pred(0) = fast_dat(0);  // initial condition from data
+  slow_pred(0) = slow_dat(0);  // initial condition from data
 
   // Negative log-likelihood accumulator
   Type nll = 0.0;
@@ -45,13 +49,23 @@ Type objective_function<Type>::operator() () {
     cots_pred(t) = cots_pred(t-1) + growth - decay - predation_effect;
     cots_pred(t) = (cots_pred(t) > 0 ? cots_pred(t) : epsilon);
 
+    // Update coral predictions with a persistence model (no change over time)
+    fast_pred(t) = fast_pred(t-1);
+    slow_pred(t) = slow_pred(t-1);
+    
     // Likelihood calculation:
-    //    Equation 4: Lognormal likelihood for abundance data with a small fixed standard deviation.
+    //    Equation 4: Lognormal likelihood for COTS data with a small fixed standard deviation.
     nll -= dnorm(log(cots_dat(t)), log(cots_pred(t)), Type(0.1), true);
+    //    Equation 5: Lognormal likelihood for fast-growing coral cover observation.
+    nll -= dnorm(log(fast_dat(t)), log(fast_pred(t)), Type(0.1), true);
+    //    Equation 6: Lognormal likelihood for slow-growing coral cover observation.
+    nll -= dnorm(log(slow_dat(t)), log(slow_pred(t)), Type(0.1), true);
   }
 
   // Reporting predicted values (for post-processing and diagnostics)
   REPORT(cots_pred);
+  REPORT(fast_pred);
+  REPORT(slow_pred);
 
   // Numbered Equations description:
   //   (1) Logistic growth with saturation.
