@@ -1,18 +1,5 @@
 #include <TMB.hpp>
 
-// 1. Data inputs:
-//    a. time: Vector of time steps (years)
-//    b. cots_dat: Observed COTS density (individuals/m2)
-//    c. fast_dat: Observed fast-growing coral cover (%) 
-//    d. slow_dat: Observed slow-growing coral cover (%)
-//    e. sst_dat: Observed sea-surface temperature (°C)
-//    f. cotsimm_dat: Observed COTS larval immigration rate (individuals/m2/year)
-DATA_VECTOR(time);
-DATA_VECTOR(cots_dat);
-DATA_VECTOR(fast_dat);
-DATA_VECTOR(slow_dat);
-DATA_VECTOR(sst_dat);
-DATA_VECTOR(cotsimm_dat);
 
 // 2. Model parameters:
 //    a. growth_rate: Intrinsic growth rate for COTS (year^-1)
