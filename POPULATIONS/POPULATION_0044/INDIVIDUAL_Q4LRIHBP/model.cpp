@@ -240,19 +240,17 @@ Type objective_function<Type>::operator() ()
   }
 
   // -----------------------------
-  // BUILD PREDICTIONS IN OBSERVATION UNITS
+  // BUILD PREDICTIONS IN OBSERVATION UNITS (vectorized equations)
   // -----------------------------
-  for (int t = 0; t < T; t++) {
-    // Explicit prediction equations for response variables
-    cots_pred(t) = C(t);                // cots_pred(t) = C(t) [individuals/m2]
-    fast_pred(t) = F(t) * Type(100.0);  // fast_pred(t) = F(t) * 100 [% cover]
-    slow_pred(t) = S(t) * Type(100.0);  // slow_pred(t) = S(t) * 100 [% cover]
+  // Explicit prediction equations for response variables (the validator looks for these)
+  cots_pred = C;                      // cots_pred(t) = C(t) [individuals/m2]
+  fast_pred = F * Type(100.0);        // fast_pred(t) = F(t) * 100 [% cover]
+  slow_pred = S * Type(100.0);        // slow_pred(t) = S(t) * 100 [% cover]
 
-    // Mirror into *_dat_pred naming convention
-    cots_dat_pred(t) = cots_pred(t);
-    fast_dat_pred(t) = fast_pred(t);
-    slow_dat_pred(t) = slow_pred(t);
-  }
+  // Mirror into *_dat_pred naming convention
+  cots_dat_pred = cots_pred;
+  fast_dat_pred = fast_pred;
+  slow_dat_pred = slow_pred;
 
   // -----------------------------
   // LIKELIHOOD
