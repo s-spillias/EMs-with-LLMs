@@ -46,14 +46,14 @@ Type objective_function<Type>::operator() ()
   Type sigma_slow = exp(log_sigma_slow);
   
   // Initialize state vectors for predictions
-  vector<Type> C(n);   // COTS predictions (individuals/m2)
-  vector<Type> F(n);   // Fast coral predictions (% cover)
-  vector<Type> S(n);   // Slow coral predictions (% cover)
+  vector<Type> cots_pred(n);   // COTS predictions (individuals/m2)
+  vector<Type> fast_pred(n);   // Fast coral predictions (% cover)
+  vector<Type> slow_pred(n);   // Slow coral predictions (% cover)
   
   // Set initial conditions
-  C[0] = exp(log_C0);
-  F[0] = fast_dat[0];  // Use first observation to initialize fast coral
-  S[0] = slow_dat[0];  // Use first observation to initialize slow coral
+  cots_pred[0] = exp(log_C0);
+  fast_pred[0] = fast_dat[0];  // Use first observation to initialize fast coral
+  slow_pred[0] = slow_dat[0];  // Use first observation to initialize slow coral
   
   Type nll = 0.0;  // negative log-likelihood
   Type small = Type(1e-8);  // small constant for numerical stability
@@ -62,34 +62,34 @@ Type objective_function<Type>::operator() ()
   for (int t = 0; t < n - 1; t++){
     // Equation 1: COTS dynamics
     // Growth term with saturating effect employing a carrying capacity of 1000 individuals/m2
-    Type growth = r_cots * C[t] * (1 - C[t] / (Type(1000) + small));
+    Type growth = r_cots * cots_pred[t] * (1 - cots_pred[t] / (Type(1000) + small));
     // Predation effect reduces COTS via consumption of both coral types
-    Type pred_effect = beta_fast * F[t] + beta_slow * S[t];
+    Type pred_effect = beta_fast * fast_pred[t] + beta_slow * slow_pred[t];
     // Environmental forcing modulated by SST and larval immigration
     Type forcing = e_sst * sst_dat[t] + e_cotsimm * cotsimm_dat[t];
     
-    C[t+1] = C[t] + growth + forcing - pred_effect;
+    cots_pred[t+1] = cots_pred[t] + growth + forcing - pred_effect;
     
     // Equation 2: Fast coral dynamics (logistic growth with predation)
-    F[t+1] = F[t] + g_fast * F[t] * (1 - F[t] / (Type(100) + small))
-                  - beta_fast * C[t] * F[t];
+    fast_pred[t+1] = fast_pred[t] + g_fast * fast_pred[t] * (1 - fast_pred[t] / (Type(100) + small))
+                  - beta_fast * cots_pred[t] * fast_pred[t];
     
     // Equation 3: Slow coral dynamics (logistic growth with predation)
-    S[t+1] = S[t] + g_slow * S[t] * (1 - S[t] / (Type(80) + small))
-                  - beta_slow * C[t] * S[t];
+    slow_pred[t+1] = slow_pred[t] + g_slow * slow_pred[t] * (1 - slow_pred[t] / (Type(80) + small))
+                  - beta_slow * cots_pred[t] * slow_pred[t];
   }
   
   // Likelihood: assume lognormal errors to account for positive-only data values
   for (int t = 0; t < n; t++){
-    nll -= dlnorm(cots_dat[t] + small, log(C[t] + small), sigma_cots, true);
-    nll -= dlnorm(fast_dat[t] + small, log(F[t] + small), sigma_fast, true);
-    nll -= dlnorm(slow_dat[t] + small, log(S[t] + small), sigma_slow, true);
+    nll -= dlnorm(cots_dat[t] + small, log(cots_pred[t] + small), sigma_cots, true);
+    nll -= dlnorm(fast_dat[t] + small, log(fast_pred[t] + small), sigma_fast, true);
+    nll -= dlnorm(slow_dat[t] + small, log(slow_pred[t] + small), sigma_slow, true);
   }
   
   // Report predicted time series (COTS, fast coral, and slow coral)
-  REPORT(C);
-  REPORT(F);
-  REPORT(S);
+  REPORT(cots_pred);
+  REPORT(fast_pred);
+  REPORT(slow_pred);
   
   return nll;
 }
