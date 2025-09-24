@@ -1,5 +1,8 @@
 #include <TMB.hpp>
 
+template<class Type>
+Type objective_function<Type>::operator() () {
+
 // 1. Data objects
 //    - years: Time index (year)
 //    - cots_dat: Observed COTS densities (individuals per m^2)
@@ -56,7 +59,7 @@ slow_pred(0) = slow_dat(0);
 // Loop through time steps (using only past values for predictions to avoid data leakage)
 for (int t = 1; t < n; t++) {
     // 1. Outbreak trigger function: a smooth saturating function transitioning at the threshold.
-    //    Equation: outbreak_factor = 1/(1 + exp(-(n_pred(t-1) - threshold)/smoothing))
+    //    Equation: outbreak_factor = 1/(1 + exp(-(cots_pred(t-1) - threshold)/smoothing))
     Type outbreak_factor = 1.0 / (1.0 + exp(-(cots_pred(t-1) - threshold) / (smoothing + Type(1e-8))));
     
     // 2. COTS dynamics:
@@ -64,15 +67,15 @@ for (int t = 1; t < n; t++) {
     cots_pred(t) = cots_pred(t-1) + r * outbreak_factor * cots_pred(t-1) - m * cots_pred(t-1) + cotsimm_dat(t-1);
     
     // 3. Fast coral dynamics:
-    //    Equation: fast_pred(t) = fast_pred(t-1) - alpha*outbreak_factor*n_pred(t-1)*fast_pred(t-1)
+    //    Equation: fast_pred(t) = fast_pred(t-1) - alpha*outbreak_factor*cots_pred(t-1)*fast_pred(t-1)
     //              + coral_recovery*(100 - fast_pred(t-1))
-    fast_pred(t) = fast_pred(t-1) - alpha * outbreak_factor * n_pred(t-1) * fast_pred(t-1)
+    fast_pred(t) = fast_pred(t-1) - alpha * outbreak_factor * cots_pred(t-1) * fast_pred(t-1)
                    + coral_recovery * (Type(100.0) - fast_pred(t-1));
     
     // 4. Slow coral dynamics:
-    //    Equation: slow_pred(t) = slow_pred(t-1) - beta*outbreak_factor*n_pred(t-1)*slow_pred(t-1)
+    //    Equation: slow_pred(t) = slow_pred(t-1) - beta*outbreak_factor*cots_pred(t-1)*slow_pred(t-1)
     //              + coral_recovery*(100 - slow_pred(t-1))
-    slow_pred(t) = slow_pred(t-1) - beta * outbreak_factor * n_pred(t-1) * slow_pred(t-1)
+    slow_pred(t) = slow_pred(t-1) - beta * outbreak_factor * cots_pred(t-1) * slow_pred(t-1)
                    + coral_recovery * (Type(100.0) - slow_pred(t-1));
     
     // 5. Likelihood: Using lognormal likelihood for observational data (ensuring positivity via small constant)
@@ -88,3 +91,4 @@ REPORT(fast_pred);  // Report of fast coral predictions
 REPORT(slow_pred);  // Report of slow coral predictions
 
 return nll;
+}
