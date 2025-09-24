@@ -1,16 +1,15 @@
 #include <TMB.hpp>
 
-// Helper: inverse-logit with numerical stability
+// Helper: inverse-logit with numerical stability (branchless via CondExp)
 template<class Type>
 Type invlogit_stable(Type x) {
-  // Avoid overflow in exp for large |x|
-  if (x >= Type(0)) {
-    Type z = exp(-x);
-    return Type(1) / (Type(1) + z);
-  } else {
-    Type z = exp(x);
-    return z / (Type(1) + z);
-  }
+  Type one = Type(1);
+  Type zero = Type(0);
+  // Two algebraically equivalent, numerically stable branches
+  Type pos_branch = one / (one + exp(-x));        // good when x >= 0
+  Type neg_branch = exp(x) / (one + exp(x));      // good when x < 0
+  // Select without hard branching on AD types
+  return CppAD::CondExpGe(x, zero, pos_branch, neg_branch);
 }
 
 // Helper: logit transform with small epsilon
@@ -26,7 +25,6 @@ Type logit_stable(Type p) {
 template<class Type>
 Type softplus(Type x, Type k) {
   // Compute (1/k) * log(1 + exp(k*x)) using log-sum-exp with AD-safe conditionals
-  // Avoid hard branching on AD types; keep it differentiable and numerically stable.
   Type y = k * x;
   Type zero = Type(0);
   // maxy = max(y, 0) using CondExp
@@ -188,7 +186,10 @@ Type objective_function<Type>::operator() ()
 
   // Initialize auxiliaries for t=0 using the first-year SST/forcings (covariates are allowed)
   food_index(0) = w_f * f + w_s * s;
-  temp_perf(0)  = exp(-Type(0.5) * pow((sst_dat(0) - T_opt) / (sigma_T + eps), 2.0)); // 0..1
+  {
+    Type z0 = (sst_dat(0) - T_opt) / (sigma_T + eps);
+    temp_perf(0)  = exp(-Type(0.5) * z0 * z0); // 0..1
+  }
   bleach_excess(0) = softplus((sst_dat(0) - T_bleach) / (deltaT + eps), Type(5.0));   // unitless
 
   // -------------------------
@@ -222,9 +223,11 @@ Type objective_function<Type>::operator() ()
     // (1) Food index
     Type W = w_f * f + w_s * s;                                     // proportion edible coral
     // (2) Temperature performance for COTS (0..1)
-    Type gT = exp(-Type(0.5) * pow((sst - T_opt) / (sigma_T + eps), 2.0));
-    // (3) Food effect on reproduction (0..1 with shape)
-    Type gF = pow(W / (K_food + W + eps), gamma_food);
+    Type z = (sst - T_opt) / (sigma_T + eps);
+    Type gT = exp(-Type(0.5) * z * z);
+    // (3) Food effect on reproduction (0..1 with shape); enforce strictly positive base
+    Type baseF = W / (K_food + W + eps);
+    Type gF = pow(baseF + eps, gamma_food);
     // (4) Allee effect (0..1)
     Type A = Type(1.0) / (Type(1.0) + exp(-kA * (C - C_Allee)));
     // (5) Survival (fraction [0,1] if parameters are reasonable)
