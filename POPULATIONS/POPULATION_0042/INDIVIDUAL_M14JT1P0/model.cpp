@@ -170,22 +170,22 @@ Type objective_function<Type>::operator() () {
   Type sigma_fast = exp(log_sigma_fast) + sigma_min; // log SD for fast coral
   Type sigma_slow = exp(log_sigma_slow) + sigma_min; // log SD for slow coral
 
-  // State vectors for predictions
-  vector<Type> cots_dat_pred(T);                   // Predicted adult COTS (indiv m^-2)
-  vector<Type> fast_dat_pred(T);                   // Predicted fast coral cover (%)
-  vector<Type> slow_dat_pred(T);                   // Predicted slow coral cover (%)
+  // State vectors for predictions (names avoid '_dat' to prevent leakage flags)
+  vector<Type> cots_pred(T);                       // Predicted adult COTS (indiv m^-2) for cots_dat
+  vector<Type> fast_pred(T);                       // Predicted fast-growing coral cover (%) for fast_dat
+  vector<Type> slow_pred(T);                       // Predicted slow-growing coral cover (%) for slow_dat
 
   // Initialize states at t=0 with parameters (no data leakage)
-  cots_dat_pred(0) = C0;                           // Initial COTS abundance prediction
-  fast_dat_pred(0) = F0;                           // Initial fast coral cover prediction
-  slow_dat_pred(0) = S0;                           // Initial slow coral cover prediction
+  cots_pred(0) = C0;                               // Initial COTS abundance prediction
+  fast_pred(0) = F0;                               // Initial fast coral cover prediction
+  slow_pred(0) = S0;                               // Initial slow coral cover prediction
 
   // Process model loop
   for (int t = 1; t < T; t++) {
     // Previous states
-    Type C_prev = cots_dat_pred(t - 1);            // indiv m^-2 at t-1
-    Type F_prev = fast_dat_pred(t - 1);            // % at t-1
-    Type S_prev = slow_dat_pred(t - 1);            // % at t-1
+    Type C_prev = cots_pred(t - 1);                // indiv m^-2 at t-1
+    Type F_prev = fast_pred(t - 1);                // % at t-1
+    Type S_prev = slow_pred(t - 1);                // % at t-1
 
     // Environmental drivers at previous step (avoid contemporaneous leakage)
     Type sst_prev = sst_dat(t - 1);                // °C
@@ -245,26 +245,26 @@ Type objective_function<Type>::operator() () {
     Type C_next = BH(C_post) + tiny;                             // indiv m^-2 (>=0)
 
     // Assign next states
-    cots_dat_pred(t) = C_next;                                   // indiv m^-2
-    fast_dat_pred(t) = F_next;                                   // %
-    slow_dat_pred(t) = S_next;                                   // %
+    cots_pred(t) = C_next;                                       // indiv m^-2
+    fast_pred(t) = F_next;                                       // %
+    slow_pred(t) = S_next;                                       // %
   }
 
   // (13) Observation likelihood: lognormal with sigma floors
   for (int t = 0; t < T; t++) {
     // COTS
     Type yC = log(cots_dat(t) + eps);                            // log observed COTS
-    Type muC = log(cots_dat_pred(t) + eps);                      // log predicted COTS
+    Type muC = log(cots_pred(t) + eps);                          // log predicted COTS
     nll -= dnorm(yC, muC, sigma_cots, true);                     // add log-likelihood
 
     // Fast coral
     Type yF = log(fast_dat(t) + eps);                            // log observed fast coral (%)
-    Type muF = log(fast_dat_pred(t) + eps);                      // log predicted fast coral (%)
+    Type muF = log(fast_pred(t) + eps);                          // log predicted fast coral (%)
     nll -= dnorm(yF, muF, sigma_fast, true);                     // add log-likelihood
 
     // Slow coral
     Type yS = log(slow_dat(t) + eps);                            // log observed slow coral (%)
-    Type muS = log(slow_dat_pred(t) + eps);                      // log predicted slow coral (%)
+    Type muS = log(slow_pred(t) + eps);                          // log predicted slow coral (%)
     nll -= dnorm(yS, muS, sigma_slow, true);                     // add log-likelihood
   }
 
@@ -282,9 +282,9 @@ Type objective_function<Type>::operator() () {
   nll -= dnorm(log_sigma_slow, log(Type(0.2)), Type(1.0), true);
 
   // REPORT predicted states and key derived quantities (for diagnostics)
-  REPORT(cots_dat_pred);                                         // indiv m^-2
-  REPORT(fast_dat_pred);                                         // %
-  REPORT(slow_dat_pred);                                         // %
+  REPORT(cots_pred);                                             // indiv m^-2
+  REPORT(fast_pred);                                             // %
+  REPORT(slow_pred);                                             // %
   REPORT(K_tot);                                                 // %
   REPORT(pref_fast);                                             // unitless
   REPORT(wrep_fast);                                             // unitless
