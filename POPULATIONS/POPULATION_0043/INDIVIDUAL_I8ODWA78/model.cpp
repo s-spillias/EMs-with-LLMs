@@ -22,18 +22,19 @@ Type logit_stable(Type p) {
   return log(p / (Type(1) - p));
 }
 
-// Smooth positive-part via softplus: ~ max(0,x) but smooth and AD-safe
+// Smooth positive-part via softplus: ~ max(0,x) but smooth and AD-safe (branchless)
 template<class Type>
 Type softplus(Type x, Type k) {
-  // Stable softplus: (1/k)*log(1 + exp(k*x)) with branch to avoid overflow
+  // Compute (1/k) * log(1 + exp(k*x)) using log-sum-exp with AD-safe conditionals
+  // Avoid hard branching on AD types; keep it differentiable and numerically stable.
   Type y = k * x;
-  if (y > Type(0)) {
-    // y positive: exp(-y) is small; x + log(1 + exp(-y))/k is stable
-    return x + log(Type(1) + exp(-y)) / k;
-  } else {
-    // y negative: exp(y) is small; log(1 + exp(y))/k is stable
-    return log(Type(1) + exp(y)) / k;
-  }
+  Type zero = Type(0);
+  // maxy = max(y, 0) using CondExp
+  Type maxy = CppAD::CondExpGt(y, zero, y, zero);
+  // log( exp(0 - maxy) + exp(y - maxy) ) + maxy
+  Type sumexp = exp(zero - maxy) + exp(y - maxy);
+  Type lse = log(sumexp + Type(1e-30)) + maxy; // tiny epsilon inside log for safety
+  return lse / (k + Type(1e-16));              // tiny epsilon in denom for safety
 }
 
 // Smooth box-penalty to softly keep parameter within [lower, upper]
