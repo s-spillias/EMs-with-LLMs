@@ -16,6 +16,8 @@ Type objective_function<Type>::operator() () {
   PARAMETER(coral_predation_fast);      // (m2/%/year) Impact of fast-growing coral on predation pressure [initial estimate]
   PARAMETER(coral_predation_slow);      // (m2/%/year) Impact of slow-growing coral on predation pressure [initial estimate]
   PARAMETER(ecological_efficiency);     // (dimensionless) Efficiency factor translating coral cover to suppression of outbreaks [expert opinion]
+  PARAMETER(fast_growth);               // (year^-1) Rate of change for fast-growing coral dynamics [initial estimate]
+  PARAMETER(slow_growth);               // (year^-1) Rate of change for slow-growing coral dynamics [initial estimate]
 
   // Initialization for predictions
   int n = cots_dat.size();
@@ -49,9 +51,9 @@ Type objective_function<Type>::operator() () {
     cots_pred(t) = cots_pred(t-1) + growth - decay - predation_effect;
     cots_pred(t) = (cots_pred(t) > 0 ? cots_pred(t) : epsilon);
 
-    // Update coral predictions with a persistence model (no change over time)
-    fast_pred(t) = fast_pred(t-1);
-    slow_pred(t) = slow_pred(t-1);
+    // Update coral predictions using an AR(1)-like model (adjusting towards previous observed coral cover)
+    fast_pred(t) = fast_pred(t-1) + fast_growth * (fast_dat(t-1) - fast_pred(t-1));
+    slow_pred(t) = slow_pred(t-1) + slow_growth * (slow_dat(t-1) - slow_pred(t-1));
     
     // Likelihood calculation:
     //    Equation 4: Lognormal likelihood for COTS data with a small fixed standard deviation.
