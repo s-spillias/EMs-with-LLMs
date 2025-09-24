@@ -35,6 +35,8 @@ Type objective_function<Type>::operator() ()
   // PARAMETERS for environmental forcing
   PARAMETER(e_sst);      // Effect of SST on COTS growth (individuals/m2 per °C)
   PARAMETER(e_cotsimm);  // Effect of larval immigration on COTS growth (individuals/m2 per unit rate)
+  PARAMETER(log_fast0);    // Logarithm of the initial fast coral cover (% cover)
+  PARAMETER(log_slow0);    // Logarithm of the initial slow coral cover (% cover)
   
   // PROCESS ERROR parameters (on log scale)
   PARAMETER(log_sigma_cots);
@@ -52,8 +54,8 @@ Type objective_function<Type>::operator() ()
   
   // Set initial conditions
   cots_pred[0] = exp(log_C0);
-  fast_pred[0] = fast_dat[0];  // Use first observation to initialize fast coral
-  slow_pred[0] = slow_dat[0];  // Use first observation to initialize slow coral
+  fast_pred[0] = exp(log_fast0);
+  slow_pred[0] = exp(log_slow0);
   
   Type nll = 0.0;  // negative log-likelihood
   Type small = Type(1e-8);  // small constant for numerical stability
