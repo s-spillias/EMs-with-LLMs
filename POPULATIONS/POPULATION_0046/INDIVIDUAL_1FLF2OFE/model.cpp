@@ -25,6 +25,11 @@ Type objective_function<Type>::operator() ()
   PARAMETER(log_predation_efficiency); // Log predation efficiency affecting coral cover (unitless)
   PARAMETER(b0);                      // Baseline threshold for outbreak trigger (unitless)
   PARAMETER(b1);                      // Sensitivity to SST in outbreak trigger (unitless)
+  
+  // New parameters for initial state (to avoid data leakage by not using observed data)
+  PARAMETER(cots0);                 // Initial COTS abundance (individuals/m2)
+  PARAMETER(fast0);                 // Initial fast-growing coral cover (%) 
+  PARAMETER(slow0);                 // Initial slow-growing coral cover (%) 
 
   // Transform parameters to their natural scale
   Type growth_rate = exp(log_growth_rate);
@@ -39,10 +44,10 @@ Type objective_function<Type>::operator() ()
   vector<Type> fast_pred(n);
   vector<Type> slow_pred(n);
 
-  // Initialize predictions with first observed values
-  cots_pred(0) = cots_dat(0);
-  fast_pred(0) = fast_dat(0);
-  slow_pred(0) = slow_dat(0);
+  // Initialize predictions with initial state parameters to avoid data leakage.
+  cots_pred(0) = cots0;
+  fast_pred(0) = fast0;
+  slow_pred(0) = slow0;
 
   // Negative log-likelihood
   Type nll = Type(0.0);
