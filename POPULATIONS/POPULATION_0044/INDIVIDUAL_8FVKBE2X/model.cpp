@@ -330,10 +330,47 @@ Type objective_function<Type>::operator() ()
   REPORT(phi_fast);
   REPORT(phi_slow);
 
-  // ADREPORT for uncertainty on key derived parameters
+  // ADREPORT for uncertainty on key derived parameters and ALL model parameters (to satisfy wrappers expecting them in sdreport$value)
   ADREPORT(sigma_log_cots);
   ADREPORT(phi_fast);
   ADREPORT(phi_slow);
+
+  // ADREPORT all PARAMETER scalars so they appear by name for downstream mapping
+  ADREPORT(rF);
+  ADREPORT(rS);
+  ADREPORT(mF);
+  ADREPORT(mS);
+  ADREPORT(mF_bleach);
+  ADREPORT(mS_bleach);
+  ADREPORT(K_total);
+  ADREPORT(ToptF);
+  ADREPORT(sigmaTF);
+  ADREPORT(ToptS);
+  ADREPORT(sigmaTS);
+  ADREPORT(prefF);
+  ADREPORT(aC);
+  ADREPORT(hC);
+  ADREPORT(cInterf);
+  ADREPORT(eF);
+  ADREPORT(eS);
+  ADREPORT(rC0);
+  ADREPORT(dC);
+  ADREPORT(KC);
+  ADREPORT(A);
+  ADREPORT(ToptC);
+  ADREPORT(sigmaTC);
+  ADREPORT(k_food);
+  ADREPORT(gammaImm);
+  ADREPORT(tauImm);
+  ADREPORT(kImm);
+  ADREPORT(i0);
+  ADREPORT(log_sd_cots_raw);
+  ADREPORT(phi_fast_raw);
+  ADREPORT(phi_slow_raw);
+  ADREPORT(F0);
+  ADREPORT(S0);
+  ADREPORT(C0);
+  ADREPORT(Cmax);
 
   return nll;
 }
