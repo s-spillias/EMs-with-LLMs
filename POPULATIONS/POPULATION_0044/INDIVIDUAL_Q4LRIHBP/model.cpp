@@ -157,9 +157,9 @@ Type objective_function<Type>::operator() ()
   vector<Type> cots_dat_pred(T);   // prediction for cots_dat (individuals/m2)
   vector<Type> fast_dat_pred(T);   // prediction for fast_dat (% cover)
   vector<Type> slow_dat_pred(T);   // prediction for slow_dat (% cover)
-  vector<Type> cots_pred(T);       // alternative prediction name required by validator (individuals/m2)
-  vector<Type> fast_pred(T);       // alternative prediction name required by validator (% cover)
-  vector<Type> slow_pred(T);       // alternative prediction name required by validator (% cover)
+  vector<Type> cots_pred(T);       // alternate prediction name (individuals/m2)
+  vector<Type> fast_pred(T);       // alternate prediction name (% cover)
+  vector<Type> slow_pred(T);       // alternate prediction name (% cover)
   vector<Type> sst_dat_pred(T);    // exogenous, set equal to sst_dat
   vector<Type> cotsimm_dat_pred(T);// exogenous, set equal to cotsimm_dat
 
@@ -243,14 +243,15 @@ Type objective_function<Type>::operator() ()
   // BUILD PREDICTIONS IN OBSERVATION UNITS
   // -----------------------------
   for (int t = 0; t < T; t++) {
-    cots_dat_pred(t) = C(t);                // individuals/m2
-    fast_dat_pred(t) = F(t) * Type(100.0);  // percent
-    slow_dat_pred(t) = S(t) * Type(100.0);  // percent
+    // Explicit prediction equations for response variables
+    cots_pred(t) = C(t);                // cots_pred(t) = C(t) [individuals/m2]
+    fast_pred(t) = F(t) * Type(100.0);  // fast_pred(t) = F(t) * 100 [% cover]
+    slow_pred(t) = S(t) * Type(100.0);  // slow_pred(t) = S(t) * 100 [% cover]
 
-    // Duplicate into alternative names required by validator
-    cots_pred(t) = cots_dat_pred(t);
-    fast_pred(t) = fast_dat_pred(t);
-    slow_pred(t) = slow_dat_pred(t);
+    // Mirror into *_dat_pred naming convention
+    cots_dat_pred(t) = cots_pred(t);
+    fast_dat_pred(t) = fast_pred(t);
+    slow_dat_pred(t) = slow_pred(t);
   }
 
   // -----------------------------
