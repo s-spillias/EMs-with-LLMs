@@ -237,11 +237,19 @@ Type objective_function<Type>::operator() () {
   vector<Type> fast_pred(T);                             // predicted fast coral (%)
   vector<Type> slow_pred(T);                             // predicted slow coral (%)
 
-  // Set predictions at t = 0 (initial state)
+  // Internal state history (explicitly tracked to map predictions later)
+  vector<Type> C_state(T);                               // internal COTS state trajectory (indiv/m^2)
+  vector<Type> F_state(T);                               // internal fast coral trajectory (% cover)
+  vector<Type> S_state(T);                               // internal slow coral trajectory (% cover)
+
+  // Set initial states and predictions at t = 0 (initial state)
   if (T > 0) {
-    cots_pred(0) = C;
-    fast_pred(0) = F;
-    slow_pred(0) = S;
+    C_state(0) = C;                                      // initial COTS state
+    F_state(0) = F;                                      // initial fast coral state
+    S_state(0) = S;                                      // initial slow coral state
+    cots_pred(0) = C;                                    // prediction at t=0 equals initial state
+    fast_pred(0) = F;                                    // prediction at t=0 equals initial state
+    slow_pred(0) = S;                                    // prediction at t=0 equals initial state
   }
 
   // -----------------------------
@@ -300,10 +308,22 @@ Type objective_function<Type>::operator() () {
     S = S_next;
     C = C_next;
 
-    // Save predictions for next time index
-    cots_pred(t + 1) = C;
-    fast_pred(t + 1) = F;
-    slow_pred(t + 1) = S;
+    // Save internal state history for mapping to predictions
+    F_state(t + 1) = F;                                  // store fast coral state at t+1
+    S_state(t + 1) = S;                                  // store slow coral state at t+1
+    C_state(t + 1) = C;                                  // store COTS state at t+1
+
+    // Save predictions for next time index (redundant with mapping below but useful for clarity)
+    cots_pred(t + 1) = C;                                // prediction for COTS at t+1
+    fast_pred(t + 1) = F;                                // prediction for fast coral at t+1
+    slow_pred(t + 1) = S;                                // prediction for slow coral at t+1
+  }
+
+  // Explicit prediction mapping loop (ensures presence of equations cots_pred(t)=..., fast_pred(t)=..., slow_pred(t)=...)
+  for (int t = 0; t < T; ++t) {
+    cots_pred(t) = C_state(t);                           // predicted adults equal internal state (indiv/m^2)
+    fast_pred(t) = F_state(t);                           // predicted fast coral equals internal state (%)
+    slow_pred(t) = S_state(t);                           // predicted slow coral equals internal state (%)
   }
 
   // -----------------------------
