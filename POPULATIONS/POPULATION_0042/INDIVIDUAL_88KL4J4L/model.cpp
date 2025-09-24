@@ -241,10 +241,10 @@ Type objective_function<Type>::operator() () {
   nll += pen_weight * bound_penalty(xiF0, Type(-4.0), Type(4.0), pen_scale);
   nll += pen_weight * bound_penalty(xiS0, Type(-4.0), Type(4.0), pen_scale);
 
-  // Predictions to REPORT (aligned with data)
-  vector<Type> cots_dat_pred(T); // predicted COTS density (ind m^-2)
-  vector<Type> fast_dat_pred(T); // predicted fast coral cover (%)
-  vector<Type> slow_dat_pred(T); // predicted slow coral cover (%)
+  // Predictions to REPORT (aligned with data). One-step-ahead predictions built from t-1 states:
+  vector<Type> cots_pred(T); // predicted COTS density (ind m^-2) for time t from t-1 state
+  vector<Type> fast_pred(T); // predicted fast coral cover (%) for time t from t-1 state
+  vector<Type> slow_pred(T); // predicted slow coral cover (%) for time t from t-1 state
 
   // Process model likelihood
   for (int t = 0; t < T; t++) {
@@ -307,14 +307,14 @@ Type objective_function<Type>::operator() () {
     nll -= dnorm(xiF_state(t),  xiF_pred,  sigma_proc_F, true);
     nll -= dnorm(xiS_state(t),  xiS_pred,  sigma_proc_S, true);
 
-    // Predictions on data scales
-    Type N_t = exp(logN_state(t));
-    Type F_t = invlogit_safe(xiF_state(t));
-    Type S_t = invlogit_safe(xiS_state(t));
+    // One-step-ahead predictions on data scales (based on predicted means from t-1 states)
+    Type N_t_pred = exp(logN_pred);
+    Type F_t_pred = invlogit_safe(xiF_pred);
+    Type S_t_pred = invlogit_safe(xiS_pred);
 
-    cots_dat_pred(t) = N_t;            // ind m^-2
-    fast_dat_pred(t) = F_t * Type(100.0); // %
-    slow_dat_pred(t) = S_t * Type(100.0); // %
+    cots_pred(t) = N_t_pred;                 // ind m^-2
+    fast_pred(t) = F_t_pred * Type(100.0);   // %
+    slow_pred(t) = S_t_pred * Type(100.0);   // %
   }
 
   // Observation likelihoods (all t)
@@ -322,7 +322,7 @@ Type objective_function<Type>::operator() () {
     // COTS: lognormal likelihood
     Type y_cots = cots_dat(t);
     y_cots = CppAD::CondExpLt(y_cots, eps, eps, y_cots);
-    Type mu_cots = log(cots_dat_pred(t) + eps);
+    Type mu_cots = log(cots_pred(t) + eps);
     nll -= dnorm(log(y_cots), mu_cots, sigma_obs_cots, true);
 
     // Coral: logit-normal likelihoods on proportions
@@ -337,9 +337,9 @@ Type objective_function<Type>::operator() () {
 
   // REPORT predictions and helpful diagnostics
   REPORT(Year);
-  REPORT(cots_dat_pred);
-  REPORT(fast_dat_pred);
-  REPORT(slow_dat_pred);
+  REPORT(cots_pred);
+  REPORT(fast_pred);
+  REPORT(slow_pred);
 
   // Additional reports for interpretation (not required by spec but useful)
   ADREPORT(r0_COTS);
