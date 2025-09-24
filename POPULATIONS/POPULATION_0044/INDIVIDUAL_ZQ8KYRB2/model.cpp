@@ -8,9 +8,6 @@
 
 // Helper smooth functions
 template<class Type>
-Type invlogit(const Type& x){ return Type(1) / (Type(1) + exp(-x)); }
-
-template<class Type>
 Type logit01(const Type& p_raw, const Type& eps){
   // Stable logit with clamping to (eps, 1-eps)
   Type p = CppAD::CondExpLt(p_raw, eps, eps, p_raw);
