@@ -172,18 +172,18 @@ Type objective_function<Type>::operator() () {
   // ------------------------------
   // State vectors and drivers
   // ------------------------------
-  vector<Type> A_pred(T);                                  // adult COTS prediction (ind/m^2)
-  vector<Type> F_pred(T);                                  // fast coral prediction (% cover)
-  vector<Type> S_pred(T);                                  // slow coral prediction (% cover)
+  vector<Type> cots_pred(T);                               // adult COTS prediction (ind/m^2)
+  vector<Type> fast_pred(T);                               // fast coral prediction (% cover)
+  vector<Type> slow_pred(T);                               // slow coral prediction (% cover)
 
   vector<Type> env_temp(T);                                // environmental suitability (unitless)
   vector<Type> imm_signal(T);                              // immigration signal (unitless)
   vector<Type> gate(T);                                    // outbreak gate (unitless 0-1)
 
   // Initialize at first time step (no data leakage; predictions at time t use only previous states and exogenous drivers)
-  A_pred(0) = A0;                                          // initial adults
-  F_pred(0) = F0;                                          // initial fast coral
-  S_pred(0) = S0;                                          // initial slow coral
+  cots_pred(0) = A0;                                       // initial adults
+  fast_pred(0) = F0;                                       // initial fast coral
+  slow_pred(0) = S0;                                       // initial slow coral
 
   // Precompute environmental drivers for all t (using available data at the same t)
   for (int t = 0; t < T; ++t) {
@@ -197,9 +197,9 @@ Type objective_function<Type>::operator() () {
   // Dynamics
   for (int t = 1; t < T; ++t) {
     // Previous states
-    Type Aprev = A_pred(t-1);                              // adults at t-1 (ind/m^2)
-    Type Fprev = F_pred(t-1);                              // fast coral at t-1 (%)
-    Type Sprev = S_pred(t-1);                              // slow coral at t-1 (%)
+    Type Aprev = cots_pred(t-1);                           // adults at t-1 (ind/m^2)
+    Type Fprev = fast_pred(t-1);                           // fast coral at t-1 (%)
+    Type Sprev = slow_pred(t-1);                           // slow coral at t-1 (%)
 
     // 4) Food feedback (saturating by guild; units unitless)
     Type food_fast = wF * ( Fprev / (F_halfF + Fprev + eps) );    // contribution from fast coral
@@ -245,9 +245,9 @@ Type objective_function<Type>::operator() () {
     Type Snext = K * invlogit_safe(logit_pS_next);              // back-transform to %
 
     // Assign next states
-    A_pred(t) = Anext;                                          // adults next year
-    F_pred(t) = Fnext;                                          // fast coral next year
-    S_pred(t) = Snext;                                          // slow coral next year
+    cots_pred(t) = Anext;                                       // adults next year
+    fast_pred(t) = Fnext;                                       // fast coral next year
+    slow_pred(t) = Snext;                                       // slow coral next year
   }
 
   // ------------------------------
@@ -255,17 +255,17 @@ Type objective_function<Type>::operator() () {
   // ------------------------------
   for (int t = 0; t < T; ++t) {
     // 9) COTS: lognormal
-    Type mu_logA = log(A_pred(t) + eps);                        // mean on log scale
+    Type mu_logA = log(cots_pred(t) + eps);                     // mean on log scale
     nll -= dnorm( log(cots_dat(t) + eps), mu_logA, sigma_cots, true ); // include all observations
 
     // 10) Corals: logit-normal on proportions
     Type pF_obs = (fast_dat(t) / K);                            // observed proportion
     Type pS_obs = (slow_dat(t) / K);                            // observed proportion
-    Type pF_pred = (F_pred(t) / K);                             // predicted proportion
-    Type pS_pred = (S_pred(t) / K);                             // predicted proportion
+    Type pF_pr = (fast_pred(t) / K);                            // predicted proportion
+    Type pS_pr = (slow_pred(t) / K);                            // predicted proportion
 
-    Type mu_logitF = logit_safe(pF_pred, eps);                  // mean on logit scale
-    Type mu_logitS = logit_safe(pS_pred, eps);                  // mean on logit scale
+    Type mu_logitF = logit_safe(pF_pr, eps);                    // mean on logit scale
+    Type mu_logitS = logit_safe(pS_pr, eps);                    // mean on logit scale
 
     nll -= dnorm( logit_safe(pF_obs, eps), mu_logitF, sigma_fast, true ); // fast coral likelihood
     nll -= dnorm( logit_safe(pS_obs, eps), mu_logitS, sigma_slow, true ); // slow coral likelihood
@@ -288,37 +288,28 @@ Type objective_function<Type>::operator() () {
   if (CppAD::Var2Par(beta_env) < Type(0.0)) nll += sqr( (Type(0.0) - beta_env) / Type(0.5) );
 
   // Encourage initial coral sum <= 95% (avoid infeasible overcrowding at start)
-  Type init_sum = F_pred(0) + S_pred(0);
+  Type init_sum = fast_pred(0) + slow_pred(0);
   if (CppAD::Var2Par(init_sum) > Type(95.0)) nll += sqr( (init_sum - Type(95.0)) / Type(5.0) );
 
   // ------------------------------
   // REPORTS
   // ------------------------------
-  // Predictions aligned to observations (required _pred naming)
-  REPORT(A_pred);                 // internal state for adults (ind/m^2)
-  REPORT(F_pred);                 // internal state for fast coral (%)
-  REPORT(S_pred);                 // internal state for slow coral (%)
-
-  // Match required names: <name>_dat -> <name>_pred
-  vector<Type> cots_pred = A_pred;   // prediction mapped to observed COTS (ind/m^2)
-  vector<Type> fast_pred = F_pred;   // prediction mapped to observed fast coral (%)
-  vector<Type> slow_pred = S_pred;   // prediction mapped to observed slow coral (%)
-  REPORT(cots_pred);                 // required by spec
-  REPORT(fast_pred);                 // required by spec
-  REPORT(slow_pred);                 // required by spec
+  REPORT(cots_pred);               // adult COTS predictions (ind/m^2)
+  REPORT(fast_pred);               // fast coral predictions (%)
+  REPORT(slow_pred);               // slow coral predictions (%)
 
   // Additional diagnostics (environmental drivers and gate)
-  REPORT(env_temp);               // environmental suitability time series
-  REPORT(imm_signal);             // immigration signal time series
-  REPORT(gate);                   // outbreak gate time series
-  REPORT(Year);                   // echo back time axis
+  REPORT(env_temp);                // environmental suitability time series
+  REPORT(imm_signal);              // immigration signal time series
+  REPORT(gate);                    // outbreak gate time series
+  REPORT(Year);                    // echo back time axis
 
   // Also provide ADREPORT for key parameters to obtain SEs
-  ADREPORT(wF);                   // preference for fast coral (unitless)
-  ADREPORT(rA);                   // intrinsic adult growth (year^-1)
-  ADREPORT(rF);                   // fast coral growth (year^-1)
-  ADREPORT(rS);                   // slow coral growth (year^-1)
-  ADREPORT(qFR);                  // functional response exponent
+  ADREPORT(wF);                    // preference for fast coral (unitless)
+  ADREPORT(rA);                    // intrinsic adult growth (year^-1)
+  ADREPORT(rF);                    // fast coral growth (year^-1)
+  ADREPORT(rS);                    // slow coral growth (year^-1)
+  ADREPORT(qFR);                   // functional response exponent
 
-  return nll;                     // return total negative log-likelihood
+  return nll;                      // return total negative log-likelihood
 }
