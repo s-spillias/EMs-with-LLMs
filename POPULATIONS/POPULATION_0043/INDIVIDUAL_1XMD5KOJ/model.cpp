@@ -35,40 +35,40 @@ EQUATION SUMMARY (annual time step; t indexes years corresponding to Year(t)):
    g_T_X(t) = exp(-0.5 * ((SST(t) - Topt_X) / Tsig_X)^2)  for X in {fast, slow, cots}
 2) Bleaching risk (smooth threshold):
    B(t) = 1 / (1 + exp(-k_bleach * (SST(t) - T_bleach)))
-3) Food limitation for COTS (saturating by prey availability; F and S are proportions):
-   Food(t) = (wF * F(t) + wS * S(t)) / (k_food + wF * F(t) + wS * S(t) + eps)
+3) Food limitation for COTS (saturating by prey availability; fast/slow are proportions of Kc):
+   Food(t) = (wF * Fp(t) + wS * Sp(t)) / (k_food + wF * Fp(t) + wS * Sp(t) + eps)
+   where Fp(t) = fast_pred(t)/Kc and Sp(t) = slow_pred(t)/Kc
 4) Allee effect on COTS reproduction (smooth):
    A(C) = A_min + (1 - A_min) * invlogit(allee_k * (C - C_crit))
 5) Preference-weighted availability for predation (q >= 1):
-   Avail(t) = pF * F(t)^q + pS * S(t)^q + eps
+   Avail(t) = pF * Fp(t)^q + pS * Sp(t)^q + eps
 6) Per-capita COTS intake (Holling II with handling time h):
    I*(t) = a * Avail(t) / (1 + a * h * Avail(t))
-7) Total COTS grazing pressure (proportion of coral cover per year):
-   G_total(t) = C(t) * I*(t)
-   Allocation to fast/slow by preference and availability:
-   G_fast(t) = e_predF * G_total(t) * (pF * F(t)^q) / Avail(t)
-   G_slow(t) = e_predS * G_total(t) * (pS * S(t)^q) / Avail(t)
-8) Coral dynamics (logistic growth, minus predation and bleaching mortality), in % cover:
-   F_next_raw = F + rF * g_T_fast(t) * F * (1 - (F + S) / Kc) - Kc * G_fast(t) - m_bleachF * B(t) * F
-   S_next_raw = S + rS * g_T_slow(t) * S * (1 - (F + S) / Kc) - Kc * G_slow(t) - m_bleachS * B(t) * S
-   F_next = smooth_sat_upper(F_next_raw, Kc); S_next = smooth_sat_upper(S_next_raw, Kc)
+7) Total COTS grazing pressure and allocation between coral groups:
+   G_total(t) = cots_pred(t) * I*(t)                      (proportion of Kc removed per year)
+   G_fast(t) = e_predF * G_total(t) * [pF * Fp(t)^q] / Avail(t)
+   G_slow(t) = e_predS * G_total(t) * [pS * Sp(t)^q] / Avail(t)
+8) Coral dynamics (logistic regrowth minus predation and bleaching), in % cover:
+   F_next_raw = fast_pred(t)
+                + rF * g_T_fast(t) * fast_pred(t) * (1 - (fast_pred(t) + slow_pred(t)) / Kc)
+                - Kc * G_fast(t)
+                - m_bleachF * B(t) * fast_pred(t)
+   S_next_raw = slow_pred(t)
+                + rS * g_T_slow(t) * slow_pred(t) * (1 - (fast_pred(t) + slow_pred(t)) / Kc)
+                - Kc * G_slow(t)
+                - m_bleachS * B(t) * slow_pred(t)
 9) COTS dynamics (Ricker-like with resource and SST modulation, Allee, and crowding; plus immigration), in individuals/m^2:
-   g_pc(t) = r_cots * Food(t) * g_T_cots(t) * A(C(t)) - beta * C(t)
-   C_next = C * exp(g_pc(t)) + immigration(t) + eps
-10) Prediction state updates (no data leakage; states use only previous predicted states and exogenous forcing):
-   Initialization at Year(0):
-     C(0) = C0; F(0) = F0; S(0) = S0
-     cots_pred(0) = C(0)
-     fast_pred(0) = F(0)
-     slow_pred(0) = S(0)
-   After state updates at each step (t -> t+1):
-     C(t+1) = C_next
-     F(t+1) = F_next
-     S(t+1) = S_next
-11) Observation prediction equations (explicit mapping used in likelihood, aligned to Year):
-     cots_pred(t) = C(t)
-     fast_pred(t) = F(t)
-     slow_pred(t) = S(t)
+   g_pc(t) = r_cots * Food(t) * g_T_cots(t) * A(cots_pred(t)) - beta * cots_pred(t)
+   C_next  = cots_pred(t) * exp(g_pc(t)) + cotsimm_dat(t) + eps
+10) Prediction equations (no data leakage; predictions use only previous predicted states and exogenous forcing):
+   Initialization at t = 0:
+     cots_pred(0) = C0
+     fast_pred(0) = F0
+     slow_pred(0) = S0
+   After state updates for t = 0...(T-2):
+     fast_pred(t+1) = smooth_sat_upper(F_next_raw, Kc)
+     slow_pred(t+1) = smooth_sat_upper(S_next_raw, Kc)
+     cots_pred(t+1) = C_next
 
 OBSERVATION MODEL (lognormal, all data strictly positive after adding small constant):
    log(y_dat(t) + eps) ~ Normal(log(y_pred(t) + eps), sd_eff)
@@ -191,74 +191,38 @@ Type objective_function<Type>::operator() () {
   Type sd_slow = sqrt(exp(2.0 * log_sd_slow) + min_sd * min_sd);  // effective lognormal sd
 
   // Initial states
-  Type C = exp(log_C0);                                  // initial COTS (indiv/m^2)
+  Type C0 = exp(log_C0);                                 // initial COTS (indiv/m^2)
   Type coral_frac0 = invlogit(logit_coral_total0);       // fraction of Kc (0-1)
   Type fast_share0 = invlogit(logit_fast_share0);        // fraction (0-1)
-  Type F = Kc * coral_frac0 * fast_share0;               // initial fast coral (%)
-  Type S = Kc * coral_frac0 * (Type(1.0) - fast_share0); // initial slow coral (%)
+  Type F0 = Kc * coral_frac0 * fast_share0;              // initial fast coral (%)
+  Type S0 = Kc * coral_frac0 * (Type(1.0) - fast_share0);// initial slow coral (%)
 
   // -----------------------------
-  // SOFT BIOLOGICAL BOUNDS (penalties; no hard constraints)
+  // STATE VECTORS FOR PREDICTIONS (EXPLICIT)
   // -----------------------------
-  Type pen = 0.0;                                        // accumulate smooth penalties
-  pen += smooth_bounds_penalty(rF, Type(0.01), Type(2.0), Type(5.0));
-  pen += smooth_bounds_penalty(rS, Type(0.005), Type(1.0), Type(5.0));
-  pen += smooth_bounds_penalty(Kc, Type(10.0), Type(100.0), Type(0.5));
-  pen += smooth_bounds_penalty(a, Type(0.001), Type(50.0), Type(1.0));
-  pen += smooth_bounds_penalty(h, Type(0.01), Type(10.0), Type(1.0));
-  pen += smooth_bounds_penalty(pF, Type(0.0), Type(1.0), Type(10.0));
-  pen += smooth_bounds_penalty(pS, Type(0.0), Type(1.0), Type(10.0));
-  pen += smooth_bounds_penalty(q, Type(1.0), Type(3.0), Type(2.0));
-  pen += smooth_bounds_penalty(e_predF, Type(0.0), Type(1.0), Type(10.0));
-  pen += smooth_bounds_penalty(e_predS, Type(0.0), Type(1.0), Type(10.0));
-  pen += smooth_bounds_penalty(r_cots, Type(0.05), Type(5.0), Type(1.0));
-  pen += smooth_bounds_penalty(beta, Type(0.0), Type(5.0), Type(1.0));
-  pen += smooth_bounds_penalty(k_food, Type(0.001), Type(0.9), Type(5.0));
-  pen += smooth_bounds_penalty(wF, Type(0.1), Type(5.0), Type(1.0));
-  pen += smooth_bounds_penalty(wS, Type(0.01), Type(5.0), Type(1.0));
-  pen += smooth_bounds_penalty(A_min, Type(0.0), Type(0.5), Type(10.0));
-  pen += smooth_bounds_penalty(C_crit, Type(0.0), Type(2.0), Type(2.0));
-  pen += smooth_bounds_penalty(allee_k, Type(0.1), Type(10.0), Type(1.0));
-  pen += smooth_bounds_penalty(Topt_fast, Type(20.0), Type(33.0), Type(0.5));
-  pen += smooth_bounds_penalty(Topt_slow, Type(20.0), Type(33.0), Type(0.5));
-  pen += smooth_bounds_penalty(Topt_cots, Type(20.0), Type(33.0), Type(0.5));
-  pen += smooth_bounds_penalty(Tsig_fast, Type(0.1), Type(5.0), Type(1.0));
-  pen += smooth_bounds_penalty(Tsig_slow, Type(0.1), Type(5.0), Type(1.0));
-  pen += smooth_bounds_penalty(Tsig_cots, Type(0.1), Type(5.0), Type(1.0));
-  pen += smooth_bounds_penalty(T_bleach, Type(26.0), Type(33.0), Type(1.0));
-  pen += smooth_bounds_penalty(k_bleach, Type(0.1), Type(10.0), Type(1.0));
-  pen += smooth_bounds_penalty(m_bleachF, Type(0.0), Type(1.0), Type(5.0));
-  pen += smooth_bounds_penalty(m_bleachS, Type(0.0), Type(1.0), Type(5.0));
+  vector<Type> cots_pred(T);                             // predicted adults (indiv/m^2)
+  vector<Type> fast_pred(T);                             // predicted fast coral (% cover)
+  vector<Type> slow_pred(T);                             // predicted slow coral (% cover)
 
-  // -----------------------------
-  // STATE VECTORS FOR REPORTING
-  // -----------------------------
-  vector<Type> cots_pred(T);                             // predicted COTS (indiv/m^2)
-  vector<Type> fast_pred(T);                             // predicted fast coral (%)
-  vector<Type> slow_pred(T);                             // predicted slow coral (%)
-
-  // Internal state history (explicitly tracked to map predictions later)
-  vector<Type> C_state(T);                               // internal COTS state trajectory (indiv/m^2)
-  vector<Type> F_state(T);                               // internal fast coral trajectory (% cover)
-  vector<Type> S_state(T);                               // internal slow coral trajectory (% cover)
-
-  // Set initial states and predictions at t = 0 (initial state)
+  // Initialize predictions at t = 0
   if (T > 0) {
-    C_state(0) = C;                                      // initial COTS state
-    F_state(0) = F;                                      // initial fast coral state
-    S_state(0) = S;                                      // initial slow coral state
-    cots_pred(0) = C;                                    // prediction at t=0 equals initial state
-    fast_pred(0) = F;                                    // prediction at t=0 equals initial state
-    slow_pred(0) = S;                                    // prediction at t=0 equals initial state
+    cots_pred(0) = C0;                                   // prediction init from parameterized initial state
+    fast_pred(0) = F0;                                   // prediction init from parameterized initial state
+    slow_pred(0) = S0;                                   // prediction init from parameterized initial state
   }
 
   // -----------------------------
-  // TIME LOOP: STATE UPDATES
+  // TIME LOOP: PREDICTION EQUATIONS (NO DATA LEAKAGE)
   // -----------------------------
   for (int t = 0; t < T - 1; ++t) {
     // Forcing at time t
     Type sst = sst_dat(t);                               // SST at year t (C)
-    Type imm = cotsimm_dat(t);                           // immigration at t (indiv/m^2/yr), >= 0 assumed
+    Type imm = cotsimm_dat(t);                           // immigration at t (indiv/m^2/yr), >= 0
+
+    // Use only previous predicted states (t) for all calculations
+    Type C = cots_pred(t);                               // previous predicted COTS (indiv/m^2)
+    Type F = fast_pred(t);                               // previous predicted fast coral (%)
+    Type S = slow_pred(t);                               // previous predicted slow coral (%)
 
     // Proportional coral cover (0-1) based on Kc
     Type Fp = F / (Kc + eps);                            // fast coral proportion
@@ -279,7 +243,7 @@ Type objective_function<Type>::operator() () {
     Type Istar = a * Avail / (Type(1.0) + a * h * Avail + eps); // proportion per starfish per year
 
     // Total grazing pressure and allocation to coral groups
-    Type G_total = C * Istar;                            // proportion of coral removed per year
+    Type G_total = C * Istar;                            // proportion of Kc removed per year
     Type share_fast = (pF * pow(Fp + eps, q)) / (Avail); // fraction of grazing on fast
     Type share_slow = (pS * pow(Sp + eps, q)) / (Avail); // fraction of grazing on slow
     Type G_fast = e_predF * G_total * share_fast;        // proportion of Kc
@@ -294,36 +258,16 @@ Type objective_function<Type>::operator() () {
     Type F_next_raw = F + growthF - Kc * G_fast - bleachMortF; // % cover
     Type S_next_raw = S + growthS - Kc * G_slow - bleachMortS; // % cover
 
-    Type F_next = smooth_sat_upper(F_next_raw, Kc);      // keep in [0, Kc) smoothly
-    Type S_next = smooth_sat_upper(S_next_raw, Kc);      // keep in [0, Kc) smoothly
-
     // COTS dynamics (Ricker-like)
     Type Food = (wF * Fp + wS * Sp) / (k_food + wF * Fp + wS * Sp + eps); // 0-1
-    Type A_allee = A_min + (Type(1.0) - A_min) * invlogit(allee_k * (C - C_crit)); // 0-1+
+    Type A_allee = A_min + (Type(1.0) - A_min) * invlogit(allee_k * (C - C_crit)); // Allee modulation
     Type g_pc = r_cots * Food * gT_cots * A_allee - beta * C; // per-capita log growth
     Type C_next = C * exp(g_pc) + imm + eps;             // indiv/m^2, strictly positive
 
-    // Advance states (predictions never use current observations; only previous predicted states and forcing)
-    F = F_next;
-    S = S_next;
-    C = C_next;
-
-    // Save internal state history for mapping to predictions
-    F_state(t + 1) = F;                                  // store fast coral state at t+1
-    S_state(t + 1) = S;                                  // store slow coral state at t+1
-    C_state(t + 1) = C;                                  // store COTS state at t+1
-
-    // Save predictions for next time index (redundant with mapping below but useful for clarity)
-    cots_pred(t + 1) = C;                                // prediction for COTS at t+1
-    fast_pred(t + 1) = F;                                // prediction for fast coral at t+1
-    slow_pred(t + 1) = S;                                // prediction for slow coral at t+1
-  }
-
-  // Explicit prediction mapping loop (ensures presence of equations cots_pred(t)=..., fast_pred(t)=..., slow_pred(t)=...)
-  for (int t = 0; t < T; ++t) {
-    cots_pred(t) = C_state(t);                           // predicted adults equal internal state (indiv/m^2)
-    fast_pred(t) = F_state(t);                           // predicted fast coral equals internal state (%)
-    slow_pred(t) = S_state(t);                           // predicted slow coral equals internal state (%)
+    // Prediction equations (explicit, aligned with Year indices)
+    fast_pred(t + 1) = smooth_sat_upper(F_next_raw, Kc); // fast_pred update (no data used)
+    slow_pred(t + 1) = smooth_sat_upper(S_next_raw, Kc); // slow_pred update (no data used)
+    cots_pred(t + 1) = C_next;                           // cots_pred update (no data used)
   }
 
   // -----------------------------
@@ -331,23 +275,23 @@ Type objective_function<Type>::operator() () {
   // -----------------------------
   for (int t = 0; t < T; ++t) {
     // COTS
-    Type yC = cots_dat(t) + eps;
-    Type muC = cots_pred(t) + eps;
-    nll -= dnorm(log(yC), log(muC), sd_cots, true);
+    Type yC = cots_dat(t) + eps;                         // observed COTS (>= eps)
+    Type muC = cots_pred(t) + eps;                       // predicted COTS (>= eps)
+    nll -= dnorm(log(yC), log(muC), sd_cots, true);      // lognormal likelihood
 
     // Fast coral
-    Type yF = fast_dat(t) + eps;
-    Type muF = fast_pred(t) + eps;
-    nll -= dnorm(log(yF), log(muF), sd_fast, true);
+    Type yF = fast_dat(t) + eps;                         // observed fast coral (>= eps)
+    Type muF = fast_pred(t) + eps;                       // predicted fast coral (>= eps)
+    nll -= dnorm(log(yF), log(muF), sd_fast, true);      // lognormal likelihood
 
     // Slow coral
-    Type yS = slow_dat(t) + eps;
-    Type muS = slow_pred(t) + eps;
-    nll -= dnorm(log(yS), log(muS), sd_slow, true);
+    Type yS = slow_dat(t) + eps;                         // observed slow coral (>= eps)
+    Type muS = slow_pred(t) + eps;                       // predicted slow coral (>= eps)
+    nll -= dnorm(log(yS), log(muS), sd_slow, true);      // lognormal likelihood
   }
 
   // Add penalties
-  nll += pen;
+  nll += pen;                                            // smooth biological bounds penalties
 
   // -----------------------------
   // REPORTS
@@ -356,7 +300,7 @@ Type objective_function<Type>::operator() () {
   REPORT(fast_pred);                                     // predicted fast coral cover (%)
   REPORT(slow_pred);                                     // predicted slow coral cover (%)
   REPORT(pen);                                           // total smooth penalty
-  REPORT(Kc);                                            // report realized Kc for interpretability
+  REPORT(Kc);                                            // realized Kc
   REPORT(rF);
   REPORT(rS);
   REPORT(a);
