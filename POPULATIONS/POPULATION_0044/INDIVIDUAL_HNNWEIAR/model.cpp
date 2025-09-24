@@ -34,8 +34,8 @@ Equations (all variables are annual time steps t):
 
 6) Generalized functional response (q ∈ [1, ∞)):
    denom_{t} = 1 + h * ( aF * F_{t}^q + aS * S_{t}^q )
-   frac_loss_F_{t} = 1 - exp( -gamma_pred * A_{t} * aF * F_{t}^q / denom_{t} )
-   frac_loss_S_{t} = 1 - exp( -gamma_pred * A_{t} * aS * S_{t}^q / denom_{t} )
+   frac_loss_F_{t} = 1 - exp( -gamma_pred * A_{t} * aF * F_{t}^q / (denom_{t} + eps) )
+   frac_loss_S_{t} = 1 - exp( -gamma_pred * A_{t} * aS * S_{t}^q / (denom_{t} + eps) )
    pred_loss_F_{t} = frac_loss_F_{t} * F_{t}
    pred_loss_S_{t} = frac_loss_S_{t} * S_{t}
 
@@ -299,12 +299,13 @@ Type objective_function<Type>::operator() () {
   REPORT(F_pred);                 // internal state for fast coral (%)
   REPORT(S_pred);                 // internal state for slow coral (%)
 
-  vector<Type> cots_dat_pred = A_pred;   // prediction mapped to observed COTS
-  vector<Type> fast_dat_pred = F_pred;   // prediction mapped to observed fast coral (%)
-  vector<Type> slow_dat_pred = S_pred;   // prediction mapped to observed slow coral (%)
-  REPORT(cots_dat_pred);                 // required by spec
-  REPORT(fast_dat_pred);                 // required by spec
-  REPORT(slow_dat_pred);                 // required by spec
+  // Match required names: <name>_dat -> <name>_pred
+  vector<Type> cots_pred = A_pred;   // prediction mapped to observed COTS (ind/m^2)
+  vector<Type> fast_pred = F_pred;   // prediction mapped to observed fast coral (%)
+  vector<Type> slow_pred = S_pred;   // prediction mapped to observed slow coral (%)
+  REPORT(cots_pred);                 // required by spec
+  REPORT(fast_pred);                 // required by spec
+  REPORT(slow_pred);                 // required by spec
 
   // Additional diagnostics (environmental drivers and gate)
   REPORT(env_temp);               // environmental suitability time series
