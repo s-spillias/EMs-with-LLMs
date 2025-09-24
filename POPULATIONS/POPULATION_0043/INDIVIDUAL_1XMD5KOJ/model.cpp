@@ -30,7 +30,7 @@ Type smooth_bounds_penalty(Type x, Type low, Type high, Type w) {
 }
 
 /*
-EQUATION SUMMARY (annual time step; t indexes years):
+EQUATION SUMMARY (annual time step; t indexes years corresponding to Year(t)):
 1) Temperature response (Gaussian):
    g_T_X(t) = exp(-0.5 * ((SST(t) - Topt_X) / Tsig_X)^2)  for X in {fast, slow, cots}
 2) Bleaching risk (smooth threshold):
@@ -55,15 +55,20 @@ EQUATION SUMMARY (annual time step; t indexes years):
 9) COTS dynamics (Ricker-like with resource and SST modulation, Allee, and crowding; plus immigration), in individuals/m^2:
    g_pc(t) = r_cots * Food(t) * g_T_cots(t) * A(C(t)) - beta * C(t)
    C_next = C * exp(g_pc(t)) + immigration(t) + eps
-10) Prediction mapping (no data leakage; predictions use only previous predicted states and exogenous forcing):
-   Initialization at t = 0:
+10) Prediction state updates (no data leakage; states use only previous predicted states and exogenous forcing):
+   Initialization at Year(0):
+     C(0) = C0; F(0) = F0; S(0) = S0
      cots_pred(0) = C(0)
      fast_pred(0) = F(0)
      slow_pred(0) = S(0)
    After state updates at each step (t -> t+1):
-     cots_pred(t+1) = C_next
-     fast_pred(t+1) = F_next
-     slow_pred(t+1) = S_next
+     C(t+1) = C_next
+     F(t+1) = F_next
+     S(t+1) = S_next
+11) Observation prediction equations (explicit mapping used in likelihood, aligned to Year):
+     cots_pred(t) = C(t)
+     fast_pred(t) = F(t)
+     slow_pred(t) = S(t)
 
 OBSERVATION MODEL (lognormal, all data strictly positive after adding small constant):
    log(y_dat(t) + eps) ~ Normal(log(y_pred(t) + eps), sd_eff)
