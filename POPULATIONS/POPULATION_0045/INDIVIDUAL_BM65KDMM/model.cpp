@@ -82,8 +82,7 @@ Type objective_function<Type>::operator() ()
   }
   
   // Likelihood: assume lognormal errors to account for positive-only data values
-  // Evaluate likelihood only for t>=1, so predictions arise solely from the model dynamics.
-  for (int t = 1; t < n; t++){
+  for (int t = 0; t < n; t++){
     nll -= dlnorm(cots_dat[t] + small, log(cots_pred[t] + small), sigma_cots, true);
     nll -= dlnorm(fast_dat[t] + small, log(fast_pred[t] + small), sigma_fast, true);
     nll -= dlnorm(slow_dat[t] + small, log(slow_pred[t] + small), sigma_slow, true);
