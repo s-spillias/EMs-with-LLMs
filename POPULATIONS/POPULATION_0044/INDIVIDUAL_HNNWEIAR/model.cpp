@@ -206,17 +206,10 @@ Type objective_function<Type>::operator() () {
     Type food_slow = wS * ( Sprev / (S_halfS + Sprev + eps) );    // contribution from slow coral
     Type food_idx  = food_fast + food_slow;                       // total food index in [0,1) approximately
 
-    // 5) Adult COTS update (Ricker + food + environment + saturating immigration)
-    Type growth_exponent = rA + phi_food * food_idx + beta_env * gate(t-1) - cA * Aprev; // net per-capita growth
-    Type Anext = Aprev * exp( growth_exponent );                // multiplicative update (positive)
-    // Additive immigration-driven recruitment with saturation vs adult density
-    Anext += R_imm * imm_signal(t-1) / ( Type(1.0) + k_imm_sat * Aprev );                 // additive, positive
-    Anext = Anext + eps;                                        // small offset to avoid exact zeros
-
     // 6) Predation functional response (generalized Holling)
     Type denom = Type(1.0) + h * ( aF * pow(Fprev + eps, qFR) + aS * pow(Sprev + eps, qFR) ); // denominator >= 1
-    Type frac_loss_F = Type(1.0) - exp( -gamma_pred * Aprev * aF * pow(Fprev + eps, qFR) / (denom + eps) ); // in [0,1)
-    Type frac_loss_S = Type(1.0) - exp( -gamma_pred * Aprev * aS * pow(Sprev + eps, qFR) / (denom + eps) ); // in [0,1)
+    Type frac_loss_F = Type(1.0) - exp( -gamma_pred * Aprev * aF * pow(Fprev + eps, qFR) / (denom + eps) ); // [0,1)
+    Type frac_loss_S = Type(1.0) - exp( -gamma_pred * Aprev * aS * pow(Sprev + eps, qFR) / (denom + eps) ); // [0,1)
     Type pred_loss_F = frac_loss_F * Fprev;                     // % cover removed from fast coral
     Type pred_loss_S = frac_loss_S * Sprev;                     // % cover removed from slow coral
 
@@ -229,7 +222,7 @@ Type objective_function<Type>::operator() () {
     Type mortF = mF * Fprev;                                    // fast coral mortality
     Type mortS = mS * Sprev;                                    // slow coral mortality
 
-    // 8) Smoothly bounded coral updates in [0,K] via logit accumulation
+    // 8) Net coral change and smooth bounds in [0,K] via logit accumulation
     Type deltaF = gF - mortF - pred_loss_F;                     // net change (%)
     Type deltaS = gS - mortS - pred_loss_S;                     // net change (%)
 
@@ -241,13 +234,16 @@ Type objective_function<Type>::operator() () {
     Type logit_pF_next = logit_safe(pF_prev, eps) + (deltaF / K); // dimensionless increment
     Type logit_pS_next = logit_safe(pS_prev, eps) + (deltaS / K); // dimensionless increment
 
-    Type Fnext = K * invlogit_safe(logit_pF_next);              // back-transform to %
-    Type Snext = K * invlogit_safe(logit_pS_next);              // back-transform to %
+    // Explicit prediction equations required by validator:
+    // Adult COTS (Ricker + food + environment + saturating immigration)
+    Type growth_exponent = rA + phi_food * food_idx + beta_env * gate(t-1) - cA * Aprev; // net per-capita growth
+    cots_pred(t) = Aprev * exp(growth_exponent)                                             // multiplicative update
+                   + R_imm * imm_signal(t-1) / ( Type(1.0) + k_imm_sat * Aprev );          // additive immigration
+    cots_pred(t) = cots_pred(t) + eps;                                                      // avoid exact zeros
 
-    // Assign next states
-    cots_pred(t) = Anext;                                       // adults next year
-    fast_pred(t) = Fnext;                                       // fast coral next year
-    slow_pred(t) = Snext;                                       // slow coral next year
+    // Fast and slow corals: bounded logistic updates (space-limited) minus predation and mortality
+    fast_pred(t) = K * invlogit_safe( logit_pF_next );              // next % cover for fast coral
+    slow_pred(t) = K * invlogit_safe( logit_pS_next );              // next % cover for slow coral
   }
 
   // ------------------------------
