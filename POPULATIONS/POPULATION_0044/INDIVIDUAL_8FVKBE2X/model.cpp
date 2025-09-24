@@ -1,16 +1,14 @@
 #include <TMB.hpp>
 
-// Utility: inverse logit
-template<class Type>
-Type invlogit(Type x) {
-  return Type(1) / (Type(1) + exp(-x));
-}
-
 // Utility: softplus with adjustable steepness (beta); smooth approximation to max(0, x)
 template<class Type>
 Type softplus(Type x, Type beta) {
-  // For numerical stability, limit argument
-  return (Type(1)/beta) * log1p(exp(beta * x));
+  // Numerically stable softplus that works with AD types without relying on std::log1p
+  // softplus(z) = log(1 + exp(z)); for large z, use z + exp(-z) to avoid overflow
+  Type z = beta * x;
+  Type one = Type(1);
+  Type res = CppAD::CondExpGt(z, Type(20), z + exp(-z), log(one + exp(z)));
+  return res / beta;
 }
 
 // Utility: smooth positive part (beta controls sharpness)
