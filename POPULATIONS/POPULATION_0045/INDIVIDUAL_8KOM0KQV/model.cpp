@@ -52,39 +52,42 @@ Type objective_function<Type>::operator() ()
   // Negative log-likelihood
   Type nll = 0.0;
 
+  // Initial likelihood contributions using initial predicted states at t = 0
+  nll -= dlnorm(cots_dat(0), log(cots_pred(0)), sigma_cots, true);
+  nll -= dlnorm(fast_dat(0), log(fast_pred(0)), sigma_fast, true);
+  nll -= dlnorm(slow_dat(0), log(slow_pred(0)), sigma_slow, true);
+
   // Numbered list of equations:
   // (1) COTS dynamics:
-  //     cots_pred[t+1] = cots_pred[t] + (growth + forcing - decline) where:
-  //         growth = cots_growth_rate * cots_pred[t] * (1 - cots_pred[t] / K) * (1 + sst_effect * (sst_dat[t] - sst_baseline))
-  //         outbreak = logistic(cots_pred[t], cots_threshold, outbreak_k)
-  //         forcing = cotsimm_dat[t]
-  //         decline = cots_decline_rate * cots_pred[t] * outbreak
+  //     cots_pred[t] = cots_pred[t-1] + (growth + forcing - decline) where:
+  //         growth = cots_growth_rate * cots_pred[t-1] * (1 - cots_pred[t-1] / K) * (1 + sst_effect * (sst_dat[t-1] - sst_baseline))
+  //         outbreak = logistic(cots_pred[t-1], cots_threshold, outbreak_k)
+  //         forcing = cotsimm_dat[t-1]
+  //         decline = cots_decline_rate * cots_pred[t-1] * outbreak
   // (2) Coral dynamics:
-  //     fast_pred[t+1] = fast_pred[t] - predation_eff_fast * cots_pred[t] * fast_pred[t] / (res_half_sat + fast_pred[t])
-  //     slow_pred[t+1] = slow_pred[t] - predation_eff_slow * cots_pred[t] * slow_pred[t] / (res_half_sat + slow_pred[t])
+  //     fast_pred[t] = fast_pred[t-1] - predation_eff_fast * cots_pred[t-1] * fast_pred[t-1] / (res_half_sat + fast_pred[t-1])
+  //     slow_pred[t] = slow_pred[t-1] - predation_eff_slow * cots_pred[t-1] * slow_pred[t-1] / (res_half_sat + slow_pred[t-1])
   //   Note: Only previous states are used for prediction to avoid data leakage.
-  for(int t = 0; t < n - 1; t++){
-    // Compute outbreak effect with a smooth logistic function
-    Type outbreak_effect = logistic(cots_pred(t), cots_threshold, outbreak_k);
-    // (1) Update COTS dynamics
-    Type growth = cots_growth_rate * cots_pred(t) * (1 - cots_pred(t)/K) * (1 + sst_effect * (sst_dat(t) - sst_baseline));
-    Type forcing = cotsimm_dat(t);
-    Type decline = cots_decline_rate * cots_pred(t) * outbreak_effect;
-    cots_pred(t+1) = cots_pred(t) + growth + forcing - decline;
-    // Avoid negative populations:
-    cots_pred(t+1) = fmax(cots_pred(t+1), eps);
+  for(int t = 1; t < n; t++){
+    // Compute outbreak effect using previous predicted COTS value
+    Type outbreak_effect = logistic(cots_pred(t-1), cots_threshold, outbreak_k);
+    // (1) Update COTS dynamics using prediction from t-1
+    Type growth = cots_growth_rate * cots_pred(t-1) * (1 - cots_pred(t-1) / K) * (1 + sst_effect * (sst_dat(t-1) - sst_baseline));
+    Type forcing = cotsimm_dat(t-1);
+    Type decline = cots_decline_rate * cots_pred(t-1) * outbreak_effect;
+    cots_pred(t) = cots_pred(t-1) + growth + forcing - decline;
+    cots_pred(t) = fmax(cots_pred(t), eps);
 
-    // (2) Update Coral dynamics using saturating functional responses
-    fast_pred(t+1) = fast_pred(t) - predation_eff_fast * cots_pred(t) * fast_pred(t) / (res_half_sat + fast_pred(t));
-    slow_pred(t+1) = slow_pred(t) - predation_eff_slow * cots_pred(t) * slow_pred(t) / (res_half_sat + slow_pred(t));
-    // Avoid negative coral cover values:
-    fast_pred(t+1) = fmax(fast_pred(t+1), eps);
-    slow_pred(t+1) = fmax(slow_pred(t+1), eps);
+    // (2) Update Coral dynamics using predictions from t-1
+    fast_pred(t) = fast_pred(t-1) - predation_eff_fast * cots_pred(t-1) * fast_pred(t-1) / (res_half_sat + fast_pred(t-1));
+    slow_pred(t) = slow_pred(t-1) - predation_eff_slow * cots_pred(t-1) * slow_pred(t-1) / (res_half_sat + slow_pred(t-1));
+    fast_pred(t) = fmax(fast_pred(t), eps);
+    slow_pred(t) = fmax(slow_pred(t), eps);
 
-    // Likelihood contributions using lognormal likelihoods
-    nll -= dlnorm(cots_dat(t+1), log(cots_pred(t+1)), sigma_cots, true);
-    nll -= dlnorm(fast_dat(t+1), log(fast_pred(t+1)), sigma_fast, true);
-    nll -= dlnorm(slow_dat(t+1), log(slow_pred(t+1)), sigma_slow, true);
+    // Likelihood contributions using lognormal likelihoods for predictions at time t
+    nll -= dlnorm(cots_dat(t), log(cots_pred(t)), sigma_cots, true);
+    nll -= dlnorm(fast_dat(t), log(fast_pred(t)), sigma_fast, true);
+    nll -= dlnorm(slow_dat(t), log(slow_pred(t)), sigma_slow, true);
   }
 
   // Reporting predicted trajectories
