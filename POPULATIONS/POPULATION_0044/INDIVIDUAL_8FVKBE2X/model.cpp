@@ -155,9 +155,9 @@ Type objective_function<Type>::operator() ()
   // ---------------------------
   // Containers for predictions
   // ---------------------------
-  vector<Type> cots_dat_pred(n);   // COTS density prediction (ind m^-2)
-  vector<Type> fast_dat_pred(n);   // Fast coral cover prediction (%)
-  vector<Type> slow_dat_pred(n);   // Slow coral cover prediction (%)
+  vector<Type> cots_pred(n);   // COTS density prediction (ind m^-2)
+  vector<Type> fast_pred(n);   // Fast coral cover prediction (%)
+  vector<Type> slow_pred(n);   // Slow coral cover prediction (%)
 
   // ---------------------------
   // Negative log-likelihood accumulator
@@ -290,21 +290,21 @@ Type objective_function<Type>::operator() ()
     Type C_next = smooth_cap0K(C_raw_next, Cmax, beta_sp);// Softly bound to [0, Cmax]
 
     // Save predictions (reporting scale)
-    cots_dat_pred(t) = C_next;                            // COTS density prediction (ind m^-2)
-    fast_dat_pred(t) = (F_next * Type(100.0));            // Fast coral cover prediction (%)
-    slow_dat_pred(t) = (S_next * Type(100.0));            // Slow coral cover prediction (%)
+    cots_pred(t) = C_next;                                // COTS density prediction (ind m^-2)
+    fast_pred(t) = (F_next * Type(100.0));                // Fast coral cover prediction (%)
+    slow_pred(t) = (S_next * Type(100.0));                // Slow coral cover prediction (%)
 
     // Observation model:
     // COTS: lognormal on positive data
     Type yC = cots_dat(t) + eps;
-    Type muC = cots_dat_pred(t) + eps;
+    Type muC = cots_pred(t) + eps;
     nll -= dnorm(log(yC), log(muC), sigma_log_cots, true);
 
     // Corals: Beta on proportions in (0,1)
     Type yF_prop = CppAD::CondExpLt(fast_dat(t)/Type(100.0), eps, eps, CppAD::CondExpGt(fast_dat(t)/Type(100.0), Type(1.0)-eps, Type(1.0)-eps, fast_dat(t)/Type(100.0)));
     Type yS_prop = CppAD::CondExpLt(slow_dat(t)/Type(100.0), eps, eps, CppAD::CondExpGt(slow_dat(t)/Type(100.0), Type(1.0)-eps, Type(1.0)-eps, slow_dat(t)/Type(100.0)));
-    Type muF_prop = CppAD::CondExpLt(F_next, eps, eps, CppAD::CondExpGt(F_next, Type(1.0)-eps, Type(1.0)-eps, F_next));
-    Type muS_prop = CppAD::CondExpLt(S_next, eps, eps, CppAD::CondExpGt(S_next, Type(1.0)-eps, Type(1.0)-eps, S_next));
+    Type muF_prop = CppAD::CondExpLt(fast_pred(t)/Type(100.0), eps, eps, CppAD::CondExpGt(fast_pred(t)/Type(100.0), Type(1.0)-eps, Type(1.0)-eps, fast_pred(t)/Type(100.0)));
+    Type muS_prop = CppAD::CondExpLt(slow_pred(t)/Type(100.0), eps, eps, CppAD::CondExpGt(slow_pred(t)/Type(100.0), Type(1.0)-eps, Type(1.0)-eps, slow_pred(t)/Type(100.0)));
 
     Type alphaF = muF_prop * phi_fast + eps;
     Type betaF  = (Type(1.0) - muF_prop) * phi_fast + eps;
@@ -323,9 +323,9 @@ Type objective_function<Type>::operator() ()
   // ---------------------------
   // REPORTING
   // ---------------------------
-  REPORT(cots_dat_pred);   // COTS density predictions (ind m^-2)
-  REPORT(fast_dat_pred);   // Fast coral cover predictions (%)
-  REPORT(slow_dat_pred);   // Slow coral cover predictions (%)
+  REPORT(cots_pred);       // COTS density predictions (ind m^-2)
+  REPORT(fast_pred);       // Fast coral cover predictions (%)
+  REPORT(slow_pred);       // Slow coral cover predictions (%)
 
   // Also report transformed observation parameters and some derived effects for diagnostics
   REPORT(sigma_log_cots);
