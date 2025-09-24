@@ -29,6 +29,12 @@ PARAMETER(beta);                 // e.g., initial value ~1e-3
 template<class Type>
 Type objective_function<Type>::operator() ()
 {
+  DATA_VECTOR(time);
+  DATA_VECTOR(cots_dat);
+  DATA_VECTOR(fast_dat);
+  DATA_VECTOR(slow_dat);
+  DATA_VECTOR(sst_dat);
+  DATA_VECTOR(cotsimm_dat);
   int n = cots_dat.size();                  // Number of time steps
   vector<Type> nll(n);                      // Negative log-likelihood contributions per time step
   
