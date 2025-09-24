@@ -3,6 +3,152 @@ require(jsonlite)
 library(here)
 library(ggplot2)
 
+# ----------------------- BOUNDS HELPERS (HARDENED) -----------------------
+# Return a single numeric or NA_real_, regardless of input shape
+.safe_num_scalar <- function(x) {
+  if (is.null(x)) {
+    return(NA_real_)
+  }
+  if (length(x) == 0) {
+    return(NA_real_)
+  }
+  # take first element
+  x1 <- x[[1]]
+  if (is.null(x1)) {
+    return(NA_real_)
+  }
+  val <- suppressWarnings(as.numeric(x1))
+  if (length(val) == 0) {
+    return(NA_real_)
+  }
+  if (is.na(val)) {
+    return(NA_real_)
+  }
+  val
+}
+
+
+# Pull a numeric bound for a base parameter name from params df
+.get_bound_for_param <- function(params_df, param_base, which = c("lower", "upper")) {
+  which <- match.arg(which)
+  col_primary <- if (which == "lower") "lower_bound" else "upper_bound"
+  col_literature <- if (which == "lower") "literature_lower_bound" else "literature_upper_bound"
+
+  # Locate the row once
+  idx <- match(param_base, params_df$parameter)
+  if (is.na(idx)) {
+    return(NA_real_)
+  }
+
+  # Safely pull literature and primary values
+  lit_val <- if (col_literature %in% names(params_df)) .safe_num_scalar(params_df[[col_literature]][idx]) else NA_real_
+  prim_val <- if (col_primary %in% names(params_df)) .safe_num_scalar(params_df[[col_primary]][idx]) else NA_real_
+
+  # Prefer literature-derived bound if available; otherwise fall back to primary
+  if (!is.na(lit_val)) {
+    # Optional: log when literature overrides a conflicting primary bound
+    if (!is.na(prim_val) && !isTRUE(all.equal(lit_val, prim_val))) {
+      message(sprintf(
+        "INFO: Using literature %s bound for %s (overrode primary %s).",
+        which, param_base, format(prim_val, digits = 6)
+      ))
+    }
+    return(lit_val)
+  }
+
+  return(prim_val)
+}
+
+
+# Build lower/upper vectors aligned to names(model$par)
+build_bounds_vectors <- function(model_par_names, params_df) {
+  n <- length(model_par_names)
+  lower <- rep(-Inf, n)
+  upper <- rep(Inf, n)
+
+  for (i in seq_len(n)) {
+    base <- sub("\\[.*\\]$", "", model_par_names[i]) # handle vector elements like "beta[3]"
+    lb <- .get_bound_for_param(params_df, base, "lower")
+    ub <- .get_bound_for_param(params_df, base, "upper")
+
+    # Normalize only if we truly have numeric scalars
+    if (!is.na(lb) && !is.na(ub)) {
+      if (lb > ub) {
+        tmp <- lb
+        lb <- ub
+        ub <- tmp
+        message(sprintf("INFO: Swapped bounds for %s as lower>upper in JSON.", base))
+      }
+      if (lb == ub) {
+        eps <- max(1e-12, abs(lb) * 1e-9)
+        ub <- lb + eps
+        message(sprintf("INFO: Expanded zero-width bounds for %s by epsilon.", base))
+      }
+    }
+
+    if (!is.na(lb)) lower[i] <- lb
+    if (!is.na(ub)) upper[i] <- ub
+  }
+
+  # Never return NA in bounds vectors; guarantee +/-Inf as defaults
+  lower[!is.finite(lower) & is.na(lower)] <- -Inf
+  upper[!is.finite(upper) & is.na(upper)] <- Inf
+
+  list(lower = lower, upper = upper)
+}
+
+# Clamp starting vector into bounds without altering JSON or the TMB 'parameters' list
+apply_bounds_to_start <- function(par_vec, lower, upper) {
+  stopifnot(length(par_vec) == length(lower), length(par_vec) == length(upper))
+  clamped <- par_vec
+
+  # Fill NA starts, if any, using bounds midpoints or nearest finite bound, else zero
+  na_idx <- which(is.na(clamped))
+  if (length(na_idx)) {
+    for (j in na_idx) {
+      if (is.finite(lower[j]) && is.finite(upper[j]) && lower[j] < upper[j]) {
+        clamped[j] <- (lower[j] + upper[j]) / 2
+      } else if (is.finite(lower[j])) {
+        clamped[j] <- lower[j]
+      } else if (is.finite(upper[j])) {
+        clamped[j] <- upper[j]
+      } else {
+        clamped[j] <- 0
+      }
+    }
+    warning("NA initial values were replaced using bounds/zero for: ",
+      paste(names(par_vec)[na_idx], collapse = ", "),
+      call. = FALSE
+    )
+  }
+
+  # Robust clamping (ignore NA/Inf comparisons)
+  too_low <- (clamped < lower) & is.finite(lower)
+  too_high <- (clamped > upper) & is.finite(upper)
+
+  idx_low <- which(too_low)
+  idx_high <- which(too_high)
+
+  if (isTRUE(any(too_low, na.rm = TRUE))) {
+    cat(
+      "Clamping starts up to lower bounds for:\n",
+      paste(names(clamped)[idx_low], collapse = ", "), "\n"
+    )
+    clamped[idx_low] <- lower[idx_low]
+  }
+  if (isTRUE(any(too_high, na.rm = TRUE))) {
+    cat(
+      "Clamping starts down to upper bounds for:\n",
+      paste(names(clamped)[idx_high], collapse = ", "), "\n"
+    )
+    clamped[idx_high] <- upper[idx_high]
+  }
+
+  clamped
+}
+# --------------------- END BOUNDS HELPERS (HARDENED) ---------------------
+
+
 # Function to read existing report or create new structure
 read_or_create_report <- function(individual_dir) {
   report_file <- file.path(individual_dir, 'model_report.json')
@@ -166,34 +312,34 @@ NumRow <- nrow(time_series_data)
 NumCol <- ncol(time_series_data)
 other_data <- as.list(time_series_data)
 
+# After 'merged_data <- ...' and before building data_in
+req <- c("Year", "cots_dat", "fast_dat", "slow_dat", "sst_dat", "cotsimm_dat")
+
+stopifnot(all(req %in% names(merged_data)))
+cat("\nNA counts per required column:\n")
+print(sapply(req, function(x) sum(is.na(merged_data[[x]]))))
+
+cat("\nOut-of-range checks:\n")
+cat("Any cots_dat < 0? ", any(merged_data$cots_dat < 0, na.rm = TRUE), "\n")
+cat("Any fast_dat outside [0,100]? ", any(merged_data$fast_dat < 0 | merged_data$fast_dat > 100, na.rm = TRUE), "\n")
+cat("Any slow_dat outside [0,100]? ", any(merged_data$slow_dat < 0 | merged_data$slow_dat > 100, na.rm = TRUE), "\n")
+
 # Prepare data for TMB
 data_in <- list()
+# ================== BUILD 'parameters' LIST FOR TMB ==================
 parameters <- list()
-
-for (i in 1:nrow(params)) {
-  param_name <- params$parameter[i]
-  param_source <- params$source[i]
-  # Preferentially use found_value if it exists
-  param_value <- if (!is.null(params$found_value[[i]])) {
-    params$found_value[[i]]
-  } else {
-    params$value[[i]]
-  }
-  param_import_type <- params$import_type[i]
-  
-  if (param_import_type == "PARAMETER") {
-    if (!is.null(param_value)) {
-      parameters[[param_name]] <- param_value
-    }
-  } else {
-    # For all other import types (DATA_SCALAR, DATA_VECTOR, etc.)
-    if (param_source == "data vector" && is.null(param_value) && param_name %in% names(time_series_data)) {
-      data_in[[param_name]] <- time_series_data[[param_name]]
-    } else if (!is.null(param_value)) {
-      data_in[[param_name]] <- param_value
-    }
-  }
+for (i in which(params$import_type == "PARAMETER")) {
+  nm <- params$parameter[i]
+  v <- params$found_value[[i]]
+  if (is.null(v) || is.na(v)) v <- params$value[[i]]
+  if (is.null(v) || is.na(v)) v <- param_default(nm)
+  parameters[[nm]] <- as.numeric(v)
 }
+
+cat("\nPARAMETER starts (first few):\n")
+print(utils::head(setNames(unlist(parameters), names(parameters)), 12))
+# ================== END BUILD 'parameters' LIST ==================
+
 
 # Add time variable if needed
 if ("time" %in% names(data_in)) {
@@ -237,39 +383,43 @@ tryCatch({
     
     model <- MakeADFun(data_in, parameters, DLL = 'model', silent = TRUE, map = map)
     
-    if (is.null(model)) {
-      stop("Failed to create model")
-    }
-    
     cat("Initial parameter values for phase", m, ":\n")
     print(model$par)
-    
-    fit <- nlminb(model$par, model$fn, model$gr)
-    
+
+    # ---- NEW: build bounds aligned to model$par and clamp starts ----
+    bounds <- build_bounds_vectors(names(model$par), params)
+    par0 <- apply_bounds_to_start(model$par, bounds$lower, bounds$upper)
+
+    fit <- nlminb(
+      start = par0,
+      objective = model$fn,
+      gradient = model$gr,
+      lower = bounds$lower,
+      upper = bounds$upper
+    )
+    # ---- END NEW ----
+
     if (is.null(fit)) {
       stop("Failed to fit model")
     }
-    
     cat("Final parameter values for phase", m, ":\n")
     print(fit$par)
     cat("Convergence message:", fit$message, "\n")
     cat("Number of iterations:", fit$iterations, "\n")
     cat("Objective function value:", fit$objective, "\n")
-    
     if (any(is.nan(fit$par)) || any(is.infinite(fit$par))) {
       cat("WARNING: NaN or Inf values detected in parameters at phase", m, "\n")
     }
-    
     cat("Gradient at solution for phase", m, ":\n")
     grad <- model$gr(fit$par)
     print(grad)
-    
     if (any(is.nan(grad)) || any(is.infinite(grad))) {
       cat("WARNING: NaN or Inf values detected in gradient at phase", m, "\n")
     }
-    
     best <- model$env$last.par.best
     model$report()
+
+    
   }
   
   # FINAL PHASE
@@ -281,28 +431,36 @@ tryCatch({
   
   cat("Initial parameter values for final phase:\n")
   print(model$par)
-  
-  fit <- nlminb(model$par, model$fn, model$gr)
-  
+
+  # ---- NEW: bounds + clamped starts ----
+  bounds <- build_bounds_vectors(names(model$par), params)
+  par0 <- apply_bounds_to_start(model$par, bounds$lower, bounds$upper)
+
+  fit <- nlminb(
+    start = par0,
+    objective = model$fn,
+    gradient = model$gr,
+    lower = bounds$lower,
+    upper = bounds$upper
+  )
+  # ---- END NEW ----
+
   cat("Final parameter values for final phase:\n")
   print(fit$par)
   cat("Convergence message:", fit$message, "\n")
   cat("Number of iterations:", fit$iterations, "\n")
   cat("Objective function value:", fit$objective, "\n")
-  
   if (any(is.nan(fit$par)) || any(is.infinite(fit$par))) {
     cat("WARNING: NaN or Inf values detected in parameters at final phase\n")
   }
-  
   cat("Gradient at solution for final phase:\n")
   grad <- model$gr(fit$par)
   print(grad)
-  
   if (any(is.nan(grad)) || any(is.infinite(grad))) {
     cat("WARNING: NaN or Inf values detected in gradient at final phase\n")
   }
-  
   best <- model$env$last.par.best
+
   
 }, error = function(e) {
   error_message <- paste("Error in model phases:", conditionMessage(e))
@@ -427,8 +585,8 @@ for (input_var in input_vars) {
     
     # Save plots
     plot_filename <- file.path(individual_dir, paste0(output_var, "_comparison"))
-    ggsave(paste0(plot_filename, ".png"), plot = p, width = 10, height = 6, dpi = 300)
-    ggsave(paste0(plot_filename, ".pdf"), plot = p, width = 10, height = 6)
+    ggsave(paste0(plot_filename, ".png"), plot = p, width = 10, height = 6, dpi = 50, device = "png")
+    # ggsave(paste0(plot_filename, ".pdf"), plot = p, width = 10, height = 6)
   }
 }
 

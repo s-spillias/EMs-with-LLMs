@@ -118,15 +118,24 @@ def find_timestep_loop(content: str) -> Tuple[int, int, str]:
 def get_response_variables_from_csv(filename: str) -> Set[str]:
     """Extract response variable names from the CSV file."""
     import pandas as pd
+    import os
     try:
+        # Ensure we have the absolute path to the file
+        if not os.path.isabs(filename):
+            # If it's a relative path, make it absolute
+            filename = os.path.abspath(filename)
+        
+        print(f"Attempting to read CSV file: {filename}")
         df = pd.read_csv(filename)
         # Get column names that end with '_dat'
-        return {col.split()[0] for col in df.columns if col.split()[0].endswith('_dat')}
+        response_vars = {col.split()[0] for col in df.columns if col.split()[0].endswith('_dat')}
+        print(f"Successfully read CSV file with {len(df.columns)} columns")
+        return response_vars
     except Exception as e:
         print(f"Warning: Could not read response file {filename}: {e}")
         return set()
 
-def check_data_usage_in_predictions(context: ValidationContext, data_vectors: Set[str], prediction_vectors: Set[str], loop_content: str):
+def check_data_usage_in_predictions(context: ValidationContext, data_vectors: Set[str], prediction_vectors: Set[str], loop_content: str, model_filename: str):
     """Check for inappropriate data vector usage in prediction calculations."""
     import os
     import json
@@ -136,11 +145,29 @@ def check_data_usage_in_predictions(context: ValidationContext, data_vectors: Se
     predicted_vars = set()
     
     # Get response variables from population_metadata.json
+    # The metadata file is two levels up from the model file
     try:
-        with open("population_metadata.json", 'r') as f:
+        # Get the directory of the model file
+        model_dir = os.path.dirname(os.path.abspath(model_filename))
+        # Go two levels up to find population_metadata.json
+        metadata_path = os.path.join(model_dir, '..', 'population_metadata.json')
+        # Normalize the path to handle different platforms
+        metadata_path = os.path.normpath(metadata_path)
+        
+        print(f"Looking for metadata file at: {metadata_path}")
+        
+        with open(metadata_path, 'r') as f:
             metadata = json.load(f)
             response_file = metadata.get("response_file")
             if response_file:
+                # Make response file path relative to metadata file location if it's not absolute
+                if not os.path.isabs(response_file):
+                    # The response file path should be relative to the root directory (three levels up from model)
+                    root_dir = os.path.join(model_dir, '..', '..', '..')
+                    root_dir = os.path.normpath(root_dir)
+                    response_file = os.path.join(root_dir, response_file)
+                    response_file = os.path.normpath(response_file)
+                
                 response_vars = get_response_variables_from_csv(response_file)
                 print(f"Found response variables from {response_file}: {response_vars}")
             else:
@@ -338,7 +365,7 @@ def validate_tmb_model(filename: str) -> List[str]:
     if loop_content:
         print(f"Found loop from line {loop_start} to {loop_end}")
         context.line_number = loop_start
-        check_data_usage_in_predictions(context, data_vectors, prediction_vectors, loop_content)
+        check_data_usage_in_predictions(context, data_vectors, prediction_vectors, loop_content, filename)
     else:
         print("No time-stepping loop found")
     

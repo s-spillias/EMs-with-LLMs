@@ -1,9 +1,13 @@
 from dotenv import load_dotenv
 load_dotenv()  # Load environment variables from .env file
 
-import os
-os.environ['TORCH_DEVICE'] = 'cuda'  # Explicitly set to use GPU
 
+import os
+import shutil
+import subprocess
+import time
+os.environ['TORCH_DEVICE'] = 'cuda'  # Explicitly set to use GPU
+import subprocess
 import json
 from typing import List
 from llama_index.core import (
@@ -19,10 +23,12 @@ from llama_index.core.node_parser import SentenceSplitter
 from llama_index.core.schema import IndexNode
 from llama_index.vector_stores.chroma import ChromaVectorStore
 from llama_index.llms.anthropic import Anthropic
-from llama_index.embeddings.azure_openai import AzureOpenAIEmbedding
-from llama_index.llms.groq import Groq
-from llama_index.llms.bedrock import Bedrock
-from llama_index.llms.gemini import Gemini
+# from llama_index.embeddings.azure_openai import AzureOpenAIEmbedding
+from llama_index.embeddings.ollama import OllamaEmbedding
+# from llama_index.llms.groq import Groq
+# from llama_index.llms.bedrock import Bedrock
+# from llama_index.llms.gemini import Gemini
+from llama_index.llms.ollama import Ollama
 import chromadb
 # from marker.converters.pdf import PdfConverter
 # from marker.models import create_model_dict
@@ -44,36 +50,259 @@ def get_model_choices_from_metadata(population_dir):
     
     return rag_choice, embed_choice
 
-def get_llm(llm_choice):
-    if llm_choice == "anthropic_sonnet":
+
+
+def _detect_ollama_bin(ollama_bin: str | None = None) -> str:
+    """
+    Decide which 'ollama' binary to use:
+      1) explicit param
+      2) OLLAMA_BIN env
+      3) known HPC path (if it exists)
+      4) 'ollama' from PATH
+    """
+    if ollama_bin and os.path.exists(ollama_bin):
+        return ollama_bin
+
+    env_bin = os.environ.get("OLLAMA_BIN")
+    if env_bin and os.path.exists(env_bin):
+        return env_bin
+
+    # Known HPC install (optional shortcut)
+    hpc_bin = "/scratch3/spi085/ollama/bin/ollama"
+    if os.path.exists(hpc_bin):
+        return hpc_bin
+
+    path_bin = shutil.which("ollama")
+    if path_bin:
+        return path_bin
+
+    raise FileNotFoundError(
+        "Could not find the 'ollama' binary. Install Ollama or set OLLAMA_BIN to its path."
+    )
+
+def _ensure_ollama_server(
+    base_url: str,
+    start_local_ollama: bool = True,
+    ollama_bin: str | None = None,
+    ollama_models_dir: str | None = None,
+    wait_seconds: float = 10.0,
+):
+    """
+    Ensures there's an Ollama server reachable at base_url.
+    If base_url points to localhost and start_local_ollama=True,
+    attempt to start a local server if 'ollama list' fails.
+    """
+    is_local = base_url.startswith("http://127.0.0.1") or base_url.startswith("http://localhost")
+    env = os.environ.copy()
+    if ollama_models_dir:
+        env["OLLAMA_MODELS"] = ollama_models_dir
+
+    def _list_ok() -> bool:
+        try:
+            bin_path = _detect_ollama_bin(ollama_bin)
+            subprocess.run(
+                [bin_path, "list"],
+                env=env,
+                check=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            return True
+        except (subprocess.CalledProcessError, FileNotFoundError):
+            return False
+
+    # If 'ollama list' works, a server is reachable; nothing to do.
+    if _list_ok():
+        return
+
+    # If we're targeting localhost and allowed to manage the server, try to start it.
+    if is_local and start_local_ollama:
+        bin_path = _detect_ollama_bin(ollama_bin)
+        subprocess.Popen(
+            [bin_path, "serve"],
+            env=env,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+
+        # Wait a bit for the server to come up.
+        deadline = time.time() + wait_seconds
+        while time.time() < deadline:
+            if _list_ok():
+                return
+            time.sleep(0.5)
+
+        raise RuntimeError(
+            f"Ollama server did not become ready within {wait_seconds}s at {base_url}."
+        )
+    else:
+        # Non-local or not managing the server here; let the client try to connect.
+        return
+
+def _maybe_pull_ollama_model(
+    model_name: str,
+    base_url: str,
+    ollama_bin: str | None = None,
+    ollama_models_dir: str | None = None,
+) -> None:
+    """
+    (Optional) For localhost only: if the model isn't present, try `ollama pull <model>`.
+    Skips remote hosts to avoid requiring a local binary.
+    """
+    if not _is_localhost(base_url):
+        return
+
+    env = os.environ.copy()
+    env["OLLAMA_HOST"] = base_url
+    if ollama_models_dir:
+        env["OLLAMA_MODELS"] = ollama_models_dir
+
+    bin_path = _detect_ollama_bin(ollama_bin)
+
+    # Check if model is available
+    show_ok = subprocess.run(
+        [bin_path, "show", model_name],
+        env=env,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    ).returncode == 0
+    if show_ok:
+        return
+
+    # Pull if missing
+    subprocess.run(
+        [bin_path, "pull", model_name],
+        env=env,
+        check=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.STDOUT,
+    )
+
+
+def get_rag_llm(
+    llm_choice: str,
+    *,
+    # Optional overrides for Ollama behavior
+    ollama_host: str | None = None,          # e.g., "http://localhost:11434" or "http://remote:11434"
+    ollama_bin: str | None = None,           # path to 'ollama' binary if not on PATH
+    ollama_models_dir: str | None = None,    # models dir; defaults to env or ~/.ollama (ollama default)
+    start_local_ollama: bool = True,         # whether to attempt starting 'ollama serve' when localhost
+    request_timeout: int | float = 120,      # applied to clients that support it
+    auto_pull_ollama_model: bool = False,    # auto-pull the model if missing (localhost only)
+):
+    """
+    Returns an LLM client for:
+      - "anthropic_sonnet", "anthropic_haiku", "groq", "bedrock", "gemini"
+      - "ollama:<model_name>"
+
+    Notes for Ollama:
+      * Set OLLAMA_HOST or pass `ollama_host` to target a remote server.
+      * Set OLLAMA_BIN or pass `ollama_bin` if the binary isn't on PATH.
+      * Set OLLAMA_MODELS or pass `ollama_models_dir` to control models dir.
+      * We only start/inspect/pull via local binary for localhost targets.
+    """
+    llm_choice = (llm_choice or "").strip()
+
+    if llm_choice == "anthropic_sonnet" or llm_choice == 'claude-3-5-haiku-20241022':
         return Anthropic(
             api_key=os.environ.get("ANTHROPIC_API_KEY"),
-            model="claude-3-5-sonnet-20240620"
+            model="claude-3-5-haiku-20241022"
         )
+
     elif llm_choice == "anthropic_haiku":
         return Anthropic(
             api_key=os.environ.get("ANTHROPIC_API_KEY"),
             model="claude-3-5-haiku-20240620"
         )
+
     elif llm_choice == "groq":
         return Groq(
             model="llama3-70b-8192",
             api_key=os.environ.get("GROQ_API_KEY")
         )
+
     elif llm_choice == "bedrock":
         return Bedrock(
             model="amazon.titan-text-express-v1",
             profile_name=os.environ.get("AWS_PROFILE")
         )
+
     elif llm_choice == "gemini":
         return Gemini(
             model="models/gemini-1.5-flash",
             api_key=os.environ.get("GOOGLE_API_KEY")
         )
+
+    elif llm_choice.startswith("ollama:"):
+        model_name = llm_choice.split(":", 1)[1].strip()
+        if not model_name:
+            raise ValueError("For Ollama, use 'ollama:<model_name>', e.g., 'ollama:llama3.1:8b'.")
+
+        base_url = (
+            ollama_host
+            or os.environ.get("OLLAMA_HOST")
+            or "http://127.0.0.1:11434"
+        )
+
+        resolved_models_dir = (
+            ollama_models_dir
+            or os.environ.get("OLLAMA_MODELS")
+            or None
+        )
+
+        # Ensure server is running if local; no-ops for remote hosts
+        _ensure_ollama_server(
+            base_url=base_url,
+            start_local_ollama=start_local_ollama,
+            ollama_bin=ollama_bin,
+            ollama_models_dir=resolved_models_dir,
+        )
+
+        # Optionally auto-pull model (localhost only)
+        if auto_pull_ollama_model:
+            _maybe_pull_ollama_model(
+                model_name=model_name,
+                base_url=base_url,
+                ollama_bin=ollama_bin,
+                ollama_models_dir=resolved_models_dir,
+            )
+
+        # Preserve your existing naming convention for the client
+        client_model_name = f"ollama_chat/{model_name}"
+
+        # If your Ollama class doesn't support base_url or request_timeout,
+        # remove those kwargs and rely on OLLAMA_HOST env instead.
+        return Ollama(
+            model=client_model_name,
+            base_url=base_url,
+            request_timeout=request_timeout,
+        )
+
     else:
         raise ValueError(f"Unsupported LLM (RAG) choice: {llm_choice}")
 
-def get_embed_model(embed_choice):
+
+def get_embed_model(
+    embed_choice: str,
+    *,
+    # Optional overrides for Ollama
+    ollama_host: str | None = None,          # e.g., "http://localhost:11434" or "http://remote:11434"
+    ollama_bin: str | None = None,           # path to 'ollama' binary if not on PATH
+    ollama_models_dir: str | None = None,    # models dir; defaults to env or ~/.ollama
+    start_local_ollama: bool = True,         # whether to attempt starting 'ollama serve' locally
+    embed_batch_size: int = 10,              # batch size for embeddings
+):
+    """
+    Returns an embedding model for 'azure', 'openai', or 'ollama:<model>'.
+    Works on both HPC and non-HPC machines.
+
+    Notes:
+    - For Ollama:
+        * Set OLLAMA_HOST or pass ollama_host to use a remote server.
+        * Set OLLAMA_BIN or pass ollama_bin to choose the binary.
+        * Set OLLAMA_MODELS or pass ollama_models_dir to choose models directory.
+        * We only try to start 'ollama serve' for localhost targets when allowed.
+    """
     if embed_choice == "azure":
         return AzureOpenAIEmbedding(
             deployment_name=os.environ.get("AZURE_OPENAI_EMBEDDINGS_DEPLOYMENT"),
@@ -82,10 +311,52 @@ def get_embed_model(embed_choice):
             azure_endpoint=os.environ.get("AZURE_OPENAI_ENDPOINT"),
             embed_batch_size=1,
         )
+
     elif embed_choice == "openai":
-        return OpenAIEmbedding(embed_batch_size=10)
+        return OpenAIEmbedding(embed_batch_size=embed_batch_size)
+
+    elif embed_choice.startswith("ollama:"):
+        embed_model_name = embed_choice.split(":", 1)[1].strip()
+        if not embed_model_name:
+            raise ValueError("For Ollama, use 'ollama:<model_name>', e.g., 'ollama:nomic-embed-text'.")
+
+        # Resolve base_url / host
+        base_url = (
+            ollama_host
+            or os.environ.get("OLLAMA_HOST")
+            or "http://127.0.0.1:11434"
+        )
+
+        # Resolve models dir (optional; do not force HPC path on non-HPC)
+        resolved_models_dir = (
+            ollama_models_dir
+            or os.environ.get("OLLAMA_MODELS")
+            or ("/scratch3/spi085/.ollama" if os.path.exists("/scratch3/spi085/.ollama") else None)
+        )
+
+        # Ensure server is up if local (no-ops for remote hosts)
+        _ensure_ollama_server(
+            base_url=base_url,
+            start_local_ollama=start_local_ollama,
+            ollama_bin=ollama_bin,
+            ollama_models_dir=resolved_models_dir,
+        )
+
+        # Keep your existing naming scheme for the embedding client.
+        # If your client expects the raw Ollama model name, change this to `embed_model_name`.
+        model_name_for_client = f"ollama_chat/{embed_model_name}"
+
+        # Construct the embedding client. If your library doesn't support `base_url`,
+        # remove it and rely on OLLAMA_HOST in the environment.
+        return OllamaEmbedding(
+            model_name=model_name_for_client,
+            base_url=base_url,
+            embed_batch_size=embed_batch_size,
+        )
+
     else:
         raise ValueError(f"Unsupported embedding model choice: {embed_choice}")
+
 
 def rag_setup(directory, population_dir):
     # Ensure the directory path is absolute
@@ -102,7 +373,7 @@ def rag_setup(directory, population_dir):
     chroma_collection = chroma_client.get_or_create_collection(os.path.basename(directory))
     
     # Set up LLM and embedding model
-    llm = get_llm(rag_choice)
+    llm = get_rag_llm(rag_choice)
     embed_model = get_embed_model(embed_choice)
 
     Settings.llm = llm

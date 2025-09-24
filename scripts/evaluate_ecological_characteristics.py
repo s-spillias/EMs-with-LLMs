@@ -81,7 +81,7 @@ Provide your response in JSON format:
 """
     
     # Get LLM response
-    response = ask_ai(prompt, ai_model='claude')
+    response = ask_ai(prompt, 'claude')
     
     try:
         # Extract JSON content between triple backticks if present

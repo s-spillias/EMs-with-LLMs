@@ -22,15 +22,30 @@ load_dotenv()
 # Set up logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-def initialize_population(population_dir, n_individuals, project_topic, response_file, forcing_file, report_file, temperature, max_sub_iterations, llm_choice, train_test_split):
-    logging.info("Initializing population")
+def initialize_population(population_dir, n_individuals, n_parallel, project_topic, response_file, forcing_file, report_file, temperature, max_sub_iterations, llm_choice, train_test_split):
+    print("Initializing population")
     initial_individuals = [generate_individual_id() for _ in range(n_individuals)]
-    logging.info(f"Initial individuals: {initial_individuals}")
+    print(f"Initial individuals: {initial_individuals}")
     
-    # Run make_model in parallel and save output to files
-    with multiprocessing.Pool(processes=n_individuals) as pool:
-        pool.starmap(run_make_model_with_file_output, 
-                     [(population_dir, individual, project_topic, response_file, forcing_file, report_file, temperature, max_sub_iterations, llm_choice, train_test_split) for individual in initial_individuals])
+    # Check if we should run sequentially or in parallel
+    if n_parallel <= 1:
+        print(f"Running sequentially (n_parallel={n_parallel})")
+        # Run sequentially
+        for individual in initial_individuals:
+            run_make_model_with_file_output(
+                population_dir, individual, project_topic, response_file, 
+                forcing_file, report_file, temperature, max_sub_iterations, 
+                llm_choice, train_test_split
+            )
+    else:
+        # Use the minimum of n_parallel and n_individuals for optimal resource usage
+        actual_processes = min(n_parallel, n_individuals)
+        print(f"Running in parallel with {actual_processes} processes")
+        
+        # Run in parallel
+        with multiprocessing.Pool(processes=actual_processes) as pool:
+            pool.starmap(run_make_model_with_file_output,
+                        [(population_dir, individual, project_topic, response_file, forcing_file, report_file, temperature, max_sub_iterations, llm_choice, train_test_split) for individual in initial_individuals])
     
     return initial_individuals
 
@@ -68,17 +83,35 @@ PARAM_SPECS = {
     'max_sub_iterations': {'type': int, 'min': 1},
     'convergence_threshold': {'type': float, 'min': 0.0},
     'n_individuals': {'type': int, 'min': 1},
+    'n_parallel': {'type': int, 'min': 1},
     'n_generations': {'type': int, 'min': 1},
     'llm_choice': {'type': str, 'choices': [
         'anthropic_sonnet', 'anthropic_haiku',"claude_4_sonnet",'o3', 'o3_mini','gpt_4.1','o4_mini','o1_mini', 'groq', 'bedrock',
         'gemini', 'gemini_2.0_flash','gemini_2.5_pro', 'gemini_2.5_pro_exp_03_25', 'claude_3_7_sonnet', 'gpt_4o',
         'DeepCoder_14B_Preview_GGUF',
         'ollama:deepseek-r1:latest', 'ollama:gemma:latest', 'ollama:devstral:latest',
-        'ollama:qwen3:30b-a3b', 'ollama:mistral:latest', 'ollama:qwen3:4b'
+        'ollama:qwen3:30b-a3b', 'ollama:mistral:latest', 'ollama:qwen3:4b','ollama:gpt-oss:latest','ollama:gpt-oss:120b','ollama:deepseek-r1:70b','ollama:qwen3:235b','openrouter:openai/gpt-5-chat','openrouter:openai/gpt-5'
     ]},
-    'rag_choice': {'type': str, 'choices': ['anthropic_sonnet', 'anthropic_haiku', 'groq', 'bedrock', 'gemini']},
-    'embed_choice': {'type': str, 'choices': ['azure', 'openai']},
-    'train_test_split': {'type': float, 'min': 0.0, 'max': 1.0, 'default': 1.0}
+    'rag_choice': {'type': str, 'choices': [
+        # Anthropic models
+        'claude-3-5-sonnet-20241022', 'claude-3-5-haiku-20241022', 'claude-3-opus-20240229',
+        'claude-sonnet-4-20250514', 'claude-3-7-sonnet-20250219',
+        # AWS Bedrock models
+        'anthropic.claude-3-5-sonnet-20240620-v1:0', 'anthropic.claude-3-haiku-20240307-v1:0',
+        # Google models
+        'gemini-2.5-pro', 'gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-1.5-pro', 'gemini-1.5-flash',
+        # Groq models
+        'llama-3.3-70b-versatile', 'llama-3.1-8b-instant', 'mixtral-8x7b-32768', 'gemma2-9b-it',
+        # OpenAI models
+        'o1-mini', 'gpt-4o', 'gpt-4o-mini',
+        # Ollama models (dynamic - these are examples)
+        'ollama:gpt-oss:120b', 'ollama:gpt-oss:latest', 'ollama:deepseek-r1:70b', 'ollama:qwen3:235b',
+        'ollama:deepseek-r1:latest', 'ollama:gemma:latest', 'ollama:devstral:latest', 'ollama:qwen3:30b-a3b',
+        'ollama:mistral:latest', 'ollama:qwen3:4b'
+    ]},
+    'embed_choice': {'type': str, 'choices': ['azure', 'openai','ollama:mxbai-embed-large:latest']},
+    'train_test_split': {'type': float, 'min': 0.0, 'max': 1.0, 'default': 1.0},
+    'doc_store_dir': {'type': str, 'is_path': True, 'optional': True}
 }
 
 def validate_config(config: Dict[str, Any]) -> None:
@@ -102,8 +135,8 @@ def validate_config(config: Dict[str, Any]) -> None:
         
         # Path validation
         if spec.get('is_path', False) and value is not None and value != "":
-            # Skip validation for optional parameters that are empty strings
-            if spec.get('optional', False) and value == "":
+            # Skip validation for optional parameters that are empty strings or None
+            if spec.get('optional', False) and (value == "" or value is None):
                 continue
             if not os.path.exists(value):
                 if not spec.get('optional', False):
@@ -138,7 +171,8 @@ def main():
     parser.add_argument('--llm-choice', type=str, help='LLM choice for model generation')
     parser.add_argument('--rag-choice', type=str, help='LLM choice for RAG operations')
     parser.add_argument('--embed-choice', type=str, help='Embedding model choice')
-    
+    parser.add_argument('--n-parallel', type=int, help='Number of parallel processes (>=1)')
+
     args = parser.parse_args()
 
     # Load and validate config file
@@ -161,6 +195,7 @@ def main():
         'max_sub_iterations': 'max_sub_iterations',
         'convergence_threshold': 'convergence_threshold',
         'n_individuals': 'n_individuals',
+        'n_parallel': 'n_parallel',
         'n_generations': 'n_generations',
         'llm_choice': 'llm_choice',
         'rag_choice': 'rag_choice',
@@ -189,11 +224,16 @@ def main():
     max_sub_iterations = config['max_sub_iterations']
     convergence_threshold = config['convergence_threshold']
     n_individuals = config['n_individuals']
+    n_parallel = config['n_parallel']
     n_best = n_individuals  # n_best always equals n_individuals
     n_generations = config['n_generations']
     llm_choice = config['llm_choice']
     rag_choice = config['rag_choice']
     embed_choice = config['embed_choice']
+    doc_store_dir = config.get('doc_store_dir')  # Can be None to disable RAG
+    # Treat empty string as None
+    if doc_store_dir == "":
+        doc_store_dir = None
     train_test_split = config.get('train_test_split', 1.0)  # Default to 1.0 if not specified
     resume_population = args.resume if args.resume else None
 
@@ -203,7 +243,7 @@ def main():
     create_data_report(response_file)  # Note: may need to update data_report.py to handle both files
     
     if resume_population:
-        logging.info(f"Resuming population {resume_population}")
+        print(f"Resuming population {resume_population}")
         population_dir = os.path.join('POPULATIONS', resume_population)
         if not os.path.exists(population_dir):
             raise ValueError(f"Population {resume_population} does not exist.")
@@ -230,6 +270,7 @@ def main():
         population_metadata = {
             "start_time": datetime.datetime.now().isoformat(),
             "n_individuals": n_individuals,
+            "n_parallel": n_parallel,
             "n_generations": n_generations,
             "n_best": n_best,
             "project_topic": project_topic,
@@ -243,6 +284,7 @@ def main():
             "llm_choice": llm_choice,
             "rag_choice": rag_choice,
             "embed_choice": embed_choice,
+            "doc_store_dir": doc_store_dir,
             "generations": [],
             "current_best_performers": []
         }
@@ -253,14 +295,17 @@ def main():
     # Save initial metadata
     save_metadata(os.path.join(population_dir, 'population_metadata.json'), population_metadata)
 
-    # Set up RAG index and LLM
-    doc_store_dir = 'doc_store'  # Assuming this is the directory containing your documents
-    index, llm = rag_setup(doc_store_dir, population_dir)
+    # Set up RAG index and LLM (only if doc_store_dir is provided)
+    if doc_store_dir is not None:
+        index, llm = rag_setup(doc_store_dir, population_dir)
+    else:
+        print("RAG disabled - doc_store_dir is None")
+        index, llm = None, None
 
     # Initialize population if there are no current best performers
     if not current_best_performers:
-        logging.info("Initializing population")
-        individuals = initialize_population(population_dir, n_individuals, project_topic, response_file, forcing_file, report_file, temperature, max_sub_iterations, llm_choice, train_test_split)
+        print("Initializing population")
+        individuals = initialize_population(population_dir, n_individuals, n_parallel, project_topic, response_file, forcing_file, report_file, temperature, max_sub_iterations, llm_choice, train_test_split)
         best_individuals, culled_individuals, broken_individuals = evolve_population(population_dir, individuals, n_best)
         
         # Move culled and broken individuals
@@ -292,9 +337,9 @@ def main():
         if current_best_performers:
             best_objective = current_best_performers[0].get('objective_value')
             if best_objective is not None:
-                logging.info(f"Initial best objective value: {best_objective}")
+                print(f"Initial best objective value: {best_objective}")
                 if best_objective < convergence_threshold:
-                    logging.info(f"\033[92mConvergence achieved in first generation. Best objective value: {best_objective}\033[0m")
+                    print(f"\033[92mConvergence achieved in first generation. Best objective value: {best_objective}\033[0m")
                     population_metadata["converged"] = True
                     population_metadata["convergence_generation"] = 1
                     population_metadata["end_time"] = datetime.datetime.now().isoformat()
@@ -303,17 +348,17 @@ def main():
                     save_metadata(os.path.join(population_dir, 'population_metadata.json'), population_metadata)
                     return
                 else:
-                    logging.info(f"\033[93mConvergence NOT YET. Initial best objective value: {best_objective}\033[0m")
+                    print(f"\033[93mConvergence NOT YET. Initial best objective value: {best_objective}\033[0m")
         
         start_generation = 1
 
     for generation in range(start_generation, n_generations):
-        logging.info(f"Starting Generation {generation + 1}")
+        print(f"Starting Generation {generation + 1}")
         time.sleep(0.1)
         
         # Create new generation
         new_individuals = create_new_generation(population_dir, [ind['individual'] for ind in current_best_performers], n_individuals, project_topic, response_file, forcing_file, report_file, temperature, max_sub_iterations, llm_choice, train_test_split)
-        logging.info(f"\033[93mCreated {len(new_individuals)} new individuals\033[0m")
+        print(f"\033[93mCreated {len(new_individuals)} new individuals\033[0m")
         
         if not new_individuals:
             logging.error("Failed to create new individuals. Stopping the algorithm.")
@@ -328,7 +373,7 @@ def main():
         all_individuals = new_individuals + [ind['individual'] for ind in current_best_performers]
         best_individuals, culled_individuals, broken_individuals = evolve_population(population_dir, all_individuals, n_best)
         
-        logging.info(f"Evolution results: {len(best_individuals)} best, {len(culled_individuals)} culled, {len(broken_individuals)} broken")
+        print(f"Evolution results: {len(best_individuals)} best, {len(culled_individuals)} culled, {len(broken_individuals)} broken")
         
         # Move broken and culled individuals
         for individual in broken_individuals:
@@ -365,15 +410,15 @@ def main():
             report_data = read_model_report(os.path.join(population_dir, best_individuals[0]))
             best_objective = float(report_data.get('objective_value')) if report_data.get('objective_value') is not None else None
             if best_objective is not None:
-                logging.info(f"Best objective value: {best_objective}")
+                print(f"Best objective value: {best_objective}")
                 if best_objective < convergence_threshold:
-                    logging.info(f"\033[92mConvergence achieved. Best objective value: {best_objective}\033[0m")
-                    logging.info("\033[92mGenetic algorithm completed.\033[0m")
+                    print(f"\033[92mConvergence achieved. Best objective value: {best_objective}\033[0m")
+                    print("\033[92mGenetic algorithm completed.\033[0m")
                     population_metadata["converged"] = True
                     population_metadata["convergence_generation"] = generation + 1  # +1 for the same reason as above
                     break
                 else:
-                    logging.info(f"\033[93mConvergence NOT YET. Best objective value: {best_objective}\033[0m")
+                    print(f"\033[93mConvergence NOT YET. Best objective value: {best_objective}\033[0m")
 
             else:
                 logging.warning("No valid objective value for the best individual")
@@ -381,9 +426,9 @@ def main():
     # Save final metadata
     if "converged" not in population_metadata:
         population_metadata["converged"] = False
-        logging.info("\033[91mMAXIMUM Generations Reached - Genetic algorithm completed.\033[0m")
+        print("\033[91mMAXIMUM Generations Reached - Genetic algorithm completed.\033[0m")
     else:
-        logging.info("CONVERGENCE Achieved - Genetic algorithm completed.")
+        print("CONVERGENCE Achieved - Genetic algorithm completed.")
     
     population_metadata["end_time"] = datetime.datetime.now().isoformat()
     population_metadata["total_runtime"] = (datetime.datetime.fromisoformat(population_metadata["end_time"]) - 

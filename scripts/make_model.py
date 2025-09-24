@@ -11,7 +11,7 @@ import io
 import subprocess
 import math
 from scripts.ask_AI import ask_ai
-from scripts.get_params import get_params
+from scripts.get_params import get_params,_resolve_model_name_from_rag_choice
 from scripts.run_model import run_model
 from scripts.model_report_handler import update_model_report, read_model_report
 from scripts.validate_tmb_model import validate_tmb_model
@@ -19,6 +19,8 @@ from dotenv import load_dotenv
 from aider.coders import Coder
 from aider.models import Model
 from aider.io import InputOutput
+import functools as _functools
+print = _functools.partial(print, flush=True)  # force-flush all prints in this module
 
 load_dotenv()
 # Set PYTHONIOENCODING to utf-8
@@ -28,85 +30,124 @@ os.environ['PYTHONIOENCODING'] = 'utf-8'
 
 def enhance_parameter_descriptions(individual_dir, project_topic):
     print("Enhancing parameter descriptions...")
+
     # Read the current parameters.json
     params_file = os.path.join(individual_dir, 'parameters.json')
     with open(params_file, 'r') as f:
         params_data = json.load(f)
-    
+
     # Read the model.cpp for additional context
     model_file = os.path.join(individual_dir, 'model.cpp')
     with open(model_file, 'r') as f:
         model_content = f.read()
-    
+
     # Create a list of current descriptions
     descriptions = []
     for param in params_data['parameters']:
-        # Check if enhanced_semantic_description exists and has content
+        # Skip if already enhanced
         if param.get('enhanced_semantic_description'):
             continue
         descriptions.append({
             'parameter': param['parameter'],
             'description': param['description'],
         })
-    
+
     # If all parameters already have enhanced descriptions, return
     if not descriptions:
         return
-    
-    # Create prompt for the LLM
-    prompt = f"""Given a mathematical model about {project_topic}, enhance the semantic descriptions of these parameters to be more detailed and searchable. 
-The model code shows these parameters are used in the following way:
 
+    # Create prompt for the LLM
+    prompt = f"""Given a mathematical model about {project_topic}, enhance the semantic descriptions of these parameters to be more detailed and searchable,
+AND also propose biologically reasonable numeric bounds when applicable.
+
+The model code shows these parameters are used in the following way:
 {model_content}
 
-For each parameter below, create an enhanced semantic search, no longer than 10 words, that can be used for RAG search or semantic scholar search.
+For each parameter below:
+- Create an 'enhanced_semantic_description' (≤ 10 words) suitable for RAG/semantic search.
+- Provide 'lower_bound' and 'upper_bound' as numbers when applicable (e.g., rates ≥ 0, proportions in [0,1], variances > 0, half-saturation constants > 0, mortality in [0, ∞), etc.). Use null if not applicable or unknown.
+- Ensure lower_bound < upper_bound when both are provided.
 
 Current parameter descriptions:
 {json.dumps(descriptions, indent=2)}
 
-Provide your response as a JSON array of objects with 'parameter' and 'enhanced_semantic_description' fields. Example format:
+Return a JSON array of objects with fields:
+- 'parameter'
+- 'enhanced_semantic_description'
+- 'lower_bound'  (number or null)
+- 'upper_bound'  (number or null)
+
+Example format:
 [
   {{
     "parameter": "example_param",
-    "enhanced_semantic_description": "Detailed description here..."
+    "enhanced_semantic_description": "Saturating resource uptake coefficient",
+    "lower_bound": 0.0,
+    "upper_bound": null
   }}
 ]
 """
+
     def extract_curly_braces(response):
+        # Try strict JSON first
         try:
-            # First try to parse as valid JSON
             return json.loads(response)
         except json.JSONDecodeError:
-            # If that fails, use regex to extract JSON objects
+            # Fallback: attempt to recover simple JSON objects via regex (best-effort)
             matches = re.findall(r'\{([^}]*)\}', response)
             json_objects = []
             for match in matches:
-                # Parse each extracted string into a JSON object
-                fields = re.findall(r'"(.*?)":\s*"(.*?)"', match)
+                fields = re.findall(r'"(.*?)"\s*:\s*"?(.*?)"?(?:,|$)', match)
                 json_object = {key: value for key, value in fields}
                 json_objects.append(json_object)
             return json_objects
 
     try:
-        # Look for population_metadata.json in the parent directory
+        # Look for population_metadata.json in the parent directory to pick LLM
         parent_dir = os.path.dirname(individual_dir)
-        with open(os.path.join(parent_dir,'population_metadata.json'), 'r') as file:
+        with open(os.path.join(parent_dir, 'population_metadata.json'), 'r') as file:
             rag_choice = json.load(file)['rag_choice']
-        llm_response = ask_ai(prompt, ai_model=rag_choice)
-        enhanced_descriptions = extract_curly_braces(llm_response)
         
-        # Update parameters.json with enhanced descriptions
+        llm_response = ask_ai(prompt, rag_choice)
+        enhanced_descriptions = extract_curly_braces(llm_response)
+
+        # Helper to coerce possible string -> float -> None
+        def to_number_or_none(v):
+            if v is None:
+                return None
+            if isinstance(v, (int, float)):
+                return float(v)
+            v_str = str(v).strip()
+            if v_str.lower() in ("", "na", "n/a", "null", "none"):
+                return None
+            try:
+                return float(v_str)
+            except Exception:
+                return None
+
+        # Update parameters.json with enhanced descriptions and bounds
         for param in params_data['parameters']:
             for enhanced in enhanced_descriptions:
-                if param['parameter'] == enhanced['parameter']:
-                    param['enhanced_semantic_description'] = enhanced['enhanced_semantic_description']
-        
+                if param['parameter'] == enhanced.get('parameter'):
+                    if 'enhanced_semantic_description' in enhanced:
+                        param['enhanced_semantic_description'] = enhanced['enhanced_semantic_description']
+
+                    lb = to_number_or_none(enhanced.get('lower_bound', None))
+                    ub = to_number_or_none(enhanced.get('upper_bound', None))
+
+                    # Only write if at least one bound is provided
+                    if lb is not None:
+                        param['lower_bound'] = lb
+                    if ub is not None:
+                        param['upper_bound'] = ub
+
         # Write updated parameters.json
         with open(params_file, 'w') as f:
             json.dump(params_data, f, indent=4)
-            
+
     except Exception as e:
         print(f"Error enhancing parameter descriptions: {e}")
+
 
 class AutoRespondInputOutput(InputOutput):
     def __init__(self, *args, **kwargs):
@@ -135,6 +176,7 @@ MULTIMODAL_LLMS = {
     "gemini_2.5_pro": True,
     "ollama:DeepCoder_14B_Preview_GGUF": False,
     'gemini_2.5_pro_exp_03_25': True,
+    'openrouter:openai/gpt-5-chat': False,
     # New Ollama models (all text-only)
     'ollama:deepseek-r1:latest': False,
     'ollama:gemma:latest': False,
@@ -184,10 +226,9 @@ def setup_coder(filenames, read_files, temperature=0.1, llm_choice="anthropic_so
         # Set environment variable and run ollama serve
         subprocess.run(['ollama', 'serve'], env={**os.environ, 'OLLAMA_CONTEXT_LENGTH': '8192'})
         model = Model(f"ollama_chat/{ollama_model_name}")
-    elif llm_choice == 'DeepCoder_14B_Preview_GGUF':
-        # Set environment variable and run ollama serve
-        subprocess.run(['ollama', 'serve'], env={**os.environ, 'OLLAMA_CONTEXT_LENGTH': '8192'})
-        model = Model("ollama_chat/hf.co/lmstudio-community/DeepCoder-14B-Preview-GGUF:Q4_K_M")
+    elif llm_choice.startswith('openrouter:'):
+        openrouter_model_name = llm_choice.split(':', 1)[1]
+        model = Model(f'openrouter/{openrouter_model_name}')
     else:
         raise ValueError(f"Unsupported LLM choice: {llm_choice}")
     
@@ -206,6 +247,7 @@ def setup_coder(filenames, read_files, temperature=0.1, llm_choice="anthropic_so
     else:
         coder.temperature = temperature
     coder.auto_commits = False
+    
     for file in read_files:
         coder.run(f"/read {file}")
     return coder
@@ -273,12 +315,13 @@ def improve_script(individual_dir, project_topic, temperature=0.05, llm_choice="
     improve_prompt += (
         "\nDocument your changes:\n"
         "1. Update intention.txt with your assessment and reasoning for the chosen improvement\n"
-        "2. If adding parameters to parameters.json, include clear ecological justification\n"
+        "2. If adding parameters to parameters.json, include clear ecological justification and, where biologically appropriate, include numeric 'lower_bound' and 'upper_bound' suggestions (use null if not applicable)\n"
         "3. In model.cpp, ensure mathematical representations are properly implemented\n\n"
         "IMPORTANT: Never use current time step values of response variables (variables ending in '_dat') "
         "in prediction calculations. Only use values from previous time steps to avoid data leakage.\n"
         "Do not attempt to add any more files to the chat or provide advice on compiling the model."
     )
+
 
     # Create a new coder object
     coder = setup_coder(filenames, read_files, temperature, llm_choice)
@@ -341,7 +384,7 @@ def process_individual(individual_dir, project_topic, response_file, forcing_fil
         #     with open(template_file, 'r') as file:
         #         template_content = file.read()
         random_string = generate_random_string()
-        prompt_model = (  
+        prompt_model = (
             "You are a leading expert in constructing dynamic ecosystem models. You always use robust ecological theory to construct your models, which will be used for predicting future ecosystem states given data on initial conditions. Please create a Template Model Builder model for the following topic:"
             f"{project_topic}. Start by writing intention.txt, in which you provide a concise summary of the ecological functioning of the model. In model.cpp, write your TMB model with the following important considerations:"
             "\n\n1. ECOLOGICAL PROCESSES:"
@@ -354,6 +397,7 @@ def process_individual(individual_dir, project_topic, response_file, forcing_fil
             "\n- Always use small constants (e.g., Type(1e-8)) to prevent division by zero"
             "\n- Use smooth transitions instead of hard cutoffs in equations"
             "\n- Bound parameters within biologically meaningful ranges using smooth penalties rather than hard constraints"
+            "\n  (and propose numeric lower/upper bounds per parameter when applicable; see parameters.json spec below)"
             "\n\n3. LIKELIHOOD CALCULATION:"
             "\n- Always include observations in the likelihood calculation, don't skip any based on conditions"
             "\n- Use fixed minimum standard deviations to prevent numerical issues when data values are small"
@@ -372,7 +416,9 @@ def process_individual(individual_dir, project_topic, response_file, forcing_fil
             "\n- source: Where the initial value comes from (e.g., 'literature', 'expert opinion', 'initial estimate')"
             "\n- import_type: Should be 'PARAMETER' for model parameters, or 'DATA_VECTOR'/'DATA_SCALAR' for data inputs"
             "\n- priority: A number indicating the optimization priority (1 for highest priority parameters to optimize first)"
-            "\nExample structure:"
+            "\n- lower_bound (optional): Suggested biological lower bound as a number, or null if not applicable"
+            "\n- upper_bound (optional): Suggested biological upper bound as a number, or null if not applicable"
+            "\n\nExample structure:"
             "\n{"
             "\n  \"parameters\": ["
             "\n    {"
@@ -381,11 +427,14 @@ def process_individual(individual_dir, project_topic, response_file, forcing_fil
             "\n      \"description\": \"Intrinsic growth rate (year^-1)\","
             "\n      \"source\": \"literature\","
             "\n      \"import_type\": \"PARAMETER\","
-            "\n      \"priority\": 1"
+            "\n      \"priority\": 1,"
+            "\n      \"lower_bound\": 0.0,"
+            "\n      \"upper_bound\": null"
             "\n    }"
             "\n  ]"
             "\n}"
-        )  
+        )
+
         print(prompt_model)
         filenames = [model_file, parm_file, intention_file]
         data_dict = data.to_dict()
@@ -498,7 +547,7 @@ def process_individual(individual_dir, project_topic, response_file, forcing_fil
 
         # If validation passes, run the model
         run_status, objective_value = run_model(individual_dir)
-
+        print("MODEL RUN COMPLETED")
         try:
             if objective_value is None:
                 raise ValueError("Objective value is None")
