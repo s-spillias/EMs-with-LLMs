@@ -66,7 +66,8 @@ Type objective_function<Type>::operator() () {
   REPORT(cots_pred);
   REPORT(fast_pred);
   REPORT(slow_pred);
-
+  REPORT(nll);
+  
   // Numbered Equations description:
   //   (1) Logistic growth with saturation.
   //   (2) Exponential decay for outbreak decline.
