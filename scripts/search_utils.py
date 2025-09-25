@@ -10,9 +10,101 @@ from bs4 import BeautifulSoup
 import requests
 from typing import Dict, List, Union
 import time
+import random
+import fcntl
+import tempfile
 
 from scripts.rag_utils import rag_setup, rag_query, rag_master_parameters
 from scripts.serper_search import enhanced_serper_search
+
+# File-based rate limiting for cross-process synchronization
+RATE_LIMIT_FILE = os.path.join(tempfile.gettempdir(), 'semantic_scholar_rate_limit.txt')
+
+def wait_for_rate_limit():
+    """
+    Ensure at least 1 second has passed since the last Semantic Scholar request
+    across all processes using file-based synchronization.
+    """
+    try:
+        # Create the rate limit file if it doesn't exist
+        if not os.path.exists(RATE_LIMIT_FILE):
+            with open(RATE_LIMIT_FILE, 'w') as f:
+                f.write('0')
+        
+        with open(RATE_LIMIT_FILE, 'r+') as f:
+            # Lock the file for exclusive access
+            fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+            
+            try:
+                last_request_time = float(f.read().strip() or '0')
+            except ValueError:
+                last_request_time = 0
+            
+            current_time = time.time()
+            time_since_last = current_time - last_request_time
+            
+            if time_since_last < 1.0:
+                sleep_time = 1.0 - time_since_last
+                print(f"Rate limiting: sleeping for {sleep_time:.2f} seconds")
+                time.sleep(sleep_time)
+                current_time = time.time()
+            
+            # Update the last request time
+            f.seek(0)
+            f.write(str(current_time))
+            f.truncate()
+            
+            # Release the lock
+            fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+            
+    except Exception as e:
+        print(f"Warning: Rate limiting failed: {e}. Falling back to basic sleep.")
+        time.sleep(1.0)
+
+def make_semantic_scholar_request_with_backoff(url, headers, params, max_retries=5):
+    """
+    Make a request to Semantic Scholar API with exponential backoff retry logic.
+    """
+    for attempt in range(max_retries):
+        try:
+            # Apply cross-process rate limiting
+            wait_for_rate_limit()
+            
+            response = requests.get(url, headers=headers, params=params, timeout=30)
+            
+            if response.status_code == 200:
+                return response
+            elif response.status_code == 429:  # Rate limited
+                # Exponential backoff with jitter
+                base_delay = 2 ** attempt
+                jitter = random.uniform(0, 1)
+                delay = base_delay + jitter
+                print(f"Rate limited (429). Retrying in {delay:.2f} seconds (attempt {attempt + 1}/{max_retries})")
+                time.sleep(delay)
+            elif response.status_code >= 500:  # Server error
+                # Exponential backoff for server errors
+                base_delay = 2 ** attempt
+                jitter = random.uniform(0, 1)
+                delay = base_delay + jitter
+                print(f"Server error ({response.status_code}). Retrying in {delay:.2f} seconds (attempt {attempt + 1}/{max_retries})")
+                time.sleep(delay)
+            else:
+                # For other errors, raise immediately
+                response.raise_for_status()
+                
+        except requests.exceptions.RequestException as e:
+            if attempt == max_retries - 1:
+                raise e
+            
+            # Exponential backoff for network errors
+            base_delay = 2 ** attempt
+            jitter = random.uniform(0, 1)
+            delay = base_delay + jitter
+            print(f"Network error: {e}. Retrying in {delay:.2f} seconds (attempt {attempt + 1}/{max_retries})")
+            time.sleep(delay)
+    
+    # If we get here, all retries failed
+    raise Exception(f"Failed to make request after {max_retries} attempts")
 
 def search_engine(query, engine="ddg", directory=None, population_dir=None):
     if engine == "ddg":
@@ -47,28 +139,34 @@ def search_for_papers(query, result_limit=20) -> Union[None, List[Dict]]:
     if not query:
         return None
     
-    rsp = requests.get(
-        "https://api.semanticscholar.org/graph/v1/paper/search",
-        headers={"X-API-KEY": os.environ.get('S2_API_KEY')},
-        params={
-            "query": query,
-            "limit": result_limit,
-            "fieldsOfStudy": ["Biology", "Mathematics", "Environmental Science"],
-            "fields": "title,abstract,venue,year,citationCount",
-        },
-    )
-    print(f"Response Status Code: {rsp.status_code}")
-    print(f"Enhanced query: {query}")
-    rsp.raise_for_status()
-    results = rsp.json()
-    total = results["total"]
-    print(f"Total results before filtering: {total}")
-    time.sleep(0.5)  # Rate limiting
-    if not total:
-        return None
+    try:
+        rsp = make_semantic_scholar_request_with_backoff(
+            "https://api.semanticscholar.org/graph/v1/paper/search",
+            headers={"X-API-KEY": os.environ.get('S2_API_KEY')},
+            params={
+                "query": query,
+                "limit": result_limit,
+                "fieldsOfStudy": ["Biology", "Mathematics", "Environmental Science"],
+                "fields": "title,abstract,venue,year,citationCount",
+            }
+        )
+        
+        print(f"Response Status Code: {rsp.status_code}")
+        print(f"Enhanced query: {query}")
+        
+        results = rsp.json()
+        total = results["total"]
+        print(f"Total results before filtering: {total}")
+        
+        if not total:
+            return None
 
-    papers = results["data"]
-    return papers
+        papers = results["data"]
+        return papers
+        
+    except Exception as e:
+        print(f"Error searching for papers: {e}")
+        return None
 
 def semantic_scholar_search(query):
     papers = search_for_papers(query, result_limit=20)

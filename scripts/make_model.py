@@ -31,10 +31,28 @@ os.environ['PYTHONIOENCODING'] = 'utf-8'
 def enhance_parameter_descriptions(individual_dir, project_topic):
     print("Enhancing parameter descriptions...")
 
-    # Read the current parameters.json
+    # Read the current parameters.json with error handling
     params_file = os.path.join(individual_dir, 'parameters.json')
-    with open(params_file, 'r') as f:
-        params_data = json.load(f)
+    try:
+        with open(params_file, 'r') as f:
+            content = f.read()
+        
+        # Try to parse JSON directly first
+        try:
+            params_data = json.loads(content)
+        except json.JSONDecodeError:
+            # If that fails, strip comments and try again
+            print("JSON parsing failed, removing comments...")
+            # Remove // comments and /* */ comments
+            content = re.sub(r'//.*$', '', content, flags=re.MULTILINE)
+            content = re.sub(r'/\*.*?\*/', '', content, flags=re.DOTALL)
+            params_data = json.loads(content)
+            print("Successfully parsed JSON after removing comments")
+            
+    except Exception as e:
+        print(f"Error reading parameters.json: {e}")
+        print("Skipping parameter enhancement due to JSON parsing issues")
+        return
 
     # Read the model.cpp for additional context
     model_file = os.path.join(individual_dir, 'model.cpp')
@@ -344,9 +362,23 @@ def handle_successful_run(individual_dir, project_topic, objective_value):
     """Handle common tasks after a successful model run."""
     print(f"Model run successful. Objective value: {objective_value}")
     update_model_report(individual_dir, {"status": "SUCCESS", "objective_value": objective_value})
-    print("Model ran successful and returned meaningful objective value... enhancing parameter descriptions.")
-    enhance_parameter_descriptions(individual_dir, project_topic)
-    get_params(individual_dir)
+    
+    try:
+        print("Model ran successful and returned meaningful objective value... enhancing parameter descriptions.")
+        enhance_parameter_descriptions(individual_dir, project_topic)
+        print("Parameter descriptions enhanced successfully.")
+        
+        print("Running parameter processing...")
+        get_params(individual_dir)
+        print("Parameter processing completed successfully.")
+        
+    except Exception as e:
+        print(f"FATAL ERROR in post-processing: {e}")
+        print("Terminating process to prevent hanging...")
+        import traceback
+        traceback.print_exc()
+        sys.exit(1)
+    
     return "SUCCESS", objective_value
 
 def process_individual(individual_dir, project_topic, response_file, forcing_file, report_file, temperature=0.1, max_sub_iterations=5, llm_choice="anthropic_sonnet", train_test_split=1.0):
@@ -413,7 +445,7 @@ def process_individual(individual_dir, project_topic, response_file, forcing_fil
             "\n- parameter: The name of the parameter matching the model.cpp"
             "\n- value: The initial value for the parameter"
             "\n- description: A clear description of what the parameter represents, including units"
-            "\n- source: Where the initial value comes from (e.g., 'literature', 'expert opinion', 'initial estimate')"
+            "\n- source: Where the initial value comes from. IMPORTANT: If the source contains the word 'literature', this will automatically trigger downstream literature searches using Semantic Scholar and other academic databases to find citations and refine parameter values. Use 'literature' only when you want the system to search for academic papers. Use 'initial estimate' for parameters that are unlikely to have reported values in the literature."
             "\n- import_type: Should be 'PARAMETER' for model parameters, or 'DATA_VECTOR'/'DATA_SCALAR' for data inputs"
             "\n- priority: A number indicating the optimization priority (1 for highest priority parameters to optimize first)"
             "\n- lower_bound (optional): Suggested biological lower bound as a number, or null if not applicable"
@@ -424,6 +456,7 @@ def process_individual(individual_dir, project_topic, response_file, forcing_fil
             "\n    {"
             "\n      \"parameter\": \"growth_rate\","
             "\n      \"value\": 0.5,"
+            "\n      \"units\": \"dimensionsless | year ^-1\","
             "\n      \"description\": \"Intrinsic growth rate (year^-1)\","
             "\n      \"source\": \"literature\","
             "\n      \"import_type\": \"PARAMETER\","

@@ -6,6 +6,9 @@ import os
 import shutil
 import subprocess
 import time
+import fcntl
+import tempfile
+from contextlib import contextmanager
 os.environ['TORCH_DEVICE'] = 'cuda'  # Explicitly set to use GPU
 import subprocess
 import json
@@ -36,6 +39,39 @@ import chromadb
 
 # Imports for embedding models
 from llama_index.embeddings.openai import OpenAIEmbedding
+
+@contextmanager
+def ollama_lock(timeout=300):
+    """
+    File-based lock to serialize access to Ollama server across multiple processes.
+    Uses fcntl for POSIX systems.
+    """
+    lock_file_path = os.path.join(tempfile.gettempdir(), "ollama_rag_lock")
+    
+    try:
+        # Create or open the lock file
+        lock_file = open(lock_file_path, 'w')
+        
+        # Try to acquire the lock with timeout
+        start_time = time.time()
+        while True:
+            try:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break  # Lock acquired
+            except IOError:
+                if time.time() - start_time > timeout:
+                    raise TimeoutError(f"Could not acquire Ollama lock within {timeout} seconds")
+                time.sleep(0.1)  # Wait a bit before retrying
+        
+        yield  # Execute the protected code
+        
+    finally:
+        # Release the lock
+        try:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+            lock_file.close()
+        except:
+            pass  # Ignore errors during cleanup
 
 def get_model_choices_from_metadata(population_dir):
     metadata_path = os.path.join(population_dir, 'population_metadata.json')
@@ -149,7 +185,7 @@ def _maybe_pull_ollama_model(
     (Optional) For localhost only: if the model isn't present, try `ollama pull <model>`.
     Skips remote hosts to avoid requiring a local binary.
     """
-    if not _is_localhost(base_url):
+    if not (base_url.startswith("http://127.0.0.1") or base_url.startswith("http://localhost")):
         return
 
     env = os.environ.copy()
@@ -342,9 +378,16 @@ def get_embed_model(
             ollama_models_dir=resolved_models_dir,
         )
 
-        # Keep your existing naming scheme for the embedding client.
-        # If your client expects the raw Ollama model name, change this to `embed_model_name`.
-        model_name_for_client = f"ollama_chat/{embed_model_name}"
+        # Use the raw model name for embeddings (no ollama/ prefix)
+        model_name_for_client = embed_model_name
+        
+        print(f"DEBUG: Creating OllamaEmbedding with:")
+        print(f"  model_name: '{model_name_for_client}'")
+        print(f"  base_url: '{base_url}'")
+        print(f"  embed_batch_size: {embed_batch_size}")
+        print(f"  current working directory: {os.getcwd()}")
+        print(f"  OLLAMA_HOST env var: {os.environ.get('OLLAMA_HOST', 'Not set')}")
+        print(f"  OLLAMA_MODELS env var: {os.environ.get('OLLAMA_MODELS', 'Not set')}")
 
         # Construct the embedding client. If your library doesn't support `base_url`,
         # remove it and rely on OLLAMA_HOST in the environment.
@@ -368,7 +411,17 @@ def rag_setup(directory, population_dir):
     # Get model choices from population_metadata.json
     rag_choice, embed_choice = get_model_choices_from_metadata(population_dir)
     
+    # Use file lock when accessing Ollama-based models
+    use_lock = (rag_choice and rag_choice.startswith("ollama:")) or (embed_choice and embed_choice.startswith("ollama:"))
     
+    if use_lock:
+        with ollama_lock():
+            return _rag_setup_internal(directory, population_dir, rag_choice, embed_choice)
+    else:
+        return _rag_setup_internal(directory, population_dir, rag_choice, embed_choice)
+
+def _rag_setup_internal(directory, population_dir, rag_choice, embed_choice):
+    """Internal RAG setup function that does the actual work."""
     chroma_client = chromadb.PersistentClient()
     chroma_collection = chroma_client.get_or_create_collection(os.path.basename(directory))
     
@@ -402,8 +455,20 @@ def load_existing_index(store, persist_dir, chroma_collection):
 
 def rag_query(query, doc_store, population_dir):
     # Get RAG LLM choice from population metadata
-    rag_choice, _ = get_model_choices_from_metadata(population_dir)
-    llm = get_llm(rag_choice)
+    rag_choice, embed_choice = get_model_choices_from_metadata(population_dir)
+    
+    # Use file lock when accessing Ollama-based models
+    use_lock = (rag_choice and rag_choice.startswith("ollama:")) or (embed_choice and embed_choice.startswith("ollama:"))
+    
+    if use_lock:
+        with ollama_lock():
+            return _rag_query_internal(query, doc_store, population_dir, rag_choice)
+    else:
+        return _rag_query_internal(query, doc_store, population_dir, rag_choice)
+
+def _rag_query_internal(query, doc_store, population_dir, rag_choice):
+    """Internal RAG query function that does the actual work."""
+    llm = get_rag_llm(rag_choice)
 
     # Get or create index
     chroma_client = chromadb.PersistentClient()
@@ -417,7 +482,32 @@ def rag_query(query, doc_store, population_dir):
     query_engine = index.as_query_engine(llm=llm)
     response = query_engine.query(query)
     out = response.response
-    citations = list(set(entry['file_name'] for entry in response.metadata.values()))
+    
+    # Extract citations more robustly
+    citations = []
+    try:
+        # Try different ways to extract citations from the response
+        if hasattr(response, 'source_nodes'):
+            # Extract from source nodes
+            for node in response.source_nodes:
+                if hasattr(node, 'metadata') and 'file_name' in node.metadata:
+                    citations.append(node.metadata['file_name'])
+                elif hasattr(node, 'node') and hasattr(node.node, 'metadata') and 'file_name' in node.node.metadata:
+                    citations.append(node.node.metadata['file_name'])
+        
+        # Fallback: try the original method
+        if not citations and hasattr(response, 'metadata') and response.metadata:
+            for entry in response.metadata.values():
+                if isinstance(entry, dict) and 'file_name' in entry:
+                    citations.append(entry['file_name'])
+        
+        # Remove duplicates and filter out empty citations
+        citations = list(set(citation for citation in citations if citation))
+        
+    except Exception as e:
+        print(f"Warning: Could not extract citations from RAG response: {e}")
+        citations = []
+    
     return [out], citations
 
 def get_or_create_index(store, persist_dir, chroma_collection):

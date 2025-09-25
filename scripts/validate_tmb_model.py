@@ -220,7 +220,12 @@ def check_data_usage_in_predictions(context: ValidationContext, data_vectors: Se
                 if pred in left_side and (
                     re.search(rf'{pred}\s*[\(\[]\s*[it]\s*[\)\]]', left_side) or  # (i) or [i]
                     re.search(rf'{pred}\s*[\(\[]\s*time\s*[\)\]]', left_side) or  # (time) or [time]
-                    re.search(rf'{pred}\s*[\(\[]\s*step\s*[\)\]]', left_side)     # (step) or [step]
+                    re.search(rf'{pred}\s*[\(\[]\s*step\s*[\)\]]', left_side) or  # (step) or [step]
+                    re.search(rf'{pred}\s*[\(\[]\s*[it]\s*\+\s*1\s*[\)\]]', left_side) or  # (i+1) or [i+1]
+                    re.search(rf'{pred}\s*[\(\[]\s*time\s*\+\s*1\s*[\)\]]', left_side) or  # (time+1) or [time+1]
+                    re.search(rf'{pred}\s*[\(\[]\s*step\s*\+\s*1\s*[\)\]]', left_side) or  # (step+1) or [step+1]
+                    re.search(rf'{pred}\s*[\(\[]\s*[it]\s*\+\s*\d+\s*[\)\]]', left_side) or  # (i+n) or [i+n]
+                    re.search(rf'{pred}\s*[\(\[]\s*\d+\s*[\)\]]', left_side)  # (0) or [0] for initial conditions
                 ):
                     current_prediction = pred
                     in_prediction = True
