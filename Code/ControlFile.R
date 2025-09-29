@@ -3,7 +3,14 @@ require(jsonlite)
 library(here)
 library(ggplot2)
 
-# ----------------------- BOUNDS HELPERS (HARDENED) -----------------------
+# -------------------- BOUNDS HELPERS (LIVE: parameters.json) --------------------
+# Parameters.json is the single source of truth for runtime modelling.
+# Use:
+#   - value          : starting values
+#   - lower_bound    : lower
+#   - upper_bound    : upper
+
+
 # Return a single numeric or NA_real_, regardless of input shape
 .safe_num_scalar <- function(x) {
   if (is.null(x)) {
@@ -12,7 +19,6 @@ library(ggplot2)
   if (length(x) == 0) {
     return(NA_real_)
   }
-  # take first element
   x1 <- x[[1]]
   if (is.null(x1)) {
     return(NA_real_)
@@ -27,38 +33,33 @@ library(ggplot2)
   val
 }
 
-
-# Pull a numeric bound for a base parameter name from params df
+# Pull a numeric bound for a base parameter name from params df or list
 .get_bound_for_param <- function(params_df, param_base, which = c("lower", "upper")) {
   which <- match.arg(which)
   col_primary <- if (which == "lower") "lower_bound" else "upper_bound"
-  col_literature <- if (which == "lower") "literature_lower_bound" else "literature_upper_bound"
 
-  # Locate the row once
-  idx <- match(param_base, params_df$parameter)
-  if (is.na(idx)) {
+  # Handle both dataframe and list formats
+  if (is.data.frame(params_df)) {
+    # Original dataframe format
+    idx <- match(param_base, params_df$parameter)
+    if (is.na(idx)) {
+      return(NA_real_)
+    }
+    prim_val <- if (col_primary %in% names(params_df)) .safe_num_scalar(params_df[[col_primary]][idx]) else NA_real_
+    prim_val
+  } else if (is.list(params_df)) {
+    # New list format - search through list of parameter objects
+    for (param_obj in params_df) {
+      if (!is.null(param_obj$parameter) && param_obj$parameter == param_base) {
+        bound_val <- param_obj[[col_primary]]
+        return(.safe_num_scalar(bound_val))
+      }
+    }
+    return(NA_real_)
+  } else {
     return(NA_real_)
   }
-
-  # Safely pull literature and primary values
-  lit_val <- if (col_literature %in% names(params_df)) .safe_num_scalar(params_df[[col_literature]][idx]) else NA_real_
-  prim_val <- if (col_primary %in% names(params_df)) .safe_num_scalar(params_df[[col_primary]][idx]) else NA_real_
-
-  # Prefer literature-derived bound if available; otherwise fall back to primary
-  if (!is.na(lit_val)) {
-    # Optional: log when literature overrides a conflicting primary bound
-    if (!is.na(prim_val) && !isTRUE(all.equal(lit_val, prim_val))) {
-      message(sprintf(
-        "INFO: Using literature %s bound for %s (overrode primary %s).",
-        which, param_base, format(prim_val, digits = 6)
-      ))
-    }
-    return(lit_val)
-  }
-
-  return(prim_val)
 }
-
 
 # Build lower/upper vectors aligned to names(model$par)
 build_bounds_vectors <- function(model_par_names, params_df) {
@@ -67,7 +68,9 @@ build_bounds_vectors <- function(model_par_names, params_df) {
   upper <- rep(Inf, n)
 
   for (i in seq_len(n)) {
-    base <- sub("\\[.*\\]$", "", model_par_names[i]) # handle vector elements like "beta[3]"
+    # handle vector elements like "beta[3]" by stripping trailing bracket
+    base <- sub("\\[.*\\]$", "", model_par_names[i])
+
     lb <- .get_bound_for_param(params_df, base, "lower")
     ub <- .get_bound_for_param(params_df, base, "upper")
 
@@ -77,7 +80,7 @@ build_bounds_vectors <- function(model_par_names, params_df) {
         tmp <- lb
         lb <- ub
         ub <- tmp
-        message(sprintf("INFO: Swapped bounds for %s as lower>upper in JSON.", base))
+        message(sprintf("INFO: Swapped bounds for %s as lower>upper in parameters.json.", base))
       }
       if (lb == ub) {
         eps <- max(1e-12, abs(lb) * 1e-9)
@@ -90,9 +93,9 @@ build_bounds_vectors <- function(model_par_names, params_df) {
     if (!is.na(ub)) upper[i] <- ub
   }
 
-  # Never return NA in bounds vectors; guarantee +/-Inf as defaults
-  lower[!is.finite(lower) & is.na(lower)] <- -Inf
-  upper[!is.finite(upper) & is.na(upper)] <- Inf
+  # Ensure no NA survive in bound vectors; defaults are +/-Inf
+  lower[is.na(lower)] <- -Inf
+  upper[is.na(upper)] <- Inf
 
   list(lower = lower, upper = upper)
 }
@@ -125,7 +128,6 @@ apply_bounds_to_start <- function(par_vec, lower, upper) {
   # Robust clamping (ignore NA/Inf comparisons)
   too_low <- (clamped < lower) & is.finite(lower)
   too_high <- (clamped > upper) & is.finite(upper)
-
   idx_low <- which(too_low)
   idx_high <- which(too_high)
 
@@ -146,7 +148,8 @@ apply_bounds_to_start <- function(par_vec, lower, upper) {
 
   clamped
 }
-# --------------------- END BOUNDS HELPERS (HARDENED) ---------------------
+# ------------------ END BOUNDS HELPERS (LIVE: parameters.json) ------------------
+
 
 
 # Function to read existing report or create new structure
@@ -330,15 +333,16 @@ data_in <- list()
 parameters <- list()
 for (i in which(params$import_type == "PARAMETER")) {
   nm <- params$parameter[i]
-  v <- params$found_value[[i]]
-  if (is.null(v) || is.na(v)) v <- params$value[[i]]
+  # Primary: use JSON 'value' for modeling starts
+  v <- params$value[[i]]
+  # Fallback: model-level default if missing
   if (is.null(v) || is.na(v)) v <- param_default(nm)
   parameters[[nm]] <- as.numeric(v)
 }
-
 cat("\nPARAMETER starts (first few):\n")
 print(utils::head(setNames(unlist(parameters), names(parameters)), 12))
 # ================== END BUILD 'parameters' LIST ==================
+
 
 
 # Add time variable if needed
@@ -470,19 +474,108 @@ tryCatch({
 
 cat("All phases completed\n")
 
-# Get and save optimized parameters
+# Get final optimized parameters from the model
 final_params <- model$env$parList(fit$par)
-optimized_params <- params  # Keep original structure
+
+# --- SAFE WRITEBACK OF OPTIMIZED VALUES (gated by parameters.json) ---
+meta_path <- file.path(individual_dir, "parameters_metadata.json")
+
+# Load or create metadata structure
+metadata <- tryCatch(
+  {
+    if (file.exists(meta_path)) {
+      existing_data <- jsonlite::fromJSON(meta_path, simplifyVector = FALSE)
+      if (is.null(existing_data$parameters)) existing_data$parameters <- list()
+      existing_data
+    } else {
+      list(parameters = list())
+    }
+  },
+  error = function(e) {
+    cat(
+      "Warning: Could not read existing parameters_metadata.json, creating new structure:",
+      conditionMessage(e), "\n"
+    )
+    list(parameters = list())
+  }
+)
+
+# Canonicalize names: strip vector indices and lowercase
+.base_name <- function(x) sub("\\[.*\\]$", "", x)
+.canon <- function(x) tolower(.base_name(x))
+
+# Allowed parameter set comes from parameters.json (source of truth)
+allowed <- .canon(params$parameter[params$import_type == "PARAMETER"])
+
+# Fast access to params rows by canonical name (to seed new entries)
+params_row_by_name <- split(seq_len(nrow(params)), .canon(params$parameter))
+
+# Build existing metadata name -> index map (as a LIST; drop NA/empty names)
+existing_names <- vapply(
+  metadata$parameters,
+  function(x) if (!is.null(x$parameter)) .canon(x$parameter) else NA_character_,
+  FUN.VALUE = character(1)
+)
+valid_idx <- which(!is.na(existing_names) & nzchar(existing_names))
+name_to_idx <- as.list(valid_idx) # values are indices into metadata$parameters
+names(name_to_idx) <- existing_names[valid_idx] # names are canonical parameter names
+
+# Iterate over final optimized parameters from TMB
 for (param_name in names(final_params)) {
-  idx <- which(optimized_params$parameter == param_name)
-  if (length(idx) > 0) {
-    optimized_params$found_value[idx] <- final_params[[param_name]]
+  base <- .base_name(param_name)
+  cbase <- .canon(base)
+  val_num <- as.numeric(final_params[[param_name]])
+
+  # Only write for parameters declared in parameters.json as PARAMETER
+  if (!(cbase %in% allowed)) {
+    message(sprintf(
+      "INFO: Skipping writeback for '%s' (not present in parameters.json as PARAMETER).",
+      base
+    ))
+    next
+  }
+
+  # Lookup existing entry safely from the LIST map
+  idx <- name_to_idx[[cbase]]
+  if (!is.null(idx)) {
+    idx <- as.integer(idx)
+    # Update existing entry (preserve other fields)
+    metadata$parameters[[idx]]$optimized_value <- val_num
+    if (is.null(metadata$parameters[[idx]]$parameter)) {
+      metadata$parameters[[idx]]$parameter <- base
+    }
+  } else {
+    # Append new entry, seeded from parameters.json row (conservative add)
+    row_i <- params_row_by_name[[cbase]][1]
+    new_entry <- list(
+      parameter        = base,
+      optimized_value  = val_num,
+      source           = params$source[[row_i]],
+      description      = if ("description" %in% names(params)) params$description[[row_i]] else NULL,
+      import_type      = params$import_type[[row_i]],
+      created_by       = "ControlFile.R",
+      created_at       = as.character(Sys.time())
+    )
+    metadata$parameters <- c(metadata$parameters, list(new_entry))
+    # refresh index map for future iterations
+    name_to_idx[[cbase]] <- length(metadata$parameters)
   }
 }
 
-# Save optimized parameters
-write(toJSON(optimized_params, auto_unbox = TRUE, pretty = TRUE), 
-      file.path(individual_dir, 'optimized_parameters.json'))
+# Persist metadata (do not stop the run if write fails)
+tryCatch(
+  {
+    write(jsonlite::toJSON(metadata, auto_unbox = TRUE, pretty = TRUE), meta_path)
+    cat("Successfully updated parameters_metadata.json with optimized values\n")
+  },
+  error = function(e) {
+    cat("Error writing parameters_metadata.json:", conditionMessage(e), "\n")
+  }
+)
+# --- END SAFE WRITEBACK ---
+
+
+
 
 # Extract results
 report <- model$report()

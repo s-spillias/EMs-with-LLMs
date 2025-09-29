@@ -441,6 +441,7 @@ def process_individual(individual_dir, project_topic, response_file, forcing_fil
             "\n- Ensure all _pred variables are included in the reporting section and called using REPORT()"
             "\n- Use '_pred' suffix for model predictions corresponding to '_dat' observations. Use the same _dat names as are found in the data file. Use the exact same time variable name as is provided in the first column of the datafile."
             "\n- IMPORTANT: Never use current time step values of response variables (variables ending in '_dat') in prediction calculations. Only use values from previous time steps to avoid data leakage."
+            "\n- INITIAL CONDITIONS: Initialize your prediction vectors with the first data point using **name**_dat(0). For example: var1_pred(0) = var1_dat(0); var2_pred(0) = var2_dat(0); var3_pred(0) = var3_dat(0). This ensures initial conditions are drawn directly from the observed data rather than being optimization parameters."
             "\n\nFor the parameters.json file, please structure it as an array of parameter objects, where each parameter object must include the following fields:"
             "\n- parameter: The name of the parameter matching the model.cpp"
             "\n- value: The initial value for the parameter"
