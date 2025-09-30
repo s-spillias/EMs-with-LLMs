@@ -238,12 +238,34 @@ def setup_coder(filenames, read_files, temperature=0.1, llm_choice="anthropic_so
         model = Model('gemini/gemini-2.5-pro-exp-03-25')
     elif llm_choice == "gpt_4o":
         model = Model('gpt-4o')
+    # --- in make_model.setup_coder() ---
     elif llm_choice.startswith('ollama:'):
-        # Extract the model name from the llm_choice (format: "ollama:model_name")
         ollama_model_name = llm_choice.split(':', 1)[1]
-        # Set environment variable and run ollama serve
-        subprocess.run(['ollama', 'serve'], env={**os.environ, 'OLLAMA_CONTEXT_LENGTH': '8192'})
+
+        # Start 'ollama serve' if it's not already running (non-blocking)
+        def _ollama_up():
+            try:
+                # Cheap check: see if the process is already listening on default port
+                # You can replace this with a healthcheck call if your environment allows network.
+                import socket
+                with socket.create_connection(("127.0.0.1", 11434), timeout=0.5):
+                    return True
+            except Exception:
+                return False
+
+        if not _ollama_up():
+            import subprocess, os
+            subprocess.Popen(
+                ['ollama', 'serve'],
+                env={**os.environ, 'OLLAMA_CONTEXT_LENGTH': '8192'},
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            # Optional: small delay to let it come up
+            import time; time.sleep(0.5)
+
         model = Model(f"ollama_chat/{ollama_model_name}")
+
     elif llm_choice.startswith('openrouter:'):
         openrouter_model_name = llm_choice.split(':', 1)[1]
         model = Model(f'openrouter/{openrouter_model_name}')
@@ -258,6 +280,8 @@ def setup_coder(filenames, read_files, temperature=0.1, llm_choice="anthropic_so
     
     coder.repo_map = False
     coder.use_git = False
+    coder.no_git = True
+    coder.no_auto_commits = True
     if llm_choice == "o3_mini" or llm_choice == "o4_mini":
         coder.weak_model_name = 'gpt-4o-mini'
         coder.use_repo_map = False
@@ -313,6 +337,11 @@ def improve_script(individual_dir, project_topic, temperature=0.05, llm_choice="
         "1. Evaluate how well the model fits the data\n"
         "2. Analyze if the model effectively addresses the PROJECT CONTEXT\n"
         "3. Identify any key ecological processes that may be missing or oversimplified\n\n"
+        "Additionally, review the current parameter values."
+        "Be on the lookout for parameters that were initially placeholders but now have updated values "
+        "from literature searches or other evidence. If these updated values suggest that the original "
+        "equation structure is no longer appropriate (e.g., scaling, functional form, or interaction strength), "
+        "propose modifications to the relevant equation components to maintain ecological realism.\n\n"
         "Based on your assessment, consider ONE meaningful ecological improvement, exploring these approaches:\n"
         "- Higher-order mathematical representations (e.g., polynomial terms, non-linear responses)\n"
         "- Resource limitation mechanisms (e.g., saturating uptake, competition effects)\n"
@@ -333,12 +362,13 @@ def improve_script(individual_dir, project_topic, temperature=0.05, llm_choice="
     improve_prompt += (
         "\nDocument your changes:\n"
         "1. Update intention.txt with your assessment and reasoning for the chosen improvement\n"
-        "2. If adding parameters to parameters.json, include clear ecological justification and, where biologically appropriate, include numeric 'lower_bound' and 'upper_bound' suggestions (use null if not applicable)\n"
-        "3. In model.cpp, ensure mathematical representations are properly implemented\n\n"
+        "2. If adding or modifying parameters in parameters.json, include clear ecological justification and, where biologically appropriate, include numeric 'lower_bound' and 'upper_bound' suggestions (use null if not applicable)\n"
+        "3. In model.cpp, ensure mathematical representations are properly implemented and reflect any structural changes required by updated parameter values\n\n"
         "IMPORTANT: Never use current time step values of response variables (variables ending in '_dat') "
         "in prediction calculations. Only use values from previous time steps to avoid data leakage.\n"
         "Do not attempt to add any more files to the chat or provide advice on compiling the model."
     )
+
 
 
     # Create a new coder object
@@ -359,27 +389,59 @@ def generate_random_string(length=10):
     return ''.join(random.choices(string.ascii_letters + string.digits, k=length))
 
 def handle_successful_run(individual_dir, project_topic, objective_value):
-    """Handle common tasks after a successful model run."""
+    """Handle common tasks after a successful model run, then do a final run after get_params()."""
     print(f"Model run successful. Objective value: {objective_value}")
     update_model_report(individual_dir, {"status": "SUCCESS", "objective_value": objective_value})
-    
+
     try:
         print("Model ran successful and returned meaningful objective value... enhancing parameter descriptions.")
         enhance_parameter_descriptions(individual_dir, project_topic)
         print("Parameter descriptions enhanced successfully.")
-        
+
         print("Running parameter processing...")
         get_params(individual_dir)
         print("Parameter processing completed successfully.")
-        
+
+        # --- NEW: final model run after get_params() ---
+        print("Re-running model after parameter processing...")
+        final_status, final_objective_value = run_model(individual_dir)
+        print("FINAL MODEL RUN FINISHED")
+
+        try:
+            if final_objective_value is None:
+                raise ValueError("Final objective value is None")
+            final_objective_value = float(final_objective_value)
+            if math.isnan(final_objective_value):
+                raise ValueError("Final objective value is NaN")
+
+            # Update the report with the final objective and return the final value
+            update_model_report(
+                individual_dir,
+                {"status": "SUCCESS", "objective_value": final_objective_value}
+            )
+            print(f"Final model run successful. Objective value: {final_objective_value}")
+            objective_value = final_objective_value
+        except Exception as e:
+            # Keep initial objective if the final run doesn't yield a valid objective
+            print(f"Final run after get_params failed or returned invalid objective value: {e}")
+            update_model_report(
+                individual_dir,
+                {
+                    "status": "SUCCESS_PARTIAL",
+                    "message": "Final run after get_params failed; keeping initial objective value",
+                    "objective_value": objective_value,
+                },
+            )
+
     except Exception as e:
         print(f"FATAL ERROR in post-processing: {e}")
         print("Terminating process to prevent hanging...")
         import traceback
         traceback.print_exc()
         sys.exit(1)
-    
+
     return "SUCCESS", objective_value
+
 
 def process_individual(individual_dir, project_topic, response_file, forcing_file, report_file, temperature=0.1, max_sub_iterations=5, llm_choice="anthropic_sonnet", train_test_split=1.0):
     os.makedirs(individual_dir, exist_ok=True)

@@ -276,6 +276,20 @@ class Config:
             input_cost_per_million=0.15,
             output_cost_per_million=0.60
         ),
+        'gpt-5-mini': ModelConfig(
+            provider='openai',
+            model_name='gpt-5-mini',
+            max_tokens_limit=128000,
+            input_cost_per_million=0.25,
+            output_cost_per_million=2.0
+        ),
+        'gpt-4.1-mini': ModelConfig(
+            provider='openai',
+            model_name='gpt-4.1-mini',
+            max_tokens_limit=128000,
+            input_cost_per_million=0.40,
+            output_cost_per_million=1.60
+        ),
     }
 
 
