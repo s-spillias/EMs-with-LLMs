@@ -30,6 +30,14 @@ def _get_env_int(name: str, default: int) -> int:
         return int(os.getenv(name, default))
     except Exception:
         return default
+def _num_equal(a, b, rel=1e-9, abs_=1e-12):
+    """Return True if numbers a and b are approximately equal. None never equals anything."""
+    a_num = _to_number_or_none(a)
+    b_num = _to_number_or_none(b)
+    if a_num is None or b_num is None:
+        return False
+    return abs(a_num - b_num) <= max(abs_, rel * max(abs(a_num), abs(b_num)))
+
 
 SEARCH_TIMEOUT = _get_env_float("GET_PARAMS_SEARCH_TIMEOUT", 45.0)      # seconds per search call
 LLM_TIMEOUT    = _get_env_float("GET_PARAMS_LLM_TIMEOUT", 90.0)         # seconds per ask_ai call
@@ -523,21 +531,36 @@ def _finalize_value_and_bounds_for_runtime(
 ) -> Dict[str, Any]:
     """
     Build the minimal record to write back to parameters.json.
-    Rule:
+
+    Rules:
     - If found_* bounds exist, they OVERWRITE runtime bounds (after normalization).
     - If only one found bound is present, combine with the other existing bound then normalize.
     - If no found bounds, keep existing and normalize if needed.
     - 'value' becomes found_value if available; otherwise keep existing value.
+    - NEW:
+      * 'updated_from_literature' is True iff any of value/lower/upper was updated because
+        of a found_* input (not due to normalization alone).
+      * 'updated_fields_from_literature' lists exactly which of ["value","lower_bound","upper_bound"]
+        changed due to literature updates.
     """
     runtime = dict(base_param)
 
-    # VALUE
-    if found_val is not None:
-        runtime["value"] = found_val
+    # --- Previous values for change detection ---
+    prev_value = runtime.get("value")
+    prev_lb_raw = runtime.get("lower_bound")
+    prev_ub_raw = runtime.get("upper_bound")
 
-    # BOUNDS
+    prev_lb = _to_number_or_none(prev_lb_raw)
+    prev_ub = _to_number_or_none(prev_ub_raw)
+
+    # --- VALUE ---
+    if found_val is not None:
+        runtime["value"] = float(found_val)
+
+    # --- BOUNDS (normalize after combining with found_*) ---
     curr_lb = _to_number_or_none(runtime.get("lower_bound"))
     curr_ub = _to_number_or_none(runtime.get("upper_bound"))
+
     cand_lb = found_lb if found_lb is not None else curr_lb
     cand_ub = found_ub if found_ub is not None else curr_ub
     norm_lb, norm_ub, _ = _normalize_bounds(cand_lb, cand_ub)
@@ -546,17 +569,41 @@ def _finalize_value_and_bounds_for_runtime(
         runtime["lower_bound"] = norm_lb
     else:
         runtime.pop("lower_bound", None)
+
     if norm_ub is not None:
         runtime["upper_bound"] = norm_ub
     else:
         runtime.pop("upper_bound", None)
 
-    # Strip metadata-ish fields
+    # --- UPDATED FLAGS/LISTS (strictly due to literature inputs) ---
+    fields_changed: List[str] = []
+
+    if found_val is not None and (not _num_equal(prev_value, found_val)):
+        fields_changed.append("value")
+
+    # Only mark bound changes if the *found* bound existed (i.e., literature influenced it)
+    new_lb = _to_number_or_none(runtime.get("lower_bound"))
+    new_ub = _to_number_or_none(runtime.get("upper_bound"))
+
+    if found_lb is not None:
+        # Case: bound removed (prev existed but normalized is None) or changed numerically
+        if (new_lb is None and prev_lb is not None) or (new_lb is not None and not _num_equal(prev_lb, new_lb)):
+            fields_changed.append("lower_bound")
+
+    if found_ub is not None:
+        if (new_ub is None and prev_ub is not None) or (new_ub is not None and not _num_equal(prev_ub, new_ub)):
+            fields_changed.append("upper_bound")
+
+    runtime["updated_from_literature"] = bool(fields_changed)
+    runtime["updated_fields_from_literature"] = fields_changed
+
+    # --- Strip metadata-ish fields (keep the new audit fields) ---
     for k in list(runtime.keys()):
         if k.startswith("found_") or k.startswith("llm_") or k.startswith("literature_") or k in {
             "citations", "all_citations", "raw_llm_response", "processed"
         }:
             runtime.pop(k, None)
+
     return runtime
 
 # -----------------------------------------------------------------------------
@@ -729,7 +776,15 @@ def get_params(directory_path):
                     "citations", "all_citations", "raw_llm_response", "processed"
                 }:
                     param_copy.pop(k, None)
+
+            # Ensure audit fields are present:
+            if "updated_from_literature" not in param_copy:
+                param_copy["updated_from_literature"] = False
+            if "updated_fields_from_literature" not in param_copy:
+                param_copy["updated_fields_from_literature"] = []
+
             params_out.append(param_copy)
+
 
     # Save minimal parameters.json (atomic)
     _atomic_write_json(params_file, {"parameters": params_out})

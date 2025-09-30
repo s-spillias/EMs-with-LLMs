@@ -101,7 +101,7 @@ def run_model(individual_dir, test_args=None):
     timestamp = int(time.time())
 
     cmd = [
-        "Rscript", "--vanilla", "./Code/ControlFile.R",
+        "Rscript", "--vanilla", "./scripts/ControlFile.R",
         "--model_location", f"{individual_dir_fslash}",
         "--timestamp", str(timestamp),
     ]
