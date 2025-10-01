@@ -6,7 +6,7 @@ suppressPackageStartupMessages({
 })
 
 # Paths
-model_dir <- "POPULATIONS/POPULATION_0004/INDIVIDUAL_3AWGFWMY"
+model_dir <- "POPULATIONS/POPULATION_0004/INDIVIDUAL_797ZXV4L"
 model_cpp <- file.path(model_dir, "model.cpp")
 params_json <- file.path(model_dir, "parameters.json")
 resp_csv <- "Data/timeseries_data_COTS_response.csv"
@@ -57,9 +57,12 @@ Data <- list(
 
 # Load parameters from JSON
 pj <- fromJSON(params_json)
-param_names <- vapply(pj$parameters, function(x) x$parameter, character(1))
-param_values <- vapply(pj$parameters, function(x) x$value, numeric(1))
-Parameters <- as.list(stats::setNames(param_values, param_names))
+if (is.null(pj$parameters)) stop("parameters.json missing 'parameters' array")
+par_df <- as.data.frame(pj$parameters, stringsAsFactors = FALSE)
+
+# Build named parameter list for TMB
+Parameters <- as.list(par_df$value)
+names(Parameters) <- par_df$parameter
 
 # Compile and load TMB model
 compile(model_cpp)
