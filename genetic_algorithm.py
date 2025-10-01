@@ -151,7 +151,8 @@ PARAM_SPECS = {
     ]},
     'embed_choice': {'type': str, 'choices': ['azure', 'openai', 'ollama:mxbai-embed-large:latest']},
     'train_test_split': {'type': float, 'min': 0.0, 'max': 1.0, 'default': 1.0},
-    'doc_store_dir': {'type': str, 'is_path': True, 'optional': True}
+    'doc_store_dir': {'type': str, 'is_path': True, 'optional': True},
+    'rag_search_engines': {'type': list, 'optional': True}
 }
 
 
@@ -271,6 +272,8 @@ def main():
     if doc_store_dir == "":
         doc_store_dir = None
     train_test_split = config.get('train_test_split', 1.0)  # Default to 1.0 if not specified
+    # Get RAG search engines with default of all three if not specified
+    rag_search_engines = config.get('rag_search_engines', ["semantic_scholar", "serper", "rag"])
     resume_population = args.resume if args.resume else None
 
     # Create data report before initializing population
@@ -327,6 +330,7 @@ def main():
             "rag_choice": rag_choice,
             "embed_choice": embed_choice,
             "doc_store_dir": doc_store_dir,
+            "rag_search_engines": rag_search_engines,
             "generations": [],
             "current_best_performers": []
         }

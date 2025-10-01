@@ -351,10 +351,28 @@ def process_parameter(
     search_query = enhanced_semantic_description or description or parameter
     print(f"Searching for {parameter} with query: {search_query}")
 
+    # Get configured RAG search engines from population metadata
+    population_meta_file = os.path.join(population_dir, "population_metadata.json")
+    configured_engines = None
+    if os.path.exists(population_meta_file):
+        try:
+            with open(population_meta_file, "r") as f:
+                pop_meta = json.load(f)
+                configured_engines = pop_meta.get("rag_search_engines")
+        except Exception as e:
+            print(f"Warning: could not read rag_search_engines from population_metadata.json: {e}")
+    
     # Build engine list; include RAG only if a doc store is available
-    engines = ["semantic_scholar", "serper"]
-    if doc_store is not None:
-        engines.insert(1, "rag")  # keep rough preference but we'll shuffle next
+    if configured_engines:
+        engines = list(configured_engines)  # Make a copy to avoid modifying the original
+        # If "rag" is in the list but doc_store is None, remove it
+        if doc_store is None and "rag" in engines:
+            engines.remove("rag")
+    else:
+        # Default behavior if not configured
+        engines = ["semantic_scholar", "serper"]
+        if doc_store is not None:
+            engines.insert(1, "rag")  # keep rough preference but we'll shuffle next
 
     # Randomize order (helps when many workers run in parallel)
     random.shuffle(engines)
