@@ -6,7 +6,7 @@ suppressPackageStartupMessages({
 })
 
 # Paths
-model_dir <- "POPULATIONS/POPULATION_0004/INDIVIDUAL_LE6TKQOA"
+model_dir <- "POPULATIONS/POPULATION_0004/INDIVIDUAL_3AWGFWMY"
 model_cpp <- file.path(model_dir, "model.cpp")
 params_json <- file.path(model_dir, "parameters.json")
 resp_csv <- "Data/timeseries_data_COTS_response.csv"
