@@ -6,7 +6,7 @@ suppressPackageStartupMessages({
 })
 
 # Paths
-model_dir <- "POPULATIONS/POPULATION_0004/INDIVIDUAL_797ZXV4L"
+model_dir <- "POPULATIONS/POPULATION_0004/INDIVIDUAL_LE6TKQOA"
 model_cpp <- file.path(model_dir, "model.cpp")
 params_json <- file.path(model_dir, "parameters.json")
 resp_csv <- "Data/timeseries_data_COTS_response.csv"
@@ -55,14 +55,22 @@ Data <- list(
   cotsimm_dat = as.numeric(dat$cotsimm_dat)
 )
 
-# Load parameters from JSON
-pj <- fromJSON(params_json)
-if (is.null(pj$parameters)) stop("parameters.json missing 'parameters' array")
-par_df <- as.data.frame(pj$parameters, stringsAsFactors = FALSE)
+# Load parameters from JSON (robust to df/list; filter only model PARAMETERs)
+pj <- fromJSON(params_json, simplifyVector = TRUE)
 
-# Build named parameter list for TMB
-Parameters <- as.list(par_df$value)
-names(Parameters) <- par_df$parameter
+params_tbl <- pj$parameters
+if (is.data.frame(params_tbl)) {
+  params_param <- params_tbl[params_tbl$import_type == "PARAMETER", , drop = FALSE]
+  param_names <- as.character(params_param$parameter)
+  param_values <- as.numeric(params_param$value)
+} else if (is.list(params_tbl)) {
+  params_param <- Filter(function(x) identical(x$import_type, "PARAMETER"), params_tbl)
+  param_names <- vapply(params_param, function(x) x$parameter, character(1))
+  param_values <- as.numeric(vapply(params_param, function(x) x$value, numeric(1)))
+} else {
+  stop("Unrecognized structure for pj$parameters")
+}
+Parameters <- as.list(stats::setNames(param_values, param_names))
 
 # Compile and load TMB model
 compile(model_cpp)
