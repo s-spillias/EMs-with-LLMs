@@ -45,21 +45,61 @@ from llama_index.vector_stores.chroma import ChromaVectorStore
 import chromadb
 
 # ----------------------------- LLMs & Embeddings ------------------------------
-# Azure embedding is optional
+# Azure OpenAI Embedding
 try:
-    from llama_index.embeddings.azure_openai import AzureOpenAIEmbedding  # type: ignore
+    from llama_index.embeddings.azure_openai import AzureOpenAIEmbedding # type: ignore
     _HAS_AZURE_EMBED = True
 except Exception:
     _HAS_AZURE_EMBED = False
 
-from llama_index.embeddings.openai import OpenAIEmbedding
-from llama_index.embeddings.ollama import OllamaEmbedding
+# OpenAI Embedding
+try:
+    from llama_index.embeddings.openai import OpenAIEmbedding
+    _HAS_OPENAI_EMBED = True
+except Exception:
+    _HAS_OPENAI_EMBED = False
 
-from llama_index.llms.anthropic import Anthropic
-# from llama_index.llms.groq import Groq
-# from llama_index.llms.bedrock import Bedrock
-# from llama_index.llms.gemini import Gemini
-from llama_index.llms.ollama import Ollama
+# Ollama Embedding
+try:
+    from llama_index.embeddings.ollama import OllamaEmbedding
+    _HAS_OLLAMA_EMBED = True
+except Exception:
+    _HAS_OLLAMA_EMBED = False
+
+# Anthropic LLM
+try:
+    from llama_index.llms.anthropic import Anthropic
+    _HAS_ANTHROPIC = True
+except Exception:
+    _HAS_ANTHROPIC = False
+
+# Groq LLM
+try:
+    from llama_index.llms.groq import Groq
+    _HAS_GROQ = True
+except Exception:
+    _HAS_GROQ = False
+
+# Bedrock LLM
+try:
+    from llama_index.llms.bedrock import Bedrock
+    _HAS_BEDROCK = True
+except Exception:
+    _HAS_BEDROCK = False
+
+# Gemini LLM
+try:
+    from llama_index.llms.gemini import Gemini
+    _HAS_GEMINI = True
+except Exception:
+    _HAS_GEMINI = False
+
+# Ollama LLM
+try:
+    from llama_index.llms.ollama import Ollama
+    _HAS_OLLAMA_LLM = True
+except Exception:
+    _HAS_OLLAMA_LLM = False
 
 # ----------------------------- Optional PDF pipeline ---------------------------
 try:

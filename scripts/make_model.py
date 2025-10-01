@@ -22,6 +22,10 @@ from aider.io import InputOutput
 import functools as _functools
 print = _functools.partial(print, flush=True)  # force-flush all prints in this module
 
+from pathlib import Path
+
+
+
 load_dotenv()
 # Set PYTHONIOENCODING to utf-8
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
@@ -289,7 +293,8 @@ def setup_coder(filenames, read_files, temperature=0.1, llm_choice="anthropic_so
     else:
         coder.temperature = temperature
     coder.auto_commits = False
-    
+    # Convert read_files to absolute paths
+    read_files = [str(Path(file).resolve()) for file in read_files]
     for file in read_files:
         coder.run(f"/read {file}")
     return coder
