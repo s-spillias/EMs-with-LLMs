@@ -3,6 +3,7 @@ import sys
 import argparse
 import time
 import shutil
+import math
 from typing import Dict, Any
 from scripts.population_utils import get_next_population_number, generate_individual_id, evolve_population, create_new_generation
 from scripts.individual_utils import update_individual_metadata
@@ -305,6 +306,54 @@ def main():
                 "objective_value": objective_value
             })
         individuals = [ind['individual'] for ind in current_best_performers]
+        
+        # Handle incomplete individuals from interrupted generation
+        from scripts.file_utils import list_individuals
+        all_individuals_in_dir = list_individuals(population_dir)
+        print(f"Found {len(all_individuals_in_dir)} individuals in main directory")
+        
+        # Identify individuals that are not in the best performers list
+        stranded_individuals = [ind for ind in all_individuals_in_dir if ind not in individuals]
+        if stranded_individuals:
+            print(f"Found {len(stranded_individuals)} incomplete individuals from interrupted generation")
+            
+            # Evaluate only the stranded individuals
+            evaluations = []
+            for individual in stranded_individuals:
+                try:
+                    individual_dir = os.path.join(population_dir, individual)
+                    # Get objective value directly from model report
+                    report_data = read_model_report(individual_dir)
+                    if report_data and report_data.get('status') == 'SUCCESS':
+                        objective_value = report_data.get('objective_value')
+                        # Convert to float to handle numpy types
+                        objective_value = float(objective_value) if objective_value is not None else None
+                        evaluations.append((individual, objective_value))
+                    else:
+                        # If no valid report or unsuccessful, mark as broken
+                        evaluations.append((individual, None))
+                except Exception as e:
+                    print(f"Error evaluating stranded individual {individual}: {str(e)}")
+                    evaluations.append((individual, None))
+            
+            # Categorize stranded individuals as either broken or culled
+            broken_individuals = []
+            culled_individuals = []
+            
+            for individual, obj_value in evaluations:
+                if obj_value is None or isinstance(obj_value, str) or (isinstance(obj_value, float) and math.isnan(obj_value)):
+                    broken_individuals.append(individual)
+                else:
+                    culled_individuals.append(individual)
+            
+            # Move culled and broken individuals
+            for individual in culled_individuals:
+                move_individual(population_dir, individual, 'CULLED')
+                print(f"Moved incomplete individual {individual} to CULLED")
+            
+            for individual in broken_individuals:
+                move_individual(population_dir, individual, 'BROKEN')
+                print(f"Moved incomplete individual {individual} to BROKEN")
     else:
         population_number = get_next_population_number()
         population_dir = os.path.join('POPULATIONS', f'POPULATION_{population_number:04d}')

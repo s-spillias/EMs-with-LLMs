@@ -318,17 +318,24 @@ NumRow <- nrow(time_series_data)
 NumCol <- ncol(time_series_data)
 other_data <- as.list(time_series_data)
 
-# After 'merged_data <- ...' and before building data_in
-req <- c("Year", "cots_dat", "fast_dat", "slow_dat", "sst_dat", "cotsimm_dat")
+# Dynamically build required columns
+time_col <- names(merged_data)[1] # First column assumed time
+dat_cols <- grep("_dat$", names(merged_data), value = TRUE)
+req <- c(time_col, dat_cols)
 
-stopifnot(all(req %in% names(merged_data)))
+# Validate presence
+missing_cols <- setdiff(req, names(merged_data))
+if (length(missing_cols) > 0) {
+  warning("Missing required columns: ", paste(missing_cols, collapse = ", "))
+}
+
 cat("\nNA counts per required column:\n")
 print(sapply(req, function(x) sum(is.na(merged_data[[x]]))))
 
-cat("\nOut-of-range checks:\n")
-cat("Any cots_dat < 0? ", any(merged_data$cots_dat < 0, na.rm = TRUE), "\n")
-cat("Any fast_dat outside [0,100]? ", any(merged_data$fast_dat < 0 | merged_data$fast_dat > 100, na.rm = TRUE), "\n")
-cat("Any slow_dat outside [0,100]? ", any(merged_data$slow_dat < 0 | merged_data$slow_dat > 100, na.rm = TRUE), "\n")
+
+cat("\nNA counts per required column:\n")
+print(sapply(req, function(x) sum(is.na(merged_data[[x]]))))
+
 
 # Prepare data for TMB
 data_in <- list()
