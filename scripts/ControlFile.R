@@ -1,6 +1,9 @@
 require(TMB)
 require(jsonlite)
-library(here)
+suppressMessages({
+  library(here)
+  here::i_am("scripts/ControlFile.R") # <- force the project root to /scratch3/spi085/LEMMA
+})
 library(ggplot2)
 
 # -------------------- BOUNDS HELPERS (LIVE: parameters.json) --------------------
@@ -198,7 +201,7 @@ write_error_json <- function(error_message, individual_dir) {
 }
 
 # Source validation function
-source("Code/validate_model.R")
+source("scripts/validate_model.R")
 
 # Parse command line arguments
 args <- commandArgs(trailingOnly = TRUE)
@@ -215,9 +218,9 @@ individual_dir <- tryCatch({
 # Read population metadata to get data files
 population_dir <- gsub("/BROKEN", "", dirname(individual_dir))
 metadata_file <- file.path(population_dir, "population_metadata.json")
-metadata <- fromJSON(metadata_file, simplifyVector = TRUE)
-response_file <- metadata$response_file
-forcing_file <- metadata$forcing_file
+pop_metadata <- fromJSON(metadata_file, simplifyVector = TRUE)
+response_file <- pop_metadata$response_file
+forcing_file <- pop_metadata$forcing_file
 
 model_file <- 'model.cpp'
 # Check OS and set appropriate flags
@@ -581,7 +584,7 @@ tryCatch(
 report <- model$report()
 
 # Run validation using train_test_split from metadata
-train_test_split <- metadata$train_test_split
+train_test_split <- pop_metadata$train_test_split
 if (is.null(train_test_split)) {
   train_test_split <- 1.0  # Default to using all data if not specified
 }

@@ -119,7 +119,6 @@ def create_new_generation(population_dir, best_individuals, n_individuals, proje
     new_individuals = []
     with ProcessPoolExecutor(max_workers=n_individuals, initializer=init_worker) as executor:
         future_to_args = {executor.submit(spawn_or_initialize_individual, args): args for args in args_list}
-        breakpoint
         for future in as_completed(future_to_args):
             args = future_to_args[future]
             try:

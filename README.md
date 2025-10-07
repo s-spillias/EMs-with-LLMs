@@ -193,7 +193,7 @@ This script implements various search functionalities to support the ecological 
 
 The script uses advanced NLP techniques, including embeddings and vector stores, to provide context-aware search capabilities across various data sources. This is particularly useful for finding relevant information during the model development and improvement process.
 
-### Code/ControlFile.R
+### scripts/ControlFile.R
 
 This R script serves as the main control file for running and evaluating the ecological models. Its primary functions include:
 

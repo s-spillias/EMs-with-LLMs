@@ -4,6 +4,7 @@ import os
 import time
 import math
 import random
+import re
 from datetime import datetime
 from typing import Dict, Any, List, Optional, Tuple
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
@@ -684,10 +685,36 @@ def get_params(directory_path):
     metadata_file = os.path.join(directory_path, "parameters_metadata.json")
 
     # Load artifacts
-    with open(params_file, "r") as f:
-        params_data = json.load(f)
-    with open(os.path.join(directory_path, "model.cpp"), "r") as f:
-        cpp_str = f.read()
+    try:
+        with open(params_file, "r") as f:
+            content = f.read()
+        
+        # Try to parse JSON directly first
+        try:
+            params_data = json.loads(content)
+        except json.JSONDecodeError:
+            # If that fails, strip comments and try again
+            print("JSON parsing failed, removing comments...")
+            # Remove // comments and /* */ comments
+            content = re.sub(r'//.*$', '', content, flags=re.MULTILINE)
+            content = re.sub(r'/\*.*?\*/', '', content, flags=re.DOTALL)
+            # Also remove trailing commas which can cause JSON parsing errors
+            content = re.sub(r',\s*}', '}', content)
+            content = re.sub(r',\s*]', ']', content)
+            params_data = json.loads(content)
+            print("Successfully parsed JSON after removing comments")
+    except Exception as e:
+        print(f"ERROR: Failed to parse parameters.json: {e}")
+        print(f"Creating default parameters structure and continuing")
+        # Create a default structure instead of terminating
+        params_data = {"parameters": []}
+    
+    try:
+        with open(os.path.join(directory_path, "model.cpp"), "r") as f:
+            cpp_str = f.read()
+    except Exception as e:
+        print(f"ERROR: Failed to read model.cpp: {e}")
+        cpp_str = ""
 
     metadata_store = _load_existing_metadata(metadata_file)
     metadata_params: Dict[str, Any] = metadata_store.get("parameters", {})
