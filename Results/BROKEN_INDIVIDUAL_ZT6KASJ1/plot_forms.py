@@ -43,21 +43,38 @@ gamma   = 0.5     # fraction of Z mortality returning to N
 lambda_ = 0.6     # day^-1    (grazing max)
 mu_P    = 0.035   # g C m^-3  (grazing half-sat)
 
-# ---- 1B) LEMMA parameters (HARD-CODED to your optimized found_values) ----
-mu_max       = 0.8838  # day^-1
-K_N          = 0.2513  # g C m^-3
-gmax         = 0.3503  # day^-1 (grazing_max)
-h            = 2.3249  # grazing_exp
-K_P          = 0.034   # g C m^-3
-e_g          = 0.4305  # (0-1)
-m_Z          = 0.0761  # day^-1
-m_P          = 0.0649  # day^-1
-d_N          = 0.2105  # day^-1
+# ---- 1B) TMB model parameters from parameters.json ----
+r_cots_max   = 1.0    # year^-1; Max per-capita growth rate of adult-equivalent COTS
+m_cots       = 0.5    # year^-1; Background adult mortality rate of COTS
+c_cots_density = 0.5  # (m^2 ind^-1) year^-1; Self-limitation coefficient
+e_cots_imm   = 0.3    # dimensionless; Conversion from larval immigration to adult density
+A_crit       = 0.1    # individuals m^-2; Allee threshold scale
+K_prey       = 0.1    # proportion; Half-saturation for prey availability
 
-# Optional: observation SDs (not used here)
-log_sigma_N  = -2.1447
-log_sigma_P  = -2.3534
-log_sigma_Z  = -2.3056
+beta_sst_cots = 1.0   # Celsius^-1; SST effect slope on recruitment
+f_sst_lo     = 1.0    # dimensionless; Lower bound SST multiplier
+f_sst_hi     = 1.5    # dimensionless; Upper bound SST multiplier
+
+attack       = 5.0    # year^-1 ind^-1 m^2; Attack rate in predation
+handling     = 0.2    # year; Handling time in predation
+pref_fast    = 0.7    # dimensionless; Preference for fast coral
+pref_slow    = 0.3    # dimensionless; Preference for slow coral
+holling_q    = 1.5    # dimensionless; Functional response exponent
+
+r_fast       = 0.6    # year^-1; Fast coral intrinsic growth
+r_slow       = 0.3    # year^-1; Slow coral intrinsic growth
+m_fast       = 0.15   # year^-1; Fast coral background mortality
+m_slow       = 0.08   # year^-1; Slow coral background mortality
+K_tot        = 0.6    # proportion; Total coral carrying capacity
+
+beta_bleach_fast = 0.6  # per Celsius; Fast coral bleaching sensitivity
+beta_bleach_slow = 0.4  # per Celsius; Slow coral bleaching sensitivity
+tau_bleach   = 1.0    # Celsius; SST threshold for bleaching
+
+# Observation error SDs
+sigma_cots_log = 0.2    # SD on log scale for COTS
+sigma_fast_logit = 0.3  # SD on logit scale for fast coral
+sigma_slow_logit = 0.3  # SD on logit scale for slow coral
 
 # ---------------------------------------------
 # 2) INITIAL CONDITIONS & TIME GRID
@@ -97,22 +114,38 @@ def rhs_python(t, y):
 
 def rhs_tmb_like(t, y):
     """
-    LEMMA NPZ model:
-      uptake  = mu_max * N/(K_N + N) * P
-      grazing = gmax * P^h / (K_P^h + P^h) * Z
-      dP/dt = uptake - grazing - m_P*P
-      dZ/dt = e_g*grazing - m_Z*Z
-      dN/dt = -uptake + d_N*Z
+    TMB COTS-coral model:
+      f_sst = f_sst_lo + (f_sst_hi - f_sst_lo) * invlogit(beta_sst_cots * sst_anom)
+      f_prey = prey_avail / (K_prey + prey_avail)
+      f_allee = A / (A + A_crit)
+      r_eff = r_cots_max * f_prey * f_sst * f_allee - m_cots - c_cots_density * A
+      
+      Predation uses multi-prey Holling with prey switching
     """
-    N, P, Z = y
+    N, P, Z = y  # Here N=nutrients, P=phyto, Z=zoo map to coral/COTS variables
     N = max(N, 0.0); P = max(P, 0.0); Z = max(Z, 0.0)
-
-    uptake  = mu_max * N / (K_N + N + EPS) * P
-    grazing = gmax   * (P**h) / (K_P**h + P**h + EPS) * Z
-
-    dPdt = uptake - grazing - m_P * P
-    dZdt = e_g * grazing - m_Z * Z
-    dNdt = -uptake + d_N * Z
+    
+    # SST effect on COTS recruitment
+    sst_effect = f_sst_lo + (f_sst_hi - f_sst_lo) * (1.0 / (1.0 + np.exp(-beta_sst_cots * sst_anom)))
+    
+    # Prey availability and Allee effect
+    prey_avail = pref_fast * P + pref_slow * N  # Using N,P as coral types
+    f_prey = prey_avail / (K_prey + prey_avail + EPS)
+    f_allee = Z / (Z + A_crit + EPS)  # Z as COTS density
+    
+    # COTS population dynamics
+    r_eff = r_cots_max * f_prey * sst_effect * f_allee - m_cots - c_cots_density * Z
+    
+    # Multi-prey Holling predation
+    V = pref_fast * (P**holling_q) + pref_slow * (N**holling_q) + EPS
+    cons_per_pred = attack * V / (1.0 + attack * handling * V + EPS)
+    share_P = (pref_fast * (P**holling_q)) / V
+    share_N = (pref_slow * (N**holling_q)) / V
+    
+    # Final derivatives
+    dPdt = r_fast * P * (1.0 - (P + N)/K_tot) - Z * cons_per_pred * share_P - m_fast * P
+    dNdt = r_slow * N * (1.0 - (P + N)/K_tot) - Z * cons_per_pred * share_N - m_slow * N
+    dZdt = Z * (r_eff + e_cots_imm)  # Immigration added to growth
     return [dNdt, dPdt, dZdt]
 
 # ---------------------------------------------
