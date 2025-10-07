@@ -43,21 +43,38 @@ gamma   = 0.5     # fraction of Z mortality returning to N
 lambda_ = 0.6     # day^-1    (grazing max)
 mu_P    = 0.035   # g C m^-3  (grazing half-sat)
 
-# ---- 1B) LEMMA parameters (HARD-CODED to your optimized found_values) ----
-mu_max       = 0.8838  # day^-1
-K_N          = 0.2513  # g C m^-3
-gmax         = 0.3503  # day^-1 (grazing_max)
-h            = 2.3249  # grazing_exp
-K_P          = 0.034   # g C m^-3
-e_g          = 0.4305  # (0-1)
-m_Z          = 0.0761  # day^-1
-m_P          = 0.0649  # day^-1
-d_N          = 0.2105  # day^-1
+# ---- 1B) TMB model parameters from parameters.json ----
+r_cots_max   = 1.0     # Maximum per-capita growth rate of adult-equivalent COTS
+m_cots       = 0.5     # Background adult mortality rate of COTS
+c_cots_density = 0.5   # Self-limitation coefficient for COTS
+e_cots_imm   = 0.3     # Conversion efficiency from larval immigration
+A_crit       = 0.1     # Allee threshold scale
+K_prey       = 0.1     # Half-saturation for prey availability
 
-# Optional: observation SDs (not used here)
-log_sigma_N  = -2.1447
-log_sigma_P  = -2.3534
-log_sigma_Z  = -2.3056
+beta_sst_cots = 1.0    # Slope of SST effect on COTS recruitment
+f_sst_lo     = 1.0     # Lower bound multiplier of SST effect
+f_sst_hi     = 1.5     # Upper bound multiplier of SST effect
+
+attack       = 5.0     # Attack rate in multi-prey functional response
+handling     = 0.2     # Handling time in functional response
+pref_fast    = 0.7     # Preference for fast-growing corals
+pref_slow    = 0.3     # Preference for slow-growing corals
+holling_q    = 1.5     # Exponent shaping functional response
+
+r_fast       = 0.6     # Intrinsic growth rate of fast corals
+r_slow       = 0.3     # Intrinsic growth rate of slow corals
+m_fast       = 0.15    # Background mortality rate for fast corals
+m_slow       = 0.08    # Background mortality rate for slow corals
+K_tot        = 0.6     # Total available substrate fraction
+
+beta_bleach_fast = 0.6 # Bleaching penalty strength for fast corals
+beta_bleach_slow = 0.4 # Bleaching penalty strength for slow corals
+tau_bleach   = 1.0     # SST anomaly threshold for bleaching
+
+# Observation error parameters
+sigma_cots_log = 0.2   # SD for COTS (lognormal)
+sigma_fast_logit = 0.3 # SD for fast coral (logit-normal)
+sigma_slow_logit = 0.3 # SD for slow coral (logit-normal)
 
 # ---------------------------------------------
 # 2) INITIAL CONDITIONS & TIME GRID
@@ -97,22 +114,50 @@ def rhs_python(t, y):
 
 def rhs_tmb_like(t, y):
     """
-    LEMMA NPZ model:
-      uptake  = mu_max * N/(K_N + N) * P
-      grazing = gmax * P^h / (K_P^h + P^h) * Z
-      dP/dt = uptake - grazing - m_P*P
-      dZ/dt = e_g*grazing - m_Z*Z
-      dN/dt = -uptake + d_N*Z
+    TMB CoTS model:
+    - Uses constant SST anomaly for this comparison
+    - Implements equations from model.cpp
     """
     N, P, Z = y
     N = max(N, 0.0); P = max(P, 0.0); Z = max(Z, 0.0)
-
-    uptake  = mu_max * N / (K_N + N + EPS) * P
-    grazing = gmax   * (P**h) / (K_P**h + P**h + EPS) * Z
-
-    dPdt = uptake - grazing - m_P * P
-    dZdt = e_g * grazing - m_Z * Z
-    dNdt = -uptake + d_N * Z
+    
+    # Use constant SST anomaly for comparison
+    sst_anom = 1.0
+    
+    # Environmental and prey effects on COTS
+    f_sst = f_sst_lo + (f_sst_hi - f_sst_lo) * (1.0 / (1.0 + np.exp(-beta_sst_cots * sst_anom)))
+    prey_avail = pref_fast * P + pref_slow * Z
+    f_prey = prey_avail / (K_prey + prey_avail + EPS)
+    f_allee = Z / (Z + A_crit + EPS)
+    
+    # COTS growth and mortality
+    r_eff = r_cots_max * f_prey * f_sst * f_allee - m_cots - c_cots_density * Z
+    
+    # Multi-prey functional response
+    V = pref_fast * (P**holling_q) + pref_slow * (Z**holling_q) + EPS
+    cons_per_pred = attack * V / (1.0 + attack * handling * V + EPS)
+    share_P = (pref_fast * (P**holling_q)) / V
+    share_Z = (pref_slow * (Z**holling_q)) / V
+    
+    # Predation rates
+    pred_P = Z * cons_per_pred * share_P
+    pred_Z = Z * cons_per_pred * share_Z
+    
+    # Bleaching effects
+    stress = max(sst_anom - tau_bleach, 0.0)
+    gP = np.exp(-beta_bleach_fast * stress)
+    gZ = np.exp(-beta_bleach_slow * stress)
+    
+    # Growth with space limitation
+    free_space = max(K_tot - P - Z, 0.0)
+    growth_P = r_fast * P * (free_space / (K_tot + EPS))
+    growth_Z = r_slow * Z * (free_space / (K_tot + EPS))
+    
+    # Final derivatives
+    dPdt = gP * growth_P - pred_P - m_fast * P
+    dZdt = Z * np.exp(r_eff) - Z  # Change in one timestep
+    dNdt = -growth_P - growth_Z + m_fast * P + m_slow * Z
+    
     return [dNdt, dPdt, dZdt]
 
 # ---------------------------------------------
@@ -449,6 +494,10 @@ print("\n----- Summary scalar scores (lower is better) -----")
 print(f"Avg relative L2 — States           : {score_states:.6g}")
 print(f"Avg relative L2 — Fluxes (zeroed)  : {score_flux_zero:.6g}")
 print(f"Avg relative L2 — Fluxes (present) : {score_flux_pres:.6g}")
+
+# Machine-readable overall score (sum of ISDs across fluxes)
+isd_sum = sum(r[1] for r in flux_results_zero)
+print(f"\nOVERALL_ISD_SUM: {isd_sum}")
 
 # ---- Optional: quick bar plot of ISD for visual comparison ----
 try:
