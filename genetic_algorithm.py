@@ -131,7 +131,7 @@ PARAM_SPECS = {
         'DeepCoder_14B_Preview_GGUF',
         'ollama:deepseek-r1:latest', 'ollama:gemma:latest', 'ollama:devstral:latest',
         'ollama:qwen3:30b-a3b', 'ollama:mistral:latest', 'ollama:qwen3:4b', 'ollama:gpt-oss:latest', 'ollama:gpt-oss:120b',
-        'ollama:deepseek-r1:70b', 'ollama:qwen3:235b', 'openrouter:openai/gpt-5-chat', 'openrouter:openai/gpt-5'
+        'ollama:deepseek-r1:70b', 'ollama:qwen3:235b', 'openrouter:openai/gpt-5-chat', 'openrouter:openai/gpt-5','openrouter:anthropic/claude-sonnet-4.5','openrouter:google/gemini-2.5-pro'
     ]},
     'rag_choice': {'type': str, 'choices': [
         # Anthropic models
