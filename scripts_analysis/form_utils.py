@@ -4,6 +4,7 @@
 import os
 from pathlib import Path
 import json
+import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 
@@ -104,3 +105,34 @@ def print_summary(overall_isd_sum, score_states, score_flux_zero, score_flux_pre
         "notes": notes
     }
     print("SUMMARY_JSON: " + json.dumps(summary_json))
+
+# --- stdout-based parsers: drop-in replacements ---
+
+def parse_overall_isd(stdout: str):
+    """
+    Parse the 'OVERALL_ISD_SUM: <float>' token directly from process stdout.
+    Returns float or None.
+    """
+    for line in stdout.splitlines():
+        if line.strip().startswith("OVERALL_ISD_SUM:"):
+            try:
+                return float(line.split(":", 1)[1].strip())
+            except ValueError:
+                # Malformed numeric value; keep searching or return None
+                pass
+    return None
+
+
+def parse_summary_json(stdout: str):
+    """
+    Parse the 'SUMMARY_JSON: {...}' token directly from process stdout.
+    Returns dict or None.
+    """
+    for line in stdout.splitlines():
+        if line.strip().startswith("SUMMARY_JSON:"):
+            payload = line.split(":", 1)[1].strip()
+            try:
+                return json.loads(payload)
+            except Exception:
+                return None
+    return None

@@ -13,7 +13,7 @@ Batch-friendly:
 import os
 import numpy as np
 import matplotlib.pyplot as plt
-from scripts.form_utils import _savefig, compute_isd_table, average_rel_L2, _plot_state, _plot_facet, print_summary
+from scripts_analysis.form_utils import _savefig, compute_isd_table, average_rel_L2, _plot_state, _plot_facet, print_summary
 
 # ================================================================
 # Environment

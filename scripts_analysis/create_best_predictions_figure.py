@@ -22,6 +22,9 @@ def find_best_individuals_by_llm():
             # Get the population directory and llm choice
             pop_dir = os.path.dirname(metadata_path)
             llm_choice = metadata.get('llm_choice')
+            response_file = metadata.get('response_file')
+            if 'NPZ' in response_file:
+                continue
             # print(pop_dir)
             # print(llm_choice)
             if not llm_choice:
@@ -113,7 +116,8 @@ def create_combined_figure(individual_path, llm_choice):
         x_offset += img.size[0]
     
     # Save combined figure
-    output_path = f'Figures/combined_predictions_{llm_choice}.png'
+    llm_choice_safe = llm_choice.split('/')[1]
+    output_path = f'Figures/combined_predictions_{llm_choice_safe}.png'
     combined.save(output_path)
     
     # Close all images
