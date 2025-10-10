@@ -9,6 +9,7 @@ library(gtable)
 library(png)
 library(cowplot) # replaces patchwork for mixed objects
 
+library(ggbreak)
 # --- Configuration ---
 population_roots <- c("POPULATIONS", "Manuscript")
 
@@ -224,25 +225,117 @@ svg(file.path(figures_dir, "NPZ_combined_with_icons.svg"), width = 8, height = 1
 grid.draw(combined)
 dev.off()
 
-# --- Optional: aggregate ecological scores across all NPZ populations (generalized version of your single-population analysis) ---
 extract_ecological_scores <- function(metadata_path, individual_dir) {
-  meta <- safe_fromJSON(metadata_path)
-  if (is.null(meta) || is.null(meta$ecological_assessment)) return(NULL)
-  scores <- meta$ecological_assessment$characteristic_scores
-  if (is.null(scores)) return(NULL)
+  # Strict: read ONLY scores.json written by evaluate_ecological_characteristics.py
+  scores_path <- file.path(individual_dir, "scores.json")
+  if (!file.exists(scores_path)) {
+    return(NULL)
+  }
+
+  sj <- safe_fromJSON(scores_path)
+  if (is.null(sj) || is.null(sj$characteristic_scores) || is.null(sj$aggregate_scores)) {
+    return(NULL)
+  }
+
+  cs <- sj$characteristic_scores
+  agg <- sj$aggregate_scores
+
+  # Helper to pull numeric scores for each named characteristic
+  get_score <- function(name) {
+    v <- tryCatch(cs[[name]][["score"]], error = function(e) NA_real_)
+    if (is.null(v)) NA_real_ else suppressWarnings(as.numeric(v))
+  }
+
+  # --- Nine granular components (exact keys from the Python scorer) ---
+  nutrient_equation_uptake <- get_score("nutrient_equation_uptake")
+  nutrient_equation_recycling <- get_score("nutrient_equation_recycling")
+  nutrient_equation_mixing <- get_score("nutrient_equation_mixing")
+  phytoplankton_equation_growth <- get_score("phytoplankton_equation_growth")
+  phytoplankton_equation_grazing_loss <- get_score("phytoplankton_equation_grazing_loss")
+  phytoplankton_equation_mortality <- get_score("phytoplankton_equation_mortality")
+  phytoplankton_equation_mixing <- get_score("phytoplankton_equation_mixing")
+  zooplankton_equation_growth <- get_score("zooplankton_equation_growth")
+  zooplankton_equation_mortality <- get_score("zooplankton_equation_mortality")
+
+  # --- Extras (count + description + optional list) ---
+  extras_count <- suppressWarnings(as.numeric(sj$extra_components_count))
+  if (is.na(extras_count)) extras_count <- NA_real_
+  extras_description <- if (!is.null(sj$extra_components_description)) {
+    as.character(sj$extra_components_description)
+  } else {
+    NA_character_
+  }
+  extras_list_json <- if (!is.null(sj$extra_components)) {
+    jsonlite::toJSON(sj$extra_components, auto_unbox = TRUE, null = "null")
+  } else {
+    NA_character_
+  }
+
+  # Build a single-row data.frame for this individual
   data.frame(
-    individual        = basename(individual_dir),
-    total_score       = meta$ecological_assessment$total_score,
-    nutrient_uptake   = scores$nutrient_equation_uptake$score,
-    nutrient_recycling= scores$nutrient_equation_recycling$score,
-    nutrient_mixing   = scores$nutrient_equation_mixing$score,
-    phyto_growth      = scores$phytoplankton_equation_growth$score,
-    phyto_loss        = scores$phytoplankton_equation_loss$score,
-    zoo_equation      = scores$zooplankton_equation$score,
+    individual = basename(individual_dir),
+
+    # Aggregates from scores.json (no fallbacks)
+    total_score = suppressWarnings(as.numeric(agg$raw_total)), # unnormalized (max ≈ 9)
+    normalized_total = suppressWarnings(as.numeric(agg$normalized_total)), # 0–1
+    final_score = suppressWarnings(as.numeric(agg$final_score)), # may be NA if absent
+
+    # Granular components (9)
+    nutrient_equation_uptake = nutrient_equation_uptake,
+    nutrient_equation_recycling = nutrient_equation_recycling,
+    nutrient_equation_mixing = nutrient_equation_mixing,
+    phytoplankton_equation_growth = phytoplankton_equation_growth,
+    phytoplankton_equation_grazing_loss = phytoplankton_equation_grazing_loss,
+    phytoplankton_equation_mortality = phytoplankton_equation_mortality,
+    phytoplankton_equation_mixing = phytoplankton_equation_mixing,
+    zooplankton_equation_growth = zooplankton_equation_growth,
+    zooplankton_equation_mortality = zooplankton_equation_mortality,
+
+    # Extras
+    extras_count = extras_count,
+    extras_description = extras_description,
+    extras_list_json = extras_list_json,
     stringsAsFactors = FALSE
   )
 }
 
+# Helper: find the directory that contains scores.json for a given individual ID
+find_scores_dir <- function(pop_dir, individual_id) {
+  candidates <- c(
+    file.path(pop_dir, "CULLED", individual_id),
+    file.path(pop_dir, individual_id)
+  )
+  hit <- candidates[file.exists(file.path(candidates, "scores.json"))]
+  if (length(hit) == 0) NULL else hit[1]
+}
+
+ecology_results <- list()
+for (p in npz_pops) {
+  pop_dir <- p$pop_dir
+  meta_path <- file.path(pop_dir, "population_metadata.json")
+  pop_meta <- safe_fromJSON(meta_path)
+  if (is.null(pop_meta)) next
+
+  # Kept individuals from population metadata
+  kept_df <- tryCatch(bind_rows(pop_meta$generations$best_individuals), error = function(e) NULL)
+  kept_ids <- if (!is.null(kept_df) && "individual" %in% names(kept_df)) unique(kept_df$individual) else character(0)
+  if (length(kept_ids) == 0) next
+
+  # Only consider individuals that HAVE scores.json (in CULLED or top-level)
+  indiv_dirs <- lapply(kept_ids, function(id) find_scores_dir(pop_dir, id))
+  indiv_dirs <- indiv_dirs[!vapply(indiv_dirs, is.null, logical(1))]
+  if (length(indiv_dirs) == 0) next
+
+  for (indiv_dir in indiv_dirs) {
+    eco <- extract_ecological_scores(NA, indiv_dir) # metadata_path ignored (strict scores.json)
+    if (!is.null(eco)) {
+      eco$objective_value <- get_objective_value(indiv_dir)
+      eco$Population <- basename(pop_dir)
+      ecology_results[[length(ecology_results) + 1]] <- eco
+    }
+  }
+}
+ecology_all <- if (length(ecology_results) > 0) bind_rows(ecology_results) else NULL
 # Collect ecological scores from "kept" individuals across all NPZ populations (mirrors your approach). [1](https://csiroau-my.sharepoint.com/personal/spi085_csiro_au/Documents/Microsoft%20Copilot%20Chat%20Files/analyze_NPZ.txt)
 ecology_results <- list()
 
@@ -280,118 +373,244 @@ for (p in npz_pops) {
 
 ecology_all <- if (length(ecology_results) > 0) bind_rows(ecology_results) else NULL
 
-# Reuse your plotting logic if we have data
+# --- TOTAL vs OBJECTIVE with axis break + bottom axis only ---
+
+library(ggbreak)
+
 if (!is.null(ecology_all) && nrow(ecology_all) > 0) {
-  results_clean <- ecology_all[complete.cases(ecology_all), ]
+  results_base <- ecology_all %>%
+    mutate(
+      objective_value = suppressWarnings(as.numeric(objective_value)),
+      total_score     = suppressWarnings(as.numeric(total_score))
+    )
 
-  # Scatter with two linear models and thresholds (same defaults you used). [1](https://csiroau-my.sharepoint.com/personal/spi085_csiro_au/Documents/Microsoft%20Copilot%20Chat%20Files/analyze_NPZ.txt)
+  results_clean <- results_base %>%
+    filter(
+      !is.na(objective_value), !is.na(total_score),
+      is.finite(objective_value), is.finite(total_score),
+      objective_value > 0
+    )
+
   eco_threshold <- 6.0
-  obj_threshold <- 0.3
+  obj_threshold <- 0.1
 
-  low_eco_scores   <- results_clean[results_clean$total_score       < eco_threshold, ]
-  good_performers  <- results_clean[results_clean$objective_value   < obj_threshold, ]
+  low_eco_scores <- results_clean %>% filter(total_score < eco_threshold)
+  good_performers <- results_clean %>% filter(objective_value < obj_threshold)
 
-  low_eco_model  <- lm(total_score ~ objective_value, data = low_eco_scores)
-  good_perf_model<- lm(total_score ~ objective_value, data = good_performers)
+  low_eco_model <- if (nrow(low_eco_scores) >= 2) tryCatch(lm(total_score ~ objective_value, data = low_eco_scores), error = function(e) NULL) else NULL
+  good_perf_model <- if (nrow(good_performers) >= 2) tryCatch(lm(total_score ~ objective_value, data = good_performers), error = function(e) NULL) else NULL
 
-  low_eco_r2  <- summary(low_eco_model)$r.squared
-  good_perf_r2<- summary(good_perf_model)$r.squared
+  low_eco_r2 <- if (!is.null(low_eco_model)) summary(low_eco_model)$r.squared else NA_real_
+  good_perf_r2 <- if (!is.null(good_perf_model)) summary(good_perf_model)$r.squared else NA_real_
 
-  model_comparison_label <- sprintf("Low eco scores (<%.1f): R² = %.3f\nGood performers (<%.1f obj): R² = %.3f",
-                                    eco_threshold, low_eco_r2, obj_threshold, good_perf_r2)
+  model_comparison_label <- sprintf(
+    "Low eco (<%.1f): %s\nGood performers (<%.1f obj): %s",
+    eco_threshold,
+    if (!is.na(low_eco_r2)) sprintf("R² = %.3f", low_eco_r2) else "not enough data",
+    obj_threshold,
+    if (!is.na(good_perf_r2)) sprintf("R² = %.3f", good_perf_r2) else "not enough data"
+  )
 
-  # Category labels (same style), now across all populations. [1](https://csiroau-my.sharepoint.com/personal/spi085_csiro_au/Documents/Microsoft%20Copilot%20Chat%20Files/analyze_NPZ.txt)
-  results_clean <- results_clean %>%
-    mutate(point_group = case_when(
-      objective_value %in% low_eco_scores$objective_value & objective_value %in% good_performers$objective_value ~ "Both",
-      objective_value %in% low_eco_scores$objective_value ~ "Low Eco Only",
-      objective_value %in% good_performers$objective_value ~ "Good Performers Only",
-      TRUE ~ "Neither"
-    ))
+  # IQR-based outlier cutoff for the X axis (objective_value)
+  x_q <- quantile(results_clean$objective_value, probs = c(0.25, 0.75), na.rm = TRUE)
+  x_iqr <- diff(x_q)
+  x_thr <- x_q[2] + 1.5 * x_iqr
+  x_max <- suppressWarnings(max(results_clean$objective_value, na.rm = TRUE))
 
   p_ecology_total <- ggplot(results_clean, aes(x = objective_value, y = total_score)) +
-    geom_point(aes(color = point_group), alpha = 0.6, size = 1.5) +
-    geom_smooth(data = low_eco_scores,  method = "lm", se = FALSE, color = "#0173B2", linewidth = 1.2) +
-    geom_smooth(data = good_performers, method = "lm", se = FALSE, color = "#DE8F05", linewidth = 1.2) +
-    geom_hline(yintercept = eco_threshold, linetype = "dashed", color = "gray50", alpha = 0.7) +
-    geom_vline(xintercept = obj_threshold, linetype = "dashed", color = "gray50", alpha = 0.7) +
-    scale_color_manual(
-      values = c("Low Eco Only"="\\#0173B2", "Good Performers Only"="\\#DE8F05", "Both"="\\#CC78BC", "Neither"="gray70"),
-      name = "Point Category",
-      labels = c("Low Eco Only"="Low Eco Scores", "Good Performers Only"="Good Performers", "Both"="Both Groups", "Neither"="Neither Group")
-    ) +
-    scale_x_log10() +
+    geom_point(aes(color = case_when(
+      (total_score < eco_threshold) & (objective_value < obj_threshold) ~ "Both",
+      (total_score < eco_threshold) ~ "Low Eco Only",
+      (objective_value < obj_threshold) ~ "Good Performers Only",
+      TRUE ~ "Neither"
+    )), alpha = 0.6, size = 1.5) +
+    # {
+    #   if (!is.null(low_eco_model)) geom_smooth(data = low_eco_scores, method = "lm", se = FALSE, color = "#0173B2", linewidth = 1.2)
+    # } +
+    # {
+    #   if (!is.null(good_perf_model)) geom_smooth(data = good_performers, method = "lm", se = FALSE, color = "#DE8F05", linewidth = 1.2)
+    # } +
+    # geom_hline(yintercept = eco_threshold, linetype = "dashed", color = "gray50", alpha = 0.7) +
+    # geom_vline(xintercept = obj_threshold, linetype = "dashed", color = "gray50", alpha = 0.7) +
+    # scale_color_manual(
+    #   values = c("Low Eco Only" = "#0173B2", "Good Performers Only" = "#DE8F05", "Both" = "#CC78BC", "Neither" = "gray70"),
+    #   name = "Point Category",
+    #   labels = c("Low Eco Only" = "Low Eco Scores", "Good Performers Only" = "Good Performers", "Both" = "Both Groups", "Neither" = "Neither Group")
+    # ) +
+    scale_x_log10() + # compatible with ggbreak [4](https://cran.r-project.org/web//packages/ggbreak/vignettes/ggbreak.html)
     theme_classic() +
-    labs(x="Objective Value (log scale)", y="Total Ecological Score",
-         caption = sprintf("n = %d individuals across %d NPZ populations", nrow(results_clean), length(unique(results_clean$Population)))) +
-    geom_text(x = min(results_clean$objective_value, na.rm=TRUE),
-              y = max(results_clean$total_score,     na.rm=TRUE) - 0.5,
-              label = model_comparison_label, hjust=0, vjust=1, size=3.5)
+    labs(
+      x = "Objective Value (log scale)",
+      y = "Total Ecological Score",
+      caption = sprintf("n = %d individuals across %d NPZ populations", nrow(results_clean), length(unique(results_clean$Population)))
+    ) +
+    geom_text(
+      x = min(results_clean$objective_value, na.rm = TRUE),
+      y = max(results_clean$total_score, na.rm = TRUE) - 0.5,
+      label = model_comparison_label,
+      hjust = 0, vjust = 1, size = 3.5
+    )
 
+  # Insert the axis break and hide the TOP axis (text, ticks, line)
+  if (is.finite(x_thr) && is.finite(x_max) && x_max > x_thr * 1.05) {
+    p_ecology_total <- p_ecology_total +
+      scale_x_break(c(x_thr, x_max), space = 0.18) + # break creates two subpanels (top & bottom) [4](https://cran.r-project.org/web//packages/ggbreak/vignettes/ggbreak.html)
+      theme(
+        axis.text.x.top  = element_blank(),
+        axis.ticks.x.top = element_blank(),
+        axis.line.x.top  = element_blank()
+      ) # hide the top axis elements; keep bottom only [1](https://ggplot2.tidyverse.org/reference/theme.html)[3](https://stackoverflow.com/questions/71992148/removing-duplicate-top-x-axis-in-ggplot-plus-add-axis-break)
+  }
+
+  figures_dir <- "Figures"
+  dir.create(figures_dir, recursive = TRUE, showWarnings = FALSE)
   ggsave(file.path(figures_dir, "ecological_vs_objective_total_ALL.png"), p_ecology_total, width = 8, height = 6)
   ggsave(file.path(figures_dir, "ecological_vs_objective_total_ALL.svg"), p_ecology_total, width = 8, height = 6)
+}
+# --- COMPONENTS vs OBJECTIVE with axis break + bottom axis only ---
 
-  # Component correlations & faceted plot (generalized)
-  component_scores <- c("nutrient_uptake","nutrient_recycling","nutrient_mixing","phyto_growth","phyto_loss","zoo_equation")
-  results_long <- results_clean %>%
+library(ggbreak)
+
+if (!is.null(ecology_all) && nrow(ecology_all) > 0) {
+  component_scores <- c(
+    "nutrient_equation_uptake",
+    "nutrient_equation_recycling",
+    "nutrient_equation_mixing",
+    "phytoplankton_equation_growth",
+    "phytoplankton_equation_grazing_loss",
+    "phytoplankton_equation_mortality",
+    "phytoplankton_equation_mixing",
+    "zooplankton_equation_growth",
+    "zooplankton_equation_mortality"
+  )
+
+  results_long <- ecology_all %>%
+    mutate(objective_value = suppressWarnings(as.numeric(objective_value))) %>%
     dplyr::select(Population, individual, objective_value, all_of(component_scores)) %>%
     tidyr::pivot_longer(cols = all_of(component_scores), names_to = "characteristic", values_to = "score") %>%
-    mutate(characteristic_clean = gsub("_", " ", tools::toTitleCase(characteristic)))
+    mutate(
+      score = suppressWarnings(as.numeric(score)),
+      characteristic_clean = gsub("_", " ", tools::toTitleCase(characteristic))
+    ) %>%
+    filter(
+      !is.na(objective_value), !is.na(score),
+      is.finite(objective_value), is.finite(score),
+      objective_value > 0
+    )
 
-  # Per-characteristic correlation labels
+  # Shared outlier threshold for X across facets (IQR-based)
+  x_q <- quantile(results_long$objective_value, probs = c(0.25, 0.75), na.rm = TRUE)
+  x_iqr <- diff(x_q)
+  x_thr <- x_q[2] + 1.5 * x_iqr
+  x_max <- suppressWarnings(max(results_long$objective_value, na.rm = TRUE))
+
+  # Correlation label per facet (unchanged)
   correlations <- results_long %>%
     group_by(characteristic_clean) %>%
     summarise(
-      r = if(sd(score) > 0 && sd(objective_value) > 0) cor(score, objective_value) else NA_real_,
-      p = if(sd(score) > 0 && sd(objective_value) > 0) cor.test(score, objective_value)$p.value else NA_real_
+      n = n(),
+      var_score = var(score, na.rm = TRUE),
+      var_obj = var(objective_value, na.rm = TRUE),
+      r = if (!is.na(var_score) && var_score > 0 && !is.na(var_obj) && var_obj > 0 && n >= 3) cor(score, objective_value) else NA_real_,
+      p = if (!is.na(r)) tryCatch(cor.test(score, objective_value)$p.value, error = function(e) NA_real_) else NA_real_
     ) %>%
-    mutate(label = ifelse(!is.na(r) & !is.na(p), sprintf("r = %.2f\np = %.2e", r, p), "r = NA\np = NA"))
+    mutate(label = ifelse(!is.na(r) & !is.na(p), sprintf("r = %.2f\np = %.2e", r, p), "not enough data"))
 
   p_ecology_components <- ggplot(results_long, aes(x = objective_value, y = score)) +
     geom_point(alpha = 0.6, color = "#0072B2") +
     geom_smooth(method = "lm", se = FALSE, color = "#D55E00", linetype = "dashed") +
-    scale_x_log10() +
+    scale_x_log10() + # compatible with ggbreak’s break scales [4](https://cran.r-project.org/web//packages/ggbreak/vignettes/ggbreak.html)
     facet_wrap(~characteristic_clean, ncol = 2) +
-    # Place a single correlation label per facet (approx upper-left)
-    geom_text(data = correlations,
-              x = min(results_long$objective_value, na.rm=TRUE),
-              y = max(results_long$score,           na.rm=TRUE),
-              label = correlations$label,
-              hjust = 0, vjust = 1, size = 3) +
+    geom_text(
+      data = correlations,
+      x = min(results_long$objective_value, na.rm = TRUE),
+      y = max(results_long$score, na.rm = TRUE),
+      label = correlations$label,
+      hjust = 0, vjust = 1, size = 3
+    ) +
     theme_classic() +
-    labs(x = "Objective Value (log scale)", y = "Score",
-         caption = sprintf("n = %d individuals across %d NPZ populations", nrow(results_clean), length(unique(results_clean$Population))))
+    labs(
+      x = "Objective Value (log scale)",
+      y = "Score",
+      caption = sprintf("n = %d individuals across %d NPZ populations", length(unique(results_long$individual)), length(unique(results_long$Population)))
+    )
 
+  # Insert the same X-axis break across all facets; hide the top axis elements
+  if (is.finite(x_thr) && is.finite(x_max) && x_max > x_thr * 1.05) {
+    p_ecology_components <- p_ecology_components +
+      scale_x_break(c(x_thr, x_max), space = 0.18) + # break produces top & bottom subpanels per facet [4](https://cran.r-project.org/web//packages/ggbreak/vignettes/ggbreak.html)
+      theme(
+        axis.text.x.top  = element_blank(),
+        axis.ticks.x.top = element_blank(),
+        axis.line.x.top  = element_blank()
+      ) # keep bottom axis only in all facets [1](https://ggplot2.tidyverse.org/reference/theme.html)
+  }
+
+  figures_dir <- "Figures"
+  dir.create(figures_dir, recursive = TRUE, showWarnings = FALSE)
   ggsave(file.path(figures_dir, "ecological_characteristics_vs_objective_ALL.png"), p_ecology_components, width = 12, height = 8)
   ggsave(file.path(figures_dir, "ecological_characteristics_vs_objective_ALL.svg"), p_ecology_components, width = 12, height = 8)
+}
+# --- EXTRAS summary across populations ---
 
-  # Save combined ecology results
+if (!is.null(ecology_all) && nrow(ecology_all) > 0) {
+  extras_df <- ecology_all %>%
+    dplyr::select(Population, individual, extras_count, extras_description, extras_list_json) %>%
+    mutate(
+      extras_count = suppressWarnings(as.numeric(extras_count)),
+      extras_description = as.character(extras_description),
+      extras_list_json = as.character(extras_list_json)
+    )
+
+  # Save a tidy table
   results_dir <- "Manuscript/Results/ecology_analysis"
   dir.create(results_dir, recursive = TRUE, showWarnings = FALSE)
-  write.csv(results_clean, file.path(results_dir, "ecological_scores_ALL.csv"), row.names = FALSE)
+  write.csv(extras_df, file.path(results_dir, "extras_summary_ALL.csv"), row.names = FALSE)
 
-  # Text summary (generalized)
-  sink(file.path(results_dir, "analysis_summary_ALL.txt"))
-  cat("Analysis Summary (ALL NPZ populations)\n")
-  cat("================\n\n")
-  cat("Number of individuals analyzed:", nrow(results_clean), "\n")
-  cat("Number of NPZ populations:", length(unique(results_clean$Population)), "\n\n")
-  cat("Summary Statistics:\n")
-  print(summary(results_clean))
-  cat("\nCorrelations with objective value:\n")
-  if (nrow(results_clean) >= 3) {
-    total_cor <- cor.test(results_clean$total_score, results_clean$objective_value)
-    cat(sprintf("Total Score: r = %.3f (p = %.3e)\n", total_cor$estimate, total_cor$p.value))
-    for (sc in component_scores) {
-      ct <- cor.test(results_clean[[sc]], results_clean$objective_value)
-      cat(sprintf("%s: r = %.3f (p = %.3e)\n",
-                  gsub("_", " ", tools::toTitleCase(sc)),
-                  ct$estimate, ct$p.value))
-    }
-  } else {
-    cat("Not enough complete cases to calculate correlations.\n")
-  }
-  sink()
+  # Bar chart of extras_count distribution per population
+  extras_counts <- extras_df %>%
+    filter(!is.na(extras_count)) %>%
+    group_by(Population) %>%
+    summarise(mean_extras = mean(extras_count, na.rm = TRUE), n = n())
+
+  p_extras <- ggplot(extras_counts, aes(x = Population, y = mean_extras)) +
+    geom_col(fill = "#3EBCD2") +
+    theme_classic() +
+    labs(title = "Mean Extras Count by Population", x = "Population", y = "Mean Extras Count")
+
+  figures_dir <- "Figures"
+  dir.create(figures_dir, recursive = TRUE, showWarnings = FALSE)
+  ggsave(file.path(figures_dir, "extras_mean_by_population.png"), p_extras, width = 8, height = 4)
+  ggsave(file.path(figures_dir, "extras_mean_by_population.svg"), p_extras, width = 8, height = 4)
 }
+
+# Save combined ecology results
+results_dir <- "Manuscript/Results/ecology_analysis"
+dir.create(results_dir, recursive = TRUE, showWarnings = FALSE)
+write.csv(results_clean, file.path(results_dir, "ecological_scores_ALL.csv"), row.names = FALSE)
+
+# Text summary (generalized)
+sink(file.path(results_dir, "analysis_summary_ALL.txt"))
+cat("Analysis Summary (ALL NPZ populations)\n")
+cat("================\n\n")
+cat("Number of individuals analyzed:", nrow(results_clean), "\n")
+cat("Number of NPZ populations:", length(unique(results_clean$Population)), "\n\n")
+cat("Summary Statistics:\n")
+print(summary(results_clean))
+cat("\nCorrelations with objective value:\n")
+if (nrow(results_clean) >= 3) {
+  total_cor <- cor.test(results_clean$total_score, results_clean$objective_value)
+  cat(sprintf("Total Score: r = %.3f (p = %.3e)\n", total_cor$estimate, total_cor$p.value))
+  for (sc in component_scores) {
+    ct <- cor.test(results_clean[[sc]], results_clean$objective_value)
+    cat(sprintf("%s: r = %.3f (p = %.3e)\n",
+                gsub("_", " ", tools::toTitleCase(sc)),
+                ct$estimate, ct$p.value))
+  }
+} else {
+  cat("Not enough complete cases to calculate correlations.\n")
+}
+sink()
+
 
 message("Finished: NPZ_timeseries_all_populations.(png|svg); NPZ_training_all_populations.(png|svg) and (optional) ecology plots saved in Figures/")

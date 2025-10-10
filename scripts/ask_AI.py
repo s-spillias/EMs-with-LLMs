@@ -290,6 +290,42 @@ class Config:
             input_cost_per_million=0.40,
             output_cost_per_million=1.60
         ),
+        # === OpenRouter models ===
+        # GPT-5 (OpenAI via OpenRouter)
+        'openai/gpt-5': ModelConfig(
+            provider='openrouter',
+            model_name='openai/gpt-5',
+            max_tokens_limit=128000,        # 128K max output; 400K context
+            input_cost_per_million=1.25,    # $1.25/M input
+            output_cost_per_million=10.00   # $10.00/M output
+        ),
+        'openai/gpt-5-mini': ModelConfig(
+            provider='openrouter',
+            model_name='openai/gpt-5-mini',
+            max_tokens_limit=128000,
+            input_cost_per_million=0.25,
+            output_cost_per_million=2.00
+        ),
+
+        # Claude Sonnet 4.5 (Anthropic via OpenRouter)
+        'anthropic/claude-sonnet-4.5': ModelConfig(
+            provider='openrouter',
+            model_name='anthropic/claude-sonnet-4.5',
+            max_tokens_limit=65536,         # ~64K max output; up to 1M context
+            # NOTE: OpenRouter shows tiered pricing by provider for very long contexts (>200K).
+            # We use the common "starting at" rate here for consistent cost tracking.
+            input_cost_per_million=3.00,    # Starting at $3/M input
+            output_cost_per_million=15.00   # Starting at $15/M output
+        ),
+
+        # Gemini 2.5 Pro (Google via OpenRouter)
+        'google/gemini-2.5-pro': ModelConfig(
+            provider='openrouter',
+            model_name='google/gemini-2.5-pro',
+            max_tokens_limit=65536,         # ~65.5K max output; ~1.05M context
+            input_cost_per_million=1.25,    # Starting at $1.25/M input
+            output_cost_per_million=10.00   # Starting at $10/M output
+        ),
     }
 
 
@@ -578,6 +614,56 @@ class AnthropicClient(BaseLLMClient):
         
         return response, usage_data
 
+class OpenRouterClient(BaseLLMClient):
+    """OpenRouter API client (OpenAI-compatible Chat Completions)."""
+    def __init__(self, model_name: str):
+        super().__init__(model_name)
+        self.api_base = os.environ.get("OPENROUTER_API_BASE", "https://openrouter.ai/api/v1")
+        self.api_key = os.environ.get("OPENROUTER_API_KEY")
+        if not self.api_key:
+            raise ValueError("Missing OPENROUTER_API_KEY environment variable.")
+
+        # Optional headers to attribute usage/rankings on openrouter.ai
+        self.http_referer = os.environ.get("OPENROUTER_HTTP_REFERER")  # e.g., https://your-site.example
+        self.x_title = os.environ.get("OPENROUTER_X_TITLE")            # e.g., "Scott's LLM Tools"
+
+    def _make_api_call(self, prompt: str, max_tokens: int) -> Tuple[str, Dict[str, Any]]:
+        url = f"{self.api_base}/chat/completions"
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+        }
+        if self.http_referer:
+            headers["HTTP-Referer"] = self.http_referer
+        if self.x_title:
+            headers["X-Title"] = self.x_title
+
+        payload = {
+            "model": self.config.model_name,  # e.g., "openai/gpt-5"
+            "messages": [
+                {"role": "system", "content": "You are a helpful assistant."},
+                {"role": "user", "content": prompt},
+            ],
+            "max_tokens": max_tokens,
+            "temperature": self.config.temperature_default,
+        }
+
+        resp = requests.post(url, headers=headers, json=payload, timeout=600)
+        resp.raise_for_status()
+        data = resp.json()
+
+        # OpenAI-compatible response shape
+        response_text = data["choices"][0]["message"]["content"]
+        usage = data.get("usage", {}) or {}
+        input_tokens = usage.get("prompt_tokens", 0)
+        output_tokens = usage.get("completion_tokens", 0)
+
+        usage_data = {
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+        }
+        usage_data.update(self._calculate_cost(input_tokens, output_tokens))
+        return response_text, usage_data
 
 class AWSBedrockClient(BaseLLMClient):
     """AWS Bedrock Claude client"""
@@ -797,6 +883,7 @@ class LLMClientFactory:
         'groq': GroqClient,
         'openai': OpenAIClient,
         'ollama': OllamaClient,
+        'openrouter': OpenRouterClient
     }
     
     @classmethod
@@ -831,7 +918,70 @@ class LLMClientFactory:
             # If we converted the name, use the standardized version
             if model_name.startswith('ollama:'):
                 model_name = standardized_name
-        
+        # Handle OpenRouter models before checking Config.MODELS
+        # Accept both "openrouter:<MODEL_ID>" and "openrouter:<MODEL_ID>"
+        if (model_name.startswith('openrouter_') or model_name.startswith('openrouter:')) and model_name not in Config.MODELS:
+            standardized_name = model_name
+            if model_name.startswith('openrouter:'):
+                # Convert "openrouter:" prefix to "openrouter_" for consistency
+                standardized_name = 'openrouter:' + model_name[11:]
+
+            # Actual OpenRouter model id after the prefix (e.g., "openai/gpt-5")
+            actual_model_id = standardized_name.replace('openrouter:', '', 1)
+
+            # Known models with accurate pricing & output limits
+            known_openrouter = {
+                # Sources: OpenRouter model pages & announcements
+                # GPT-5: 400K context, ~$1.25/M in, $10/M out; ~128K max output
+                'openai/gpt-5': {
+                    'max_tokens_limit': 128000,
+                    'input_cost_per_million': 1.25,
+                    'output_cost_per_million': 10.00,
+                },
+                # Claude Sonnet 4.5: up to 1M context, starting at $3/$15; ~64K max output
+                'anthropic/claude-sonnet-4.5': {
+                    'max_tokens_limit': 65536,
+                    'input_cost_per_million': 3.00,
+                    'output_cost_per_million': 15.00,
+                },
+                # Gemini 2.5 Pro: ~1.05M context, starting at $1.25/$10; ~65.5K max output
+                'google/gemini-2.5-pro': {
+                    'max_tokens_limit': 65536,
+                    'input_cost_per_million': 1.25,
+                    'output_cost_per_million': 10.00,
+                },
+            }
+
+            cfg = known_openrouter.get(actual_model_id)
+
+            if cfg:
+                # Accurate known config
+                Config.MODELS[standardized_name] = ModelConfig(
+                    provider='openrouter',
+                    model_name=actual_model_id,
+                    max_tokens_limit=cfg['max_tokens_limit'],
+                    input_cost_per_million=cfg['input_cost_per_million'],
+                    output_cost_per_million=cfg['output_cost_per_million'],
+                    temperature_default=0.1,
+                )
+                # Also register the original name to handle direct lookups
+                Config.MODELS[model_name] = Config.MODELS[standardized_name]
+            else:
+                # Generic fallback for any OpenRouter model id
+                Config.MODELS[standardized_name] = ModelConfig(
+                    provider='openrouter',
+                    model_name=actual_model_id,
+                    max_tokens_limit=Config.DEFAULT_MAX_TOKENS,
+                    input_cost_per_million=0.0,   # Unknown price
+                    output_cost_per_million=0.0,  # Unknown price
+                    temperature_default=0.1,
+                )
+                Config.MODELS[model_name] = Config.MODELS[standardized_name]
+
+            # If we converted the name, use the standardized version
+            if model_name.startswith('openrouter:'):
+                model_name = standardized_name
+
         if model_name not in Config.MODELS:
             available_models = list(Config.MODELS.keys())
             raise ValueError(f"Unknown model: {model_name}. Available models: {available_models}")
@@ -913,7 +1063,7 @@ def main():
     # Test the system
     try:
         # Use actual model name
-        response = ask_ai('Why is the sky blue?', 'claude-3-5-sonnet-20241022')
+        response = ask_ai('Why is the sky blue?', 'openrouter:gpt-5')
         print(f"\nResponse: {response}")
         
         # Show usage stats
