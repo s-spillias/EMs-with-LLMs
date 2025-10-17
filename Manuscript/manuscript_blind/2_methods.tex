@@ -1,0 +1,127 @@
+At its core, LEMMA integrates Large Language Models (LLMs) for generating and modifying model structures, Template Model Builder (TMB) for statistical parameter estimation, and evolutionary algorithms for systematic model improvement. All of the code and data underpinning this study are available at the Github repository: \url{https://anonymous.4open.science/r/EMs-with-LLMs-10E8}.
+
+\subsection{LEMMA Framework}
+
+\subsubsection{Model Generation and Improvement}
+LEMMA uses LLMs to write and modify computer code through Aider \citep{gauthier2024aider}, which is a coding assistant that can create, modify, and interpret local files. Aider can be used in the command-line or called within python scripts, as we have done here, and can receive text and/or images as input, depending on whether the underlying LLM is 'multi-modal' (i.e., can interpret text and images). Each model instance, referred to as an individual in our evolutionary framework, consists of three components: (1) a TMB-compatible dynamic model written in C++ that implements a system of equations, (2) a parameters file containing initial values and bounds, and (3) a documentation file explaining the ecological meaning of the model equations (see Section \ref{subsec:initial_model_prompt} for the complete prompt).
+
+The LLM generates initial parameter estimates for pre-testing model structure before optimization begins. For each parameter, it assigns a priority number that determines optimization order, following established practices in ecosystem modelling \citep{Plaganyi_Punt_Hillary_Morello_Thebaud_Hutton_Pillans_Thorson_Fulton_Smith_et_al_2014}.
+
+During non-initial steps, if multi-modal (i.e. can receive images as input) the LLM analyzes performance plots comparing predictions to historical data, otherwise the LLM receives a structured file showing the model fit residuals. After interpreting the model fit, LEMMA makes targeted, ecologically meaningful changes to model equations, implementing one modification at a time to maintain transparency and traceability of successful modelling strategies (see Section~\ref{subsec:model_improvement_prompt}).
+
+\begin{landscape}
+    \begin{figure}[p]
+    \centering
+    \includegraphics[width=0.85\linewidth]{../Figures/conceptual_diagram}
+    \begingroup
+    \small
+    \caption{Conceptual diagram of the automated ecological modelling framework, LEMMA. The workflow consists of five main components: (1) User Inputs, where research questions and ecological time-series data are provided; (2) Parameterisation, utilizing RAG-enhanced literature search to estimate parameter values; (3) Model Generation/Improvement, where the Coding LLM creates new individuals with model scripts and parameters; (4) Model Execution, where the LLM's model code is implemented and TMB is used to optimise parameter values; and (5) Evolution, which evaluates model performance through individual assessment, error handling, and ranking-based selection.}
+    \label{fig:conceptual}
+    \endgroup
+    \end{figure}
+    \end{landscape}
+
+\subsubsection{User Inputs}
+
+The LEMMA framework requires only minimal user input to initiate the modelling process. At the outset, the user provides a short natural language description of the ecological system and research question, which guides the large language model (LLM) in generating ecologically relevant model structures. Two time-series data files are also supplied: a response file containing the dependent variables (state variables) to be predicted by the model, and a forcing file containing external drivers that influence system dynamics. Column headers in these files define the variables that are directly observed and available for model fitting. Importantly, the framework is not restricted to these variables; the LLM may introduce additional latent variables or intermediate processes when such constructs are ecologically justified and improve model performance. This flexibility allows LEMMA to explore a broader range of mechanistic hypotheses than would be possible if limited to observed variables alone.
+
+In addition to these core inputs, users may optionally specify configuration parameters that control the evolutionary process and LLM behaviour, including the sampling temperature, the number of individuals per generation, the number of generations, the convergence threshold, and the proportion of data allocated to training versus testing. Users also select the LLM for code generation, the model for literature retrieval, and the embedding model for semantic search. Finally, the user can specify a directory with curated ecological literature from which LEMMA will identify plausible parameter values and bounds. These inputs collectively define the modelling context while allowing LEMMA to operate with minimal manual intervention and substantial flexibility in model structure.
+
+\subsubsection{Parameterisation}
+Upon initialization, the LLM estimates parameter values for each parameter in its proposed model. LEMMA uses this initial estimation to quickly run the model using TMB to identify structural or syntactical errors in the LLM-generated code. If a candidate model is successful in compiling and running, LEMMA refines these estimates using evidence from the scientific literature. Building on the success of LLM-based extraction from ecological literature \citep{keck2025extracting,spillias2024evaluating}, LEMMA implements a RAG architecture to search scientific literature (see Section~\ref{subsec:rag_architecture} for detailed RAG implementation). Without this initial estimation step, LEMMA risks wasting time and computational resources searching for parameter values to populate equations that may be structurally or syntactically flawed.
+
+The RAG process works as follows: First, LEMMA prompts an LLM to create detailed semantic descriptions of each parameter, expanding beyond the basic descriptions provided by the coding LLM. For example, if the coding LLM defines a parameter as ``growth rate of phytoplankton,'' the RAG system might expand this to ``maximum specific growth rate of marine phytoplankton in nutrient-rich conditions, measured per day.'' These enhanced descriptions aim to improve the relevance of search results when querying literature databases.
+
+To find appropriate parameter values, the RAG system employs a structured, multi-source search strategy. It searches a curated local collection of scientific papers (see Section~\ref{subsec:curated_literature}), queries the Semantic Scholar database \citep{semantic_scholar_api}, and performs general web searches through the Serper API \citep{serper_api}. LEMMA combines results from all three sources to build a comprehensive understanding of each parameter's possible values and ecological meaning.
+
+The RAG system then uses LLMs to extract numerical values from the search results, determining not only parameter values but also their valid ranges. The prompt instructs the LLM to identify minimum, maximum, and typical values for each parameter, along with their units and citation information (see Section~\ref{subsec:parameter_enhancement_prompt}). All parameter information is stored in a structured database that includes bounds, units, and citations. 
+
+\subsubsection{Model Execution, Optimisation, and Error Handling}
+
+\paragraph{Model Execution.}
+Models are executed through TMB \citep{kristensen2014tmb}, which uses automatic differentiation to efficiently compute gradients for complex, non-linear optimisation problems. The dynamically generated TMB template defines the objective function internally; LEMMA treats this as a black box and does not modify its structure. We use a Control File in \textit{R} which provides the data, starting values, and explicit box constraints for optimisation.
+
+\paragraph{Optimisation Strategy.}
+Parameter estimation proceeds in phases: parameters are grouped by LLM-assigned priority, and only those assigned to the current phase are estimated while others remain fixed. After all phases are complete, a final optimisation is performed with all parameters free. This phased approach improves stability and convergence for high-dimensional models. For this proof-of-concept, all parameters are treated as estimable in the optimisation process. The optimiser used is \texttt{nlminb}, which minimises the objective function exposed by the TMB template. Lower and upper bounds for each parameter are applied as explicit box constraints at the optimiser level. Starting values and bounds are constructed from literature-derived values when available; otherwise, LLM-estimated fallbacks are used. Before optimisation, starting values are clamped to the admissible box, and pathological intervals are normalised (swapping if lower\,$>$\,upper and expanding zero-width intervals by a small $\varepsilon$). These checks ensure numerical stability and prevent infeasible parameter configurations.
+
+The optimisation is not iterative in epochs; instead, it uses a gradient-based solver that terminates when one of its convergence criteria is met: (a) gradient norm below tolerance; (b) parameter updates below tolerance; or (c) maximum iterations reached (default in \texttt{nlminb} is 150 iterations per phase). These stopping conditions are controlled internally by \texttt{nlminb} and are not manually tuned.
+
+Because the TMB template is dynamically generated, LEMMA does not impose a fixed likelihood structure but assumes that the function represents a valid statistical model. The optimisation uses a maximum likelihood framework, leveraging TMB’s automatic differentiation to compute gradients. No regularisation terms are added by LEMMA; the optimisation is unconstrained beyond the explicit parameter bounds. LLM- and literature-provided values are used only to set starting points and bounds, not as penalties in the objective function.
+
+\paragraph{Error Handling.}
+Because LLMs often make trivial mistakes in their outputs, we developed an error handling system to address common issues and preserve LLM-progress, rather than discarding partial attempts. For example, on occasion, the LLM coder will attempt to create a system of equations with circular logic (``data leakage''), or will omit a key output variable with a corresponding time-series. To prevent this, we implement code validation checks to ensure that the submitted model is properly formatted and free from logical inconsistencies. For models that fail, LEMMA addresses compilation errors through automated analysis of error messages and implementation of appropriate fixes. For numerical instabilities, LEMMA employs progressive simplification of model structure while maintaining ecological relevance. Each model variant receives up to a user-specified number of fixes (five for our case-studies), with later iterations prompting for simpler model structures that can be iteratively improved. The specific prompts used for error handling are provided in Section~\ref{subsec:error_handling_prompt}.
+
+\subsubsection{Model Evaluation}
+
+For each response variable $j$, we calculate a normalized mean squared error:
+
+\begin{equation}
+    \text{NMSE}_j = \begin{cases}
+        \frac{1}{n} \sum_{i=1}^{n} \left(\frac{y_{ij} - \hat{y}_{ij}}{\sigma_j}\right)^2 & \text{if } \sigma_j \neq 0 \\
+        \frac{1}{n} \sum_{i=1}^{n} (y_{ij} - \hat{y}_{ij})^2 & \text{if } \sigma_j = 0
+    \end{cases}
+\end{equation}
+
+where $y_{ij}$ represents observed values for variable $j$ at time $i$, $\hat{y}_{ij}$ represents corresponding model predictions, $\sigma_j$ is the unbiased standard deviation of the observed values for variable $j$ (calculated with $n-1$ denominator), and $n$ is the number of observations. The final objective function value is the mean across all response variables:
+
+\begin{equation}
+    \text{Objective} = \frac{1}{m} \sum_{j=1}^{m} \text{NMSE}_j
+\end{equation}
+
+where $m$ is the number of response variables. NMSE was selected as the primary objective function because it normalizes error by the standard deviation of each time-series, ensuring that all variables contribute equally to model evaluation. This avoids bias toward variables with larger magnitudes and supports balanced optimization across multivariate ecological datasets. For simplicity in this proof-of-concept, we did not weight the time-series in the objective function, however this might prove useful in future work to prioritize uncovering key dynamics.
+
+\subsubsection{Evolutionary Algorithm Implementation}
+
+LEMMA maintains a population of model instances, which we refer to as `individuals', where each individual represents a complete model implementation including its equations, parameters, and performance metrics. Within each generation, individuals undergo parameter optimization using Template Model Builder to find optimal parameter values for their current model structure. 
+
+After parameter optimization, individuals are evaluated based on their prediction accuracy. Those achieving the lowest prediction errors (objective values) are selected to become parents for the next generation, while less well-performing individuals are culled and non-functioning ones (those that fail to compile or execute) are discarded. 
+
+At the beginning of each new generation, LEMMA creates new individuals in two ways: by making targeted structural modifications to the best-performing parent individuals from the previous generation, and by creating entirely new individuals from scratch when there are not enough functioning individuals. Both of these are done via Aider's underlying tool handling routines that enable file modifications and creations and are determined by the underlying LLM's response to the standard prompts, the project topic, and the current model performance (if modifying an existing model).
+
+\subsection{Validation Experiments}
+
+We conducted two complementary validation case studies of LEMMA. The first validation experiment aimed to see if LEMMA could recover known model equations from synthetic time-series data, whilst the second validation experiment examined real-world applicability through modelling ecological dynamics on the Great Barrier Reef. In addition to the primary experimental design (training on the full dataset), we conducted a supplementary temporal hold-out evaluation for the COTS case study using the best-performing LLM, with three replicate populations, to assess out-of-sample predictive performance.
+
+\subsubsection{LLM Configuration and Experimental Design}
+
+We utilized three leading-edge LLMs to drive LEMMA's model generation and improvement processes: GPT-5, Sonnet-4.5, and Gemini-Pro-2.5. These models were selected as they represent the current state-of-the-art in language model capabilities at the time of analysis. All models were accessed via OpenRouter, and the analysis was conducted in October 2025. To maintain consistency and reduce complexity in outcomes, we employed GPT 4.1 as a dedicated support model for all parameter estimation and RAG-related queries across all three main LLMs. This approach ensured that differences in model performance could be attributed to the core model generation capabilities rather than variations in parameter retrieval or literature search processes.
+
+To systematically evaluate LEMMA's performance across different LLMs and ecological systems, we implemented a balanced factorial experimental design. The design consisted of three replicates for each combination of the three LLMs and the two ecological case studies (NPZ and COTS). This yielded a target of 18 populations (3 LLMs $\times$ 2 case studies $\times$ 3 replicates).
+
+Each population was initialized with four individuals and allowed to evolve for a target of ten generations, unless convergence was reached earlier (defined as achieving an objective value improvement of less than 0.01 for three consecutive generations).
+
+\subsubsection{Retrieving Model Equations -- NPZ Case Study}
+
+We conducted a controlled experiment using synthetic time-series data generated by a well-established nutrient-phytoplankton-zooplankton (NPZ) model from \cite{edwards1999zooplankton}, whose dynamics are well-studied \citep{boschetti2008mapping,boschetti2010detecting}. The complete system of equations is presented in Section~\ref{subsec:npz_evaluation_prompt} of the Supplementary Information. This validation tested our framework's ability to rediscover established ecological relationships from synthetic data where the underlying equations of a system are known, providing a rigorous assessment of the system's equation-learning capabilities.
+
+In addition to monitoring the convergence of LEMMA's modelled time-series towards the provided time-series data, we evaluated the framework's ability to recover nine key ecological characteristics from the original model. These characteristics were organized by equation: three components in the nutrient equation (dN/dt: uptake, recycling, mixing), four components in the phytoplankton equation (dP/dt: growth, grazing loss, mortality, mixing), and two components in the zooplankton equation (dZ/dt: growth, mortality).
+
+During evolution, for each `best performer' in a generation, we used GPT-5-mini to evaluate each model component using a 4-level ordinal scoring system designed to be interpretable and verifiable by ecological experts:
+
+\begin{itemize}
+    \item TRUTH\_MATCH: The mathematical structure is equivalent to the ground truth NPZ model
+    \item ALTERNATE: The implementation matches a recognized alternate formulation from the ecological literature (e.g., different functional response curves from \citep{franks2002npz})
+    \item SIMILAR\_NOT\_LISTED: The implementation plays the same ecological role but uses a form not represented in the ground truth or literature catalog
+    \item NOT\_PRESENT\_OR\_INCORRECT: The ecological component is missing or cannot be identified
+\end{itemize}
+
+Each characteristic was assigned a weight based on its contribution to its parent equation (e.g., the three nutrient equation components each had weight 0.333, the four phytoplankton components each had weight 0.25, and the two zooplankton components each had weight 0.5). The total ecological score was calculated as the weighted sum of individual scores, then normalized to a 0-1 scale by dividing by the maximum possible score. The complete evaluation prompt with detailed scoring criteria and catalog of alternate formulations is provided in Section~\ref{subsec:npz_evaluation_prompt}. This additional evaluation allowed us to better understand whether objective value improvements were indeed related to improved ecological understanding, or whether they were instead related to spurious mathematical relationships with limited ecological basis. We ran this evolutionary process in four individuals for 10 generations and a convergence threshold of 0.05.
+
+\subsubsection{COTS Case Study}
+
+The Crown-of-Thorns starfish (COTS) case study examined real-world applicability through modelling populations of COTS and their prey, coral, on the Great Barrier Reef. This case study also made two external forcing time-series available to LEMMA, sea-surface temperature and COTS larval immigration quantities. We tested the three main LLMs (GPT-5, Sonnet-4.5, and Gemini-Pro-2.5) and evaluated LEMMA's ability to match the model created by a human expert in the same context.
+
+The COTS model that we used as a human-derived benchmark for evaluating LEMMA's outputs was originally developed to specifically evaluate management interventions \citep{morello2014model}. Subsequent model versions and variations have yielded insight into management under environmental perturbations \citep{Rogers_Plaganyi_2022,Condie_Anthony_Babcock_Baird_Beeden_Fletcher_Gorton_Harrison_Hobday_Plaganyi_et_al_2021}, derivation of management thresholds \citep{plaganyi2020ecological,rogers2024validating} and their dynamic implementation \citep{rogers2023improving}. Each application differed depending on the objectives and data availability, and how the models were resolved, which required human determinations as to what was included, how it was included, and how it linked with other system aspects where necessary. Simply put, human experts were required to link management objectives and available data to resolve the necessary system aspects for informing specific management actions. 
+
+Here we test LEMMA's ability to develop a model that captures the dynamics of corals and COTS during a COTS outbreak. This not only required LEMMA to link the ecological dynamics but also interpret the life history characteristics of COTS to explain the observed data. Due to time and cost constraints we only performed limited tests using each LLM, where we initialized populations of four individuals for ten generations each. We calibrated these population parameters by balancing the cost of running an individual population against the rate of convergence that we found in our initial tests of the system.
+
+We tracked several key performance metrics for each population:
+\begin{itemize}
+    \item Runtime performance: Total runtime and per-generation computation time
+    \item Error resolution: Number of iterations required to achieve successful model implementation in each generation
+    \item Model stability: Proportion of successful, culled (underperforming), and numerically unstable models per generation
+\end{itemize}
+
+We also analyzed the evolutionary trajectories of successful models by tracking their lineage from initial to final states, documenting the frequency and magnitude of improvements across generations. This included measuring the number of generations required to reach best performance and the proportion of attempts that resulted in improved models.
+
+We performed a temporal hold-out evaluation by partitioning the time series into a training period (pre-2000, approximately 70\%) used for parameter estimation and a test period (2000-2005; ~30\%) used once for out-of-sample assessment. For each ecosystem component (COTS abundance, fast-growing coral cover, and slow-growing coral cover), we calculated root mean square error (RMSE), mean absolute error (MAE), and R² values to quantify prediction accuracy. By comparing these metrics against those of the human-developed reference model, we could assess whether our automated approach could match expert-level performance in a real-world ecological application.
