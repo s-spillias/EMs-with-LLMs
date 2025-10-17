@@ -1,0 +1,42 @@
+Assessment and stabilization steps for COTS–coral model
+
+1) Model fit and numerical behavior
+- The optimization log showed parameters drifting to extremes (e.g., starvation_scale near its upper bound, mC_min_frac ~ 0, r_C ~ 0 in early phases) and large gradients, indicating stiffness and numerical instability in the process model.
+- Objective NaN reported downstream arose because prediction variables (cots_pred, fast_pred, slow_pred) were not present in the “report” object. I added REPORT(...) in addition to ADREPORT(...) so post-fit diagnostics can access predictions.
+
+2) Does the model address the PROJECT CONTEXT?
+- The structure includes:
+  - Selective predation (higher consumption on Acropora than massive corals).
+  - Coral regrowth with space limitation (K_tot).
+  - COTS growth modulated by thermal performance and Allee effect.
+  - Food-limited carrying capacity via coral cover composition.
+- These are appropriate for episodic boom-bust cycles, but discrete-time Euler updates allowed unbounded per-year losses, producing instability and unrealistic annual removal >100%.
+
+3) Missing/oversimplified processes or scaling issues
+- Predation and mortality were applied as linear instantaneous rates subtracted over a one-year step, allowing losses >100% of stock within a single update. This is both numerically unstable and ecologically implausible.
+- COTS logistic term in Euler form could produce very large negative updates when K_eff is small (near-zero food), amplified by density dependence.
+- REPORT outputs were missing, obstructing residual-based evaluation.
+
+4) Ecological improvement chosen
+Approach: Variable efficiency terms and resource-limitation mechanisms with bounded annual transitions.
+- Implemented hazard-based annual loss fractions for corals: combined background + bleaching + predation as a single loss rate, converted to an annual loss fraction via 1 - exp(-rate). This caps annual fractional loss in [0,1), improving realism and stability while preserving selectivity (Acropora > massive).
+- Replaced Euler-form COTS logistic with a Ricker-form growth increment: C_growth = C_prev * (exp(r_eff*(1 - C_prev/K_eff)) - 1). This prevents decrements below -C_prev and thus avoids negative overshoots when K_eff is very small.
+- Applied COTS mortality multiplicatively as survival exp(-mort_rate), then added food-mediated recruitment and immigration. This avoids subtractive steps that can cause negative states.
+- Added REPORT(cots_pred, fast_pred, slow_pred) so downstream diagnostics can access predictions and compute residuals.
+
+Rationale:
+- These bounded, exponential/hazard formulations are standard for annual-scale population updates and are better suited to the episodic outbreak context by maintaining stability while allowing rapid increases when conditions align (high food, near-optimal temperature, sufficient adult density).
+
+5) Parameters and bounds
+- No new parameters added. Existing parameters retain their ecological interpretations.
+- The tight bound on m_C (2.56 to 2.56000000256) may overconstrain adult mortality. If future fits show persistent strain, consider relaxing to [1.5, 4.0] year^-1 per literature variability.
+- Current K_food, phi_A, phi_S continue to shape food limitation via saturating function; the new bounded updates should reduce the optimizer’s tendency to exploit extreme values.
+
+6) Data-leakage check
+- Process updates use only previous-time predicted states (A_prev, S_prev, C_prev).
+- Exogenous drivers at time t (sst_dat(t), cotsimm_dat(t)) are allowed and do not constitute leakage.
+
+Summary of changes implemented in model.cpp
+- Coral losses combined as bounded hazard fractions: loss_frac = 1 - exp(-(m + b*bleach + c_attack*pred_level)).
+- COTS growth increment switched to Ricker form; mortality applied as survival exp(-mort_rate); recruitment and immigration added post-survival.
+- Added REPORT() for cots_pred, fast_pred, slow_pred to enable residual calculations.

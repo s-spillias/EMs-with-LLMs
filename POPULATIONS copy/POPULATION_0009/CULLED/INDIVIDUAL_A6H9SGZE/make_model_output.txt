@@ -1,0 +1,1098 @@
+Warning: Input is not a terminal (fd=4).
+Skipping POPULATIONS/POPULATION_0009/INDIVIDUAL_A6H9SGZE/model.cpp that matches gitignore spec.
+Skipping POPULATIONS/POPULATION_0009/INDIVIDUAL_A6H9SGZE/parameters.json that matches gitignore spec.
+Skipping POPULATIONS/POPULATION_0009/INDIVIDUAL_A6H9SGZE/intention.txt that matches gitignore spec.
+Creating empty file POPULATIONS/POPULATION_0009/INDIVIDUAL_A6H9SGZE/intention.txt
+I have a few clarifying questions before finalizing the assessment and changes:                                                                                                                                                 
+
+ • You mentioned a residuals file to evaluate fit, but it wasn’t included. Could you share it so I can quantitatively assess misfit patterns?                                                                                   
+ • Are there any temperature or mixing depth drivers available (even as constants or time series)? If so, we could consider temperature-modified rates or depth-dependent light.                                                
+
+In the meantime, I proceeded with an ecological improvement that is robust without additional drivers and avoids data leakage.                                                                                                  
+
+Summary of what I did:                                                                                                                                                                                                          
+
+ 1 Assessment: Documented how the current NPZ model addresses the project context, likely fit issues, and oversimplified processes in intention.txt.                                                                            
+ 2 Improvement: Added predator interference in grazing via a Beddington-DeAngelis term. This often improves timing and amplitude of blooms by limiting grazing pressure when zooplankton are abundant, without adding new state 
+   variables.                                                                                                                                                                                                                   
+ 3 Parameters: Added a new parameter i_Z (predator interference coefficient), with bounds and ecological justification.                                                                                                         
+ 4 Model: Updated the grazing formulation and included the new parameter with proper mapping and penalties.                                                                                                                     
+
+POPULATIONS/POPULATION_0009/INDIVIDUAL_A6H9SGZE/intention.txt                                                                                                                                                                   
+
+                                                                                                                                                                                                                                
+ @@ -0,0 +1,66 @@                                                                                                                                                                                                               
+ +PROJECT: Simple NPZ model in the oceanic mixed layer                                                                                                                                                                          
+ +SUBJECT: Assessment and one ecological improvement (predator interference in grazing)                                                                                                                                         
+ +                                                                                                                                                                                                                              
+ +A) Assessment of the current model                                                                                                                                                                                            
+ +1) Fit to data                                                                                                                                                                                                                
+ +- The residuals file was not provided, so I cannot quantify the fit at this time.                                                                                                                                             
+ +- Typical misfit patterns for this model structure (based on experience) include:                                                                                                                                             
+ +  - Over-rapid suppression of phytoplankton peaks due to strong grazing when zooplankton become abundant.                                                                                                                     
+ +  - Phase mismatch between P and Z (Z peaking too early), causing under/overestimation across seasonal transitions.                                                                                                           
+ +  - Excessive volatility in Z when food is low (grazing remains strong even at high Z).                                                                                                                                       
+ +  - Too little lag in nutrient recycling because remineralization is instantaneous.                                                                                                                                           
+ +- Please provide the residuals file so I can validate/adjust this interpretation and refine the targets for improvement.                                                                                                      
+ +                                                                                                                                                                                                                              
+ +2) Alignment with the project context                                                                                                                                                                                         
+ +- The model explicitly represents N, P, Z in a mixed-layer context with:                                                                                                                                                      
+ +  - Nutrient limitation via Monod, light limitation via a seasonal sinusoid, and smooth co-limitation (Liebig-like).                                                                                                          
+ +  - Zooplankton grazing on phytoplankton with Holling type III, assimilation efficiency, and quadratic/linear mortalities.                                                                                                    
+ +  - Instant remineralization and a mixing source toward an external nutrient level.                                                                                                                                           
+ +- This directly matches the stated context: mixed-layer NPZ seasonal dynamics with co-limitation and top-down control.                                                                                                        
+ +                                                                                                                                                                                                                              
+ +3) Potentially missing or oversimplified processes                                                                                                                                                                            
+ +- No detrital/particulate organic pool (instantaneous remineralization can erase lags in N recycling that are often important).                                                                                               
+ +- No temperature dependence of rates (e.g., Q10 or Arrhenius) and no mixed-layer depth/irradiance variability beyond a pure sinusoid.                                                                                         
+ +- Fixed assimilation and uptake efficiency (beta_Z, e_P_uptake_eff); in reality these can depend on environment/food quality.                                                                                                 
+ +- Grazing uses a standard Holling III response with no predator interference or handling/crowding effects among zooplankton.                                                                                                  
+ +- No self-shading or variable light attenuation from P (light limitation is exogenous seasonal signal only).                                                                                                                  
+ +                                                                                                                                                                                                                              
+ +B) Parameter review                                                                                                                                                                                                           
+ +- All parameters currently have updated_from_literature = false, so no recent literature-based updates are recorded.                                                                                                          
+ +- Values are plausible as initial guesses:                                                                                                                                                                                    
+ +  - mu_max ≈ 1 d^-1; g_max ≈ 0.7 d^-1; K_N and K_P_g ≈ 0.1 g C m^-3 (order-of-magnitude reasonable).                                                                                                                          
+ +  - e_P_uptake_eff, beta_Z, and phi_remin are within typical ranges.                                                                                                                                                          
+ +  - Mixing k_mix = 0.02 d^-1 and N_ext = 0.3 g C m^-3 are plausible for a low-moderate nutrient regime.                                                                                                                       
+ +- Note on parameter mapping: Inside the model, many parameters are transformed (softplus/logit) from unconstrained values. This means JSON “value” entries should be interpreted as initial unconstrained values, not the     
+ realized ecological values after mapping.                                                                                                                                                                                      
+ +                                                                                                                                                                                                                              
+ +C) Chosen improvement: Beddington-DeAngelis predator interference in grazing                                                                                                                                                  
+ +Rationale:                                                                                                                                                                                                                    
+ +- In many NPZ applications, Holling III alone can overestimate grazing pressure when Z is high, suppressing P too aggressively and distorting bloom timing/amplitude.                                                         
+ +- Predator interference (zooplankton crowding/encounter interference) is ecologically motivated and commonly improves fits and stability without adding a new state variable.                                                 
+ +- This modification acts as an environmental modifier of the grazing process via Z itself and is consistent with the project’s trophic focus.                                                                                 
+ +                                                                                                                                                                                                                              
+ +Mathematical change:                                                                                                                                                                                                          
+ +- Current per-capita grazing rate:                                                                                                                                                                                            
+ +  g = g_max * P^h / (K_P_g^h + P^h)                                                                                                                                                                                           
+ +- Modified with predator interference (Beddington-DeAngelis style):                                                                                                                                                           
+ +  g = [g_max * P^h / (K_P_g^h + P^h)] / (1 + i_Z * Z)                                                                                                                                                                         
+ +  where i_Z ≥ 0 is the predator interference coefficient with units (g C m^-3)^-1.                                                                                                                                            
+ +                                                                                                                                                                                                                              
+ +Expected effects on dynamics and residuals:                                                                                                                                                                                   
+ +- Reduces grazing when zooplankton are abundant, preventing premature/over-strong top-down control.                                                                                                                           
+ +- Allows more realistic bloom build-up and decay, improving phase relationships among N, P, and Z.                                                                                                                            
+ +- Can damp spurious Z volatility at low food conditions.                                                                                                                                                                      
+ +                                                                                                                                                                                                                              
+ +D) Implementation summary                                                                                                                                                                                                     
+ +- Added new parameter i_Z (predator interference coefficient).                                                                                                                                                                
+ +- Mapped with softplus to keep it ≥ 0 and added smooth penalties to softly enforce plausible bounds.                                                                                                                          
+ +- Updated the grazing equation in model.cpp to divide the Holling III term by (1 + i_Z * Z_prev).                                                                                                                             
+ +- No use of current-step data vectors in process calculations; only previous-step states are used, as required.                                                                                                               
+ +                                                                                                                                                                                                                              
+ +E) Suggestions for future (optional, not implemented here)                                                                                                                                                                    
+ +- Add a detritus/particulate pool to introduce recycling lags.                                                                                                                                                                
+ +- Consider temperature dependence (Q10/Arrhenius) if temperature time series are available.                                                                                                                                   
+ +- Allow light limitation to include self-shading by P (attenuation), if irradiance and depth data are available.                                                                                                              
+ +- Consider variable assimilation efficiency linked to food quality or light, if evidence supports it.                                                                                                                         
+ +                                                                                                                                                                                                                              
+ +Please provide the residuals file to confirm whether this improvement addresses the dominant misfit modes. I can iterate based on that evidence.                                                                              
+                                                                                                                                                                                                                                
+
+POPULATIONS/POPULATION_0009/INDIVIDUAL_A6H9SGZE/parameters.json                                                                                                                                                                 
+
+                                                                                                                                                                                                                                
+ @@ -1,4 +1,5 @@                                                                                                                                                                                                                
+  {                                                                                                                                                                                                                             
+              "updated_from_literature": false,                                                                                                                                                                                 
+              "updated_fields_from_literature": []                                                                                                                                                                              
+          },                                                                                                                                                                                                                    
+          {                                                                                                                                                                                                                     
+ +            "parameter": "i_Z",                                                                                                                                                                                               
+ -            "value": 0.3,                                                                                                                                                                                                     
+ -            "units": "dimensionless (0-1)",                                                                                                                                                                                   
+ -            "description": "Assimilation efficiency of zooplankton (fraction of ingested phytoplankton converted to Z growth).",                                                                                              
+ -            "source": "literature",                                                                                                                                                                                           
+ +            "parameter": "i_Z",                                                                                                                                                                                               
+ +            "value": 0.2,                                                                                                                                                                                                     
+ -            "lower_bound": 0.0,                                                                                                                                                                                               
+ -            "upper_bound": 1.0,                                                                                                                                                                                               
+ -            "enhanced_semantic_description": "Zooplankton assimilation efficiency of ingested phytoplankton",                                                                                                                 
+ -            "updated_from_literature": false,                                                                                                                                                                                 
+ -            "updated_fields_from_literature": []                                                                                                                                                                              
+ -        },                                                                                                                                                                                                                    
+ -        {                                                                                                                                                                                                                     
+ -            "parameter": "phi_remin",                                                                                                                                                                                         
+ -            "value": 0.7,                                                                                                                                                                                                     
+ -            "units": "dimensionless (0-1)",                                                                                                                                                                                   
+ -            "description": "Fraction of mortality and non-assimilated ingestion instantaneously remineralized back to nutrients.",                                                                                            
+ -            "source": "literature",                                                                                                                                                                                           
+ -            "import_type": "PARAMETER",                                                                                                                                                                                       
+ -            "priority": 5,                                                                                                                                                                                                    
+ -            "lower_bound": 0.0,                                                                                                                                                                                               
+ -            "upper_bound": 1.0,                                                                                                                                                                                               
+ -            "enhanced_semantic_description": "Fraction of mortality and unassimilated ingestion remineralized",                                                                                                               
+ -            "updated_from_literature": false,                                                                                                                                                                                 
+ -            "updated_fields_from_literature": []                                                                                                                                                                              
+ -        },                                                                                                                                                                                                                    
+ -        {                                                                                                                                                                                                                     
+ -            "parameter": "m_P",                                                                                                                                                                                               
+ -            "value": 0.05,                                                                                                                                                                                                    
+ -            "units": "day^-1",                                                                                                                                                                                                
+ -            "description": "Linear non-grazing mortality/exudation rate of phytoplankton.",                                                                                                                                   
+ -            "source": "literature",                                                                                                                                                                                           
+ +            "parameter": "i_Z",                                                                                                                                                                                               
+ +            "value": 0.2,                                                                                                                                                                                                     
+ +            "units": "(g C m^-3)^-1",                                                                                                                                                                                         
+ +            "description": "Predator interference coefficient in the grazing denominator (Beddington-DeAngelis). Reduces effective grazing when zooplankton are abundant.",                                                   
+ +            "source": "ecological mechanism (initial estimate)",                                                                                                                                                              
+              "import_type": "PARAMETER",                                                                                                                                                                                       
+              "priority": 4,                                                                                                                                                                                                    
+              "lower_bound": 0.0,                                                                                                                                                                                               
+ -            "upper_bound": 1.0,                                                                                                                                                                                               
+ -            "enhanced_semantic_description": "Linear phytoplankton non-grazing mortality rate (per day)",                                                                                                                     
+ -            "updated_from_literature": false,                                                                                                                                                                                 
+ -            "updated_fields_from_literature": []                                                                                                                                                                              
+ -        },                                                                                                                                                                                                                    
+ -        {                                                                                                                                                                                                                     
+ -            "parameter": "q_P",                                                                                                                                                                                               
+ -            "value": 0.1,                                                                                                                                                                                                     
+ -            "units": "(g C m^-3)^-1 day^-1",                                                                                                                                                                                  
+ -            "description": "Quadratic (density-dependent) loss rate of phytoplankton (e.g., aggregation).",                                                                                                                   
+ -            "source": "literature",                                                                                                                                                                                           
+ -            "import_type": "PARAMETER",                                                                                                                                                                                       
+ -            "priority": 6,                                                                                                                                                                                                    
+ -            "lower_bound": 0.0,                                                                                                                                                                                               
+ -            "upper_bound": 1.0,                                                                                                                                                                                               
+ -            "enhanced_semantic_description": "Quadratic density-dependent phytoplankton loss rate",                                                                                                                           
+ -            "updated_from_literature": false,                                                                                                                                                                                 
+ -            "updated_fields_from_literature": []                                                                                                                                                                              
+ -        },                                                                                                                                                                                                                    
+ -        {                                                                                                                                                                                                                     
+ -            "parameter": "m_Z",                                                                                                                                                                                               
+ -            "value": 0.05,                                                                                                                                                                                                    
+ -            "units": "day^-1",                                                                                                                                                                                                
+ -            "description": "Linear mortality rate of zooplankton.",                                                                                                                                                           
+ -            "source": "literature",                                                                                                                                                                                           
+ -            "import_type": "PARAMETER",                                                                                                                                                                                       
+ -            "priority": 4,                                                                                                                                                                                                    
+ -            "lower_bound": 0.0,                                                                                                                                                                                               
+ -            "upper_bound": 1.0,                                                                                                                                                                                               
+ -            "enhanced_semantic_description": "Linear zooplankton mortality rate (per day)",                                                                                                                                   
+ -            "updated_from_literature": false,                                                                                                                                                                                 
+ -            "updated_fields_from_literature": []                                                                                                                                                                              
+ -        },                                                                                                                                                                                                                    
+ -        {                                                                                                                                                                                                                     
+ -            "parameter": "q_Z",                                                                                                                                                                                               
+ -            "value": 0.1,                                                                                                                                                                                                     
+ -            "units": "(g C m^-3)^-1 day^-1",                                                                                                                                                                                  
+ -            "description": "Quadratic (density-dependent) mortality rate of zooplankton.",                                                                                                                                    
+ -            "source": "literature",                                                                                                                                                                                           
+ -            "import_type": "PARAMETER",                                                                                                                                                                                       
+ -            "priority": 6,                                                                                                                                                                                                    
+ -            "lower_bound": 0.0,                                                                                                                                                                                               
+ -            "upper_bound": 1.0,                                                                                                                                                                                               
+ -            "enhanced_semantic_description": "Quadratic density-dependent zooplankton mortality rate",                                                                                                                        
+ -            "updated_from_literature": false,                                                                                                                                                                                 
+ -            "updated_fields_from_literature": []                                                                                                                                                                              
+ -        },                                                                                                                                                                                                                    
+ -        {                                                                                                                                                                                                                     
+ -            "parameter": "k_mix",                                                                                                                                                                                             
+ -            "value": 0.02,                                                                                                                                                                                                    
+ -            "units": "day^-1",                                                                                                                                                                                                
+ -            "description": "First-order mixing/relaxation rate for nutrient supply toward N_ext.",                                                                                                                            
+ -            "source": "literature",                                                                                                                                                                                           
+ -            "import_type": "PARAMETER",                                                                                                                                                                                       
+ -            "priority": 5,                                                                                                                                                                                                    
+ -            "lower_bound": 0.0,                                                                                                                                                                                               
+ -            "upper_bound": 1.0,                                                                                                                                                                                               
+ -            "enhanced_semantic_description": "First-order nutrient mixing rate toward external concentration",                                                                                                                
+ -            "updated_from_literature": false,                                                                                                                                                                                 
+ -            "updated_fields_from_literature": []                                                                                                                                                                              
+ -        },                                                                                                                                                                                                                    
+ -        {                                                                                                                                                                                                                     
+ -            "parameter": "N_ext",                                                                                                                                                                                             
+ -            "value": 0.3,                                                                                                                                                                                                     
+ -            "units": "g C m^-3",                                                                                                                                                                                              
+ -            "description": "External nutrient concentration toward which N relaxes due to mixing.",                                                                                                                           
+ -            "source": "initial estimate",                                                                                                                                                                                     
+    penalty += smooth_bound_penalty(qZ, true, Type(0.0), true, Type(1.0), pen_scale);                                                                                                                                           
+    penalty += smooth_bound_penalty(kmix, true, Type(0.0), true, Type(1.0), pen_scale);                                                                                                                                         
+      // Phytoplankton specific growth and biomass production                                                                                                                                                                   
+      Type Gp_spec = mu * f_lim;                   // day^-1                                                                                                                                                                    
+      Type Gp = Gp_spec * Pprev;                   // g C m^-3 day^-1                                                                                                                                                           
+                                                                                                                                                                                                                                
+ -    // Grazing functional response (Holling III)                                                                                                                                                                              
+ +    // Grazing functional response (Holling III with predator interference)                                                                                                                                                   
+      Type Ph = pow(Pprev + eps, h);               // P^h                                                                                                                                                                       
+ -    Type g_rate = gmax * Ph / (pow(Kpg + eps, h) + Ph + eps); // day^-1 per Z                                                                                                                                                 
+ +    Type denom_P = pow(Kpg + eps, h) + Ph + eps;                                                                                                                                                                              
+ +    // Beddington-DeAngelis predator interference modifier: divides per-capita rate by (1 + iZ * Zprev)                                                                                                                       
+ +    Type g_rate = gmax * Ph / denom_P / (Type(1.0) + iZ * Zprev); // day^-1 per Z                                                                                                                                             
+      Type C = g_rate * Zprev;                     // ingestion flux, g C m^-3 day^-1                                                                                                                                           
+                                                                                                                                                                                                                                
+      // Losses and remineralization                                                                                                                                                                                            
+      Type Lp = mP * Pprev + qP * Pprev * Pprev;   // P non-grazing losses, g C m^-3 day^-1                                                                                                                                     
+      Type Lz = mZ * Zprev + qZ * Zprev * Zprev;   // Z losses, g C m^-3 day^-1                                                                                                                                                 
+      Type Remin = phiRem * (Lp + Lz + (Type(1.0) - betaZ) * C); // remin flux to N                                                                                                                                             
+                                                                                                                                                                                                                                
+      // Nutrient uptake required to support Gp given efficiency                                                                                                                                                                
+      Type U = Gp / (eP + eps);                    // g C m^-3 day^-1                                                                                                                                                           
+                                                                                                                                                                                                                                
+      // Nutrient mixing supply                                                                                                                                                                                                 
+ + 216 / 266 lines [████████████████████████░░░░░░]  81%                                                                                                                                                                        
+                                                                                                                                                                                                                                
+Tokens: 8.6k sent, 9.2k received. Cost: $0.10 message, $0.10 session.
+Committing POPULATIONS/POPULATION_0009/INDIVIDUAL_A6H9SGZE/intention.txt before applying edits.
+Committing POPULATIONS/POPULATION_0009/INDIVIDUAL_A6H9SGZE/parameters.json before applying edits.
+Committing POPULATIONS/POPULATION_0009/INDIVIDUAL_A6H9SGZE/model.cpp before applying edits.
+Unable to add /home/spi085/Documents/_Projects/EMs-with-LLMs/POPULATIONS/POPULATION_0009/INDIVIDUAL_A6H9SGZE/parameters.json: Cmd('git') failed due to: exit code(1)
+  cmdline: git add /home/spi085/Documents/_Projects/EMs-with-LLMs/POPULATIONS/POPULATION_0009/INDIVIDUAL_A6H9SGZE/parameters.json
+  stderr: 'The following paths are ignored by one of your .gitignore files:
+POPULATIONS
+hint: Use -f if you really want to add them.
+hint: Turn this message off by running
+hint: "git config advice.addIgnoredFile false"'
+Unable to add /home/spi085/Documents/_Projects/EMs-with-LLMs/POPULATIONS/POPULATION_0009/INDIVIDUAL_A6H9SGZE/model.cpp: Cmd('git') failed due to: exit code(1)
+  cmdline: git add /home/spi085/Documents/_Projects/EMs-with-LLMs/POPULATIONS/POPULATION_0009/INDIVIDUAL_A6H9SGZE/model.cpp
+  stderr: 'The following paths are ignored by one of your .gitignore files:
+POPULATIONS
+hint: Use -f if you really want to add them.
+hint: Turn this message off by running
+hint: "git config advice.addIgnoredFile false"'
+Unable to add /home/spi085/Documents/_Projects/EMs-with-LLMs/POPULATIONS/POPULATION_0009/INDIVIDUAL_A6H9SGZE/intention.txt: Cmd('git') failed due to: exit code(1)
+  cmdline: git add /home/spi085/Documents/_Projects/EMs-with-LLMs/POPULATIONS/POPULATION_0009/INDIVIDUAL_A6H9SGZE/intention.txt
+  stderr: 'The following paths are ignored by one of your .gitignore files:
+POPULATIONS
+hint: Use -f if you really want to add them.
+hint: Turn this message off by running
+hint: "git config advice.addIgnoredFile false"'
+Unable to commit: Cmd('git') failed due to: exit code(1)
+  cmdline: git commit -m feat: Add POPULATION_0009 individual A6H9SGZE with model and params --no-verify -- /home/spi085/Documents/_Projects/EMs-with-LLMs/POPULATIONS/POPULATION_0009/INDIVIDUAL_A6H9SGZE/parameters.json 
+/home/spi085/Documents/_Projects/EMs-with-LLMs/POPULATIONS/POPULATION_0009/INDIVIDUAL_A6H9SGZE/model.cpp /home/spi085/Documents/_Projects/EMs-with-LLMs/POPULATIONS/POPULATION_0009/INDIVIDUAL_A6H9SGZE/intention.txt
+  stderr: 'error: pathspec '/home/spi085/Documents/_Projects/EMs-with-LLMs/POPULATIONS/POPULATION_0009/INDIVIDUAL_A6H9SGZE/parameters.json' did not match any file(s) known to git
+error: pathspec '/home/spi085/Documents/_Projects/EMs-with-LLMs/POPULATIONS/POPULATION_0009/INDIVIDUAL_A6H9SGZE/model.cpp' did not match any file(s) known to git
+error: pathspec '/home/spi085/Documents/_Projects/EMs-with-LLMs/POPULATIONS/POPULATION_0009/INDIVIDUAL_A6H9SGZE/intention.txt' did not match any file(s) known to git'
+Applied edit to POPULATIONS/POPULATION_0009/INDIVIDUAL_A6H9SGZE/parameters.json
+Applied edit to POPULATIONS/POPULATION_0009/INDIVIDUAL_A6H9SGZE/model.cpp
+Applied edit to POPULATIONS/POPULATION_0009/INDIVIDUAL_A6H9SGZE/intention.txt
+Improved existing model in individual: POPULATIONS/POPULATION_0009/INDIVIDUAL_A6H9SGZE
+Validating model for data leakage...
+Opening file: POPULATIONS/POPULATION_0009/INDIVIDUAL_A6H9SGZE/model.cpp
+File read successfully
+TMB convention check: {'uses_tmb_header': True, 'uses_data_macros': True, 'uses_vector_type': True, 'uses_standard_report': True, 'uses_objective_function': True, 'uses_std_vector': False, 'uses_string_report': False}
+Extracting vectors...
+Found data vectors: {'N_dat', 'P_dat', 'Z_dat', 'Time'}
+Found prediction vectors: {'fI', 'Z_pred', 'fN', 'P_pred', 'N_pred', 'env_mult'}
+Found reported vectors: {'fI', 'Z_pred', 'fN', 'penalty', 'P_pred', 'N_pred', 'env_mult', 'nll'}
+Finding initial conditions...
+Found 9 initial conditions
+Finding time-stepping loop...
+Found loop from line 185 to 239
+Looking for metadata file at: /home/spi085/Documents/_Projects/EMs-with-LLMs/POPULATIONS/POPULATION_0009/population_metadata.json
+Attempting to read CSV file: /home/spi085/Documents/_Projects/EMs-with-LLMs/Data/NPZ_example/npz_model_response.csv
+Successfully read CSV file with 4 columns
+Found response variables from /home/spi085/Documents/_Projects/EMs-with-LLMs/Data/NPZ_example/npz_model_response.csv: {'N_dat', 'P_dat', 'Z_dat'}
+[93m[PID 3491079] Running model for individual...[0m
+[0m[PID 3491079] Individual directory: POPULATIONS/POPULATION_0009/INDIVIDUAL_A6H9SGZE[0m
+[96m[PID 3491079] Launching Rscript... (timeout=none)[0m
+[93m[PID 3491079] R script stdout BEGIN >>>[0m
+[0mg++ -std=gnu++17 -I"/usr/share/R/include" -DNDEBUG -I"/home/spi085/R/x86_64-pc-linux-gnu-library/4.4/TMB/include" -I"/home/spi085/R/x86_64-pc-linux-gnu-library/4.4/RcppEigen/include"   -DTMB_EIGEN_DISABLE_WARNINGS   -DTMB_LIB_INIT=R_init_model  -DCPPAD_FRAMEWORK      -fpic  -O2  -c POPULATIONS/POPULATION_0009/INDIVIDUAL_A6H9SGZE/model.cpp -o POPULATIONS/POPULATION_0009/INDIVIDUAL_A6H9SGZE/model.o
+g++ -std=gnu++17 -shared -L/usr/lib/R/lib -Wl,-Bsymbolic-functions -flto=auto -ffat-lto-objects -Wl,-z,relro -o POPULATIONS/POPULATION_0009/INDIVIDUAL_A6H9SGZE/model.so POPULATIONS/POPULATION_0009/INDIVIDUAL_A6H9SGZE/model.o -L/usr/lib/R/lib -lR
+
+NA counts per required column:
+ Time N_dat P_dat Z_dat 
+    0     0     0     0 
+
+NA counts per required column:
+ Time N_dat P_dat Z_dat 
+    0     0     0     0 
+
+PARAMETER starts (first few):
+      mu_max          K_N light_logit0    light_amp season_phase        s_lim 
+         1.0          0.1          0.0          1.0          0.0          4.0 
+       g_max        K_P_g          h_g          i_Z       beta_Z    phi_remin 
+         0.7          0.1          2.0          0.2          0.3          0.7 
+Starting model phases
+Number of phases: 6 
+Phase 1 
+Initial parameter values for phase 1 :
+mu_max 
+     1 
+Final parameter values for phase 1 :
+  mu_max 
+3.004985 
+Convergence message: relative convergence (4) 
+Number of iterations: 7 
+Objective function value: 156470.8 
+Gradient at solution for phase 1 :
+              [,1]
+[1,] -0.0001238221
+Phase 2 
+Initial parameter values for phase 2 :
+    K_N   g_max   K_P_g sigma_N sigma_P sigma_Z 
+    0.1     0.7     0.1     0.1     0.1     0.1 
+Final parameter values for phase 2 :
+    K_N   g_max   K_P_g sigma_N sigma_P sigma_Z 
+  1e-06   5e+00   1e-06   1e+00   1e+00   1e+00 
+Convergence message: both X-convergence and relative convergence (5) 
+Number of iterations: 10 
+Objective function value: 2387.447 
+Gradient at solution for phase 2 :
+         [,1]      [,2]     [,3]      [,4]      [,5]      [,6]
+[1,] 7.286236 -15.19863 39.14285 -839.3829 -1169.785 -1042.368
+Phase 3 
+Initial parameter values for phase 3 :
+  light_logit0      light_amp         beta_Z e_P_uptake_eff 
+           0.0            1.0            0.3            0.8 
+Final parameter values for phase 3 :
+  light_logit0      light_amp         beta_Z e_P_uptake_eff 
+      4.169652       3.104267       0.000000       0.000000 
+Convergence message: relative convergence (4) 
+Number of iterations: 12 
+Objective function value: 2130.85 
+Gradient at solution for phase 3 :
+             [,1]          [,2]     [,3]    [,4]
+[1,] 3.129881e-05 -5.933656e-06 59.94878 301.525
+Phase 4 
+Initial parameter values for phase 4 :
+season_phase        s_lim          i_Z          m_P          m_Z 
+        0.00         4.00         0.20         0.05         0.05 
+Final parameter values for phase 4 :
+season_phase        s_lim          i_Z          m_P          m_Z 
+   0.6569455    9.4868466    0.0000000    1.0000000    1.0000000 
+Convergence message: relative convergence (4) 
+Number of iterations: 10 
+Objective function value: 1988.082 
+Gradient at solution for phase 4 :
+             [,1]         [,2]     [,3]      [,4]      [,5]
+[1,] 1.587671e-05 4.678557e-05 24.59225 -56.55977 -74.28201
+Phase 5 
+Initial parameter values for phase 5 :
+      h_g phi_remin     k_mix 
+     2.00      0.70      0.02 
+Final parameter values for phase 5 :
+      h_g phi_remin     k_mix 
+        3         0         1 
+Convergence message: both X-convergence and relative convergence (5) 
+Number of iterations: 2 
+Objective function value: 1813.135 
+Gradient at solution for phase 5 :
+          [,1]     [,2]      [,3]
+[1,] -10.32856 160.6907 -26.61015
+Phase 6 
+Initial parameter values for phase 6 :
+  q_P   q_Z N_ext 
+  0.1   0.1   0.3 
+Final parameter values for phase 6 :
+  q_P   q_Z N_ext 
+    1     1     0 
+Convergence message: both X-convergence and relative convergence (5) 
+Number of iterations: 2 
+Objective function value: 1670.059 
+Gradient at solution for phase 6 :
+          [,1]      [,2]     [,3]
+[1,] -60.04964 -68.43367 80.58906
+Final Phase
+Initial parameter values for final phase:
+        mu_max            K_N   light_logit0      light_amp   season_phase 
+     3.0049850      0.0000010      4.1696519      3.1042666      0.6569455 
+         s_lim          g_max          K_P_g            h_g            i_Z 
+     9.4868466      5.0000000      0.0000010      3.0000000      0.0000000 
+        beta_Z      phi_remin            m_P            q_P            m_Z 
+     0.0000000      0.0000000      1.0000000      1.0000000      1.0000000 
+           q_Z          k_mix          N_ext e_P_uptake_eff        sigma_N 
+     1.0000000      1.0000000      0.0000000      0.0000000      1.0000000 
+       sigma_P        sigma_Z 
+     1.0000000      1.0000000 
+Final parameter values for final phase:
+        mu_max            K_N   light_logit0      light_amp   season_phase 
+     5.0000000      0.0000010      0.7251770      0.8859055      3.1415927 
+         s_lim          g_max          K_P_g            h_g            i_Z 
+     9.4460645      5.0000000      0.0000010      3.0000000      0.0000000 
+        beta_Z      phi_remin            m_P            q_P            m_Z 
+     0.0000000      0.0000000      1.0000000      1.0000000      1.0000000 
+           q_Z          k_mix          N_ext e_P_uptake_eff        sigma_N 
+     1.0000000      1.0000000      0.0000000      0.0000000      1.0000000 
+       sigma_P        sigma_Z 
+     1.0000000      1.0000000 
+Convergence message: relative convergence (4) 
+Number of iterations: 49 
+Objective function value: 1625.803 
+Gradient at solution for final phase:
+          [,1]    [,2]          [,3]         [,4]      [,5]          [,6]
+[1,] -12.67778 20.7304 -0.0005708142 0.0002860906 -5.274895 -5.600346e-06
+        [,7]     [,8]      [,9]    [,10]    [,11]    [,12]     [,13]     [,14]
+[1,] -30.226 108.8666 -10.18202 46.33141 49.89107 150.7418 -80.66283 -72.49909
+        [,15]     [,16]     [,17]    [,18]    [,19]     [,20]     [,21]
+[1,] -70.7568 -71.91917 -25.72829 65.66176 209.6457 -75.71102 -887.7987
+        [,22]
+[1,] -562.209
+All phases completed
+Successfully updated parameters_metadata.json with optimized values
+[1] "Train test split:"
+[1] 1
+
+Running model validation...
+No test data available (train_test_split >= 1.0)
+NULL
+
+DEBUG: Report contents:
+List of 8
+ $ env_mult: num [1:200] 1.22e-16 1.22e-16 -8.66e-03 -1.73e-02 -2.60e-02 ...
+ $ N_pred  : num [1:200] 0.4 0.362 0.327 0.359 0.363 ...
+ $ nll     : num 1617
+ $ penalty : num 8.92
+ $ fI      : num [1:200] 0.674 0.674 0.671 0.669 0.667 ...
+ $ Z_pred  : num [1:200] 0.05 0.501 0.59 0.581 0.58 ...
+ $ P_pred  : num [1:200] 0.1 0.52 0.474 0.453 0.458 ...
+ $ fN      : num [1:200] 0.366 0.568 0.562 0.557 0.562 ...
+NULL
+
+DEBUG: Available variables in report:
+[1] "env_mult" "N_pred"   "nll"      "penalty"  "fI"       "Z_pred"   "P_pred"  
+[8] "fN"      
+
+Checking predictions and calculating objective function...
+
+DEBUG: Processing N_pred 
+DEBUG: First few predictions: 0.4 0.3615242 0.3266757 0.3586427 0.3634118 0.3613163 
+DEBUG: Summary statistics:
+   Min. 1st Qu.  Median    Mean 3rd Qu.    Max. 
+ 0.3267  0.4226  0.6273  0.6254  0.8312  0.8778 
+DEBUG: All zeros? FALSE 
+DEBUG: Any infinities? FALSE 
+
+DEBUG: Processing P_pred 
+DEBUG: First few predictions: 0.1 0.5196446 0.4736753 0.4534255 0.4584172 0.4583248 
+DEBUG: Summary statistics:
+   Min. 1st Qu.  Median    Mean 3rd Qu.    Max. 
+ 0.1000  0.3393  0.3764  0.3853  0.4336  0.5196 
+DEBUG: All zeros? FALSE 
+DEBUG: Any infinities? FALSE 
+
+DEBUG: Processing Z_pred 
+DEBUG: First few predictions: 0.05 0.5010559 0.5896181 0.5811786 0.5795713 0.5795805 
+DEBUG: Summary statistics:
+   Min. 1st Qu.  Median    Mean 3rd Qu.    Max. 
+ 0.0500  0.5639  0.5690  0.5674  0.5766  0.5896 
+DEBUG: All zeros? FALSE 
+DEBUG: Any infinities? FALSE 
+
+DEBUG: Using the following variables for objective function:
+N_dat -> N_pred
+P_dat -> P_pred
+Z_dat -> Z_pred
+
+DEBUG: Calculating MSE for prediction variables only:
+
+DEBUG: N_pred 
+Observed: 0.4 0.375 0.346 0.314 0.278 0.239 ...
+Predicted: 0.4 0.3615242 0.3266757 0.3586427 0.3634118 0.3613163 ...
+MSE (normalized): 24.10974 
+
+DEBUG: P_pred 
+Observed: 0.1 0.117 0.138 0.161 0.187 0.215 ...
+Predicted: 0.1 0.5196446 0.4736753 0.4534255 0.4584172 0.4583248 ...
+MSE (normalized): 20.08962 
+
+DEBUG: Z_pred 
+Observed: 0.05 0.052 0.053 0.055 0.057 0.059 ...
+Predicted: 0.05 0.5010559 0.5896181 0.5811786 0.5795713 0.5795805 ...
+MSE (normalized): 823.1829 
+
+DEBUG: MSE values:
+    N_dat     P_dat     Z_dat 
+ 24.10974  20.08962 823.18286 
+
+DEBUG: Final objective value (mean of MSEs): 289.1274 
+
+Final objective function value: 289.1274 
+
+JSON_REPORT_START
+{
+  "status": "SUCCESS",
+  "objective_value": 289.1274,
+  "model_summary": ["            Length Class  Mode     ", "par         22     -none- numeric  ", "objective    1     -none- numeric  ", "convergence  1     -none- numeric  ", "iterations   1     -none- numeric  ", "evaluations  2     -none- numeric  ", "message      1     -none- character"],
+  "model_report": {
+    "env_mult": [1.2246e-16, 1.2246e-16, -0.0087, -0.0173, -0.026, -0.0346, -0.0432, -0.0519, -0.0605, -0.0691, -0.0778, -0.0864, -0.095, -0.1036, -0.1122, -0.1208, -0.1294, -0.138, -0.1465, -0.1551, -0.1636, -0.1721, -0.1807, -0.1892, -0.1977, -0.2061, -0.2146, -0.223, -0.2314, -0.2398, -0.2482, -0.2566, -0.265, -0.2733, -0.2816, -0.2899, -0.2982, -0.3064, -0.3146, -0.3228, -0.331, -0.3392, -0.3473, -0.3554, -0.3634, -0.3715, -0.3795, -0.3875, -0.3955, -0.4034, -0.4113, -0.4192, -0.427, -0.4348, -0.4426, -0.4503, -0.458, -0.4657, -0.4733, -0.4809, -0.4885, -0.496, -0.5035, -0.511, -0.5184, -0.5258, -0.5331, -0.5404, -0.5477, -0.5549, -0.5621, -0.5692, -0.5763, -0.5833, -0.5903, -0.5973, -0.6042, -0.6111, -0.6179, -0.6247, -0.6314, -0.6381, -0.6447, -0.6513, -0.6579, -0.6644, -0.6708, -0.6772, -0.6835, -0.6898, -0.6961, -0.7022, -0.7084, -0.7144, -0.7205, -0.7264, -0.7324, -0.7382, -0.744, -0.7498, -0.7555, -0.7611, -0.7667, -0.7722, -0.7777, -0.7831, -0.7885, -0.7937, -0.799, -0.8041, -0.8093, -0.8143, -0.8193, -0.8242, -0.8291, -0.8339, -0.8386, -0.8433, -0.8479, -0.8525, -0.857, -0.8614, -0.8658, -0.8701, -0.8743, -0.8785, -0.8826, -0.8866, -0.8906, -0.8945, -0.8983, -0.9021, -0.9058, -0.9094, -0.913, -0.9165, -0.9199, -0.9232, -0.9265, -0.9298, -0.9329, -0.936, -0.939, -0.9419, -0.9448, -0.9476, -0.9503, -0.953, -0.9556, -0.9581, -0.9605, -0.9629, -0.9652, -0.9674, -0.9696, -0.9717, -0.9737, -0.9756, -0.9775, -0.9793, -0.981, -0.9826, -0.9842, -0.9857, -0.9871, -0.9884, -0.9897, -0.9909, -0.992, -0.9931, -0.9941, -0.995, -0.9958, -0.9966, -0.9972, -0.9978, -0.9984, -0.9988, -0.9992, -0.9995, -0.9997, -0.9999, -1, -1, -0.9999, -0.9998, -0.9996, -0.9993, -0.9989, -0.9985, -0.9979, -0.9974, -0.9967, -0.9959, -0.9951, -0.9942, -0.9933, -0.9922, -0.9911, -0.9899],
+    "N_pred": [0.4, 0.3615, 0.3267, 0.3586, 0.3634, 0.3613, 0.3626, 0.3625, 0.3639, 0.3637, 0.3651, 0.365, 0.3665, 0.3664, 0.368, 0.368, 0.3696, 0.3696, 0.3713, 0.3714, 0.3731, 0.3733, 0.3751, 0.3754, 0.3772, 0.3776, 0.3795, 0.38, 0.382, 0.3826, 0.3847, 0.3853, 0.3875, 0.3883, 0.3906, 0.3914, 0.3939, 0.3948, 0.3974, 0.3985, 0.4004, 0.4031, 0.4044, 0.4072, 0.4086, 0.4116, 0.4131, 0.4162, 0.4179, 0.4212, 0.423, 0.4264, 0.4284, 0.4319, 0.4341, 0.4377, 0.44, 0.4438, 0.4463, 0.4502, 0.4528, 0.4569, 0.4597, 0.4639, 0.4668, 0.4711, 0.4742, 0.4787, 0.4819, 0.4865, 0.4898, 0.4945, 0.498, 0.5028, 0.5064, 0.5114, 0.5151, 0.5201, 0.5239, 0.5291, 0.533, 0.5375, 0.5427, 0.5468, 0.5522, 0.5563, 0.5616, 0.5658, 0.5712, 0.5755, 0.5809, 0.5852, 0.5907, 0.595, 0.6005, 0.6048, 0.6104, 0.6147, 0.6202, 0.6246, 0.6301, 0.6344, 0.6399, 0.6443, 0.6498, 0.6541, 0.6595, 0.6638, 0.6692, 0.6735, 0.6788, 0.683, 0.6883, 0.6925, 0.6977, 0.7018, 0.7069, 0.711, 0.716, 0.72, 0.7243, 0.7293, 0.7332, 0.7381, 0.7418, 0.7466, 0.7503, 0.7549, 0.7585, 0.763, 0.7665, 0.7709, 0.7742, 0.7785, 0.7818, 0.7859, 0.7891, 0.7931, 0.7961, 0.8001, 0.803, 0.8067, 0.8095, 0.8131, 0.8158, 0.8192, 0.8218, 0.8251, 0.8275, 0.8307, 0.8329, 0.8359, 0.838, 0.8409, 0.8429, 0.8456, 0.8474, 0.85, 0.8516, 0.854, 0.8555, 0.8572, 0.8594, 0.8608, 0.8628, 0.8639, 0.8658, 0.8667, 0.8684, 0.8692, 0.8708, 0.8714, 0.8728, 0.8732, 0.8744, 0.8747, 0.8758, 0.8759, 0.8768, 0.8767, 0.8774, 0.8772, 0.8778, 0.8774, 0.8778, 0.8772, 0.8775, 0.8768, 0.8768, 0.8759, 0.8758, 0.8748, 0.8745, 0.8733, 0.8729, 0.8715, 0.8709, 0.8694, 0.8686, 0.8669],
+    "nll": 1616.8787,
+    "penalty": 8.9246,
+    "fI": [0.6737, 0.6737, 0.6714, 0.669, 0.6667, 0.6643, 0.6619, 0.6596, 0.6572, 0.6548, 0.6524, 0.6499, 0.6475, 0.6451, 0.6427, 0.6402, 0.6378, 0.6354, 0.6329, 0.6305, 0.628, 0.6256, 0.6231, 0.6206, 0.6182, 0.6157, 0.6133, 0.6108, 0.6083, 0.6058, 0.6034, 0.6009, 0.5984, 0.596, 0.5935, 0.591, 0.5886, 0.5861, 0.5837, 0.5812, 0.5788, 0.5763, 0.5739, 0.5714, 0.569, 0.5666, 0.5641, 0.5617, 0.5593, 0.5569, 0.5545, 0.5521, 0.5497, 0.5473, 0.545, 0.5426, 0.5402, 0.5379, 0.5355, 0.5332, 0.5309, 0.5286, 0.5263, 0.524, 0.5217, 0.5195, 0.5172, 0.515, 0.5127, 0.5105, 0.5083, 0.5061, 0.5039, 0.5018, 0.4996, 0.4975, 0.4953, 0.4932, 0.4911, 0.489, 0.487, 0.4849, 0.4829, 0.4808, 0.4788, 0.4768, 0.4749, 0.4729, 0.4709, 0.469, 0.4671, 0.4652, 0.4633, 0.4615, 0.4596, 0.4578, 0.456, 0.4542, 0.4524, 0.4507, 0.4489, 0.4472, 0.4455, 0.4439, 0.4422, 0.4405, 0.4389, 0.4373, 0.4357, 0.4342, 0.4326, 0.4311, 0.4296, 0.4281, 0.4266, 0.4252, 0.4238, 0.4224, 0.421, 0.4196, 0.4183, 0.4169, 0.4156, 0.4143, 0.4131, 0.4118, 0.4106, 0.4094, 0.4082, 0.4071, 0.4059, 0.4048, 0.4037, 0.4026, 0.4016, 0.4006, 0.3995, 0.3986, 0.3976, 0.3966, 0.3957, 0.3948, 0.3939, 0.3931, 0.3922, 0.3914, 0.3906, 0.3898, 0.3891, 0.3883, 0.3876, 0.3869, 0.3862, 0.3856, 0.385, 0.3844, 0.3838, 0.3832, 0.3827, 0.3821, 0.3817, 0.3812, 0.3807, 0.3803, 0.3799, 0.3795, 0.3791, 0.3788, 0.3784, 0.3781, 0.3778, 0.3776, 0.3773, 0.3771, 0.3769, 0.3768, 0.3766, 0.3765, 0.3764, 0.3763, 0.3762, 0.3762, 0.3761, 0.3761, 0.3762, 0.3762, 0.3763, 0.3763, 0.3765, 0.3766, 0.3767, 0.3769, 0.3771, 0.3773, 0.3775, 0.3778, 0.3781, 0.3784, 0.3787, 0.379],
+    "Z_pred": [0.05, 0.5011, 0.5896, 0.5812, 0.5796, 0.5796, 0.5803, 0.5796, 0.5802, 0.5795, 0.5801, 0.5794, 0.58, 0.5794, 0.58, 0.5793, 0.5799, 0.5792, 0.5798, 0.5791, 0.5797, 0.579, 0.5796, 0.5789, 0.5795, 0.5788, 0.5794, 0.5787, 0.5792, 0.5785, 0.5791, 0.5784, 0.579, 0.5782, 0.5788, 0.5781, 0.5786, 0.5779, 0.5785, 0.5777, 0.5776, 0.5782, 0.5775, 0.578, 0.5772, 0.5778, 0.577, 0.5776, 0.5768, 0.5773, 0.5766, 0.5771, 0.5763, 0.5768, 0.5761, 0.5766, 0.5758, 0.5763, 0.5755, 0.576, 0.5753, 0.5758, 0.575, 0.5755, 0.5747, 0.5752, 0.5744, 0.5749, 0.5741, 0.5745, 0.5737, 0.5742, 0.5734, 0.5739, 0.5731, 0.5736, 0.5728, 0.5732, 0.5724, 0.5729, 0.5721, 0.5719, 0.5724, 0.5716, 0.5721, 0.5713, 0.5718, 0.571, 0.5714, 0.5706, 0.5711, 0.5703, 0.5708, 0.57, 0.5705, 0.5697, 0.5702, 0.5694, 0.5699, 0.5691, 0.5696, 0.5688, 0.5693, 0.5685, 0.569, 0.5682, 0.5687, 0.5679, 0.5684, 0.5676, 0.5681, 0.5674, 0.5679, 0.5671, 0.5676, 0.5669, 0.5674, 0.5666, 0.5671, 0.5664, 0.5662, 0.5668, 0.566, 0.5665, 0.5658, 0.5663, 0.5656, 0.5661, 0.5654, 0.5659, 0.5652, 0.5657, 0.565, 0.5655, 0.5648, 0.5653, 0.5646, 0.5652, 0.5645, 0.565, 0.5643, 0.5648, 0.5641, 0.5647, 0.564, 0.5645, 0.5639, 0.5644, 0.5637, 0.5643, 0.5636, 0.5642, 0.5635, 0.5641, 0.5634, 0.5639, 0.5633, 0.5638, 0.5632, 0.5638, 0.5631, 0.5629, 0.5637, 0.563, 0.5636, 0.5629, 0.5635, 0.5628, 0.5634, 0.5628, 0.5634, 0.5627, 0.5633, 0.5627, 0.5633, 0.5627, 0.5633, 0.5626, 0.5632, 0.5626, 0.5632, 0.5626, 0.5632, 0.5626, 0.5632, 0.5626, 0.5632, 0.5626, 0.5632, 0.5626, 0.5633, 0.5626, 0.5633, 0.5627, 0.5633, 0.5627, 0.5634, 0.5628, 0.5634, 0.5628],
+    "P_pred": [0.1, 0.5196, 0.4737, 0.4534, 0.4584, 0.4583, 0.4585, 0.4575, 0.458, 0.457, 0.4574, 0.4564, 0.4569, 0.4558, 0.4562, 0.4552, 0.4556, 0.4545, 0.4548, 0.4537, 0.4541, 0.4529, 0.4532, 0.4521, 0.4523, 0.4511, 0.4514, 0.4502, 0.4504, 0.4491, 0.4493, 0.448, 0.4482, 0.4468, 0.447, 0.4456, 0.4457, 0.4442, 0.4443, 0.4428, 0.4421, 0.4421, 0.4406, 0.4406, 0.439, 0.4389, 0.4373, 0.4372, 0.4356, 0.4354, 0.4337, 0.4336, 0.4318, 0.4316, 0.4299, 0.4296, 0.4278, 0.4276, 0.4257, 0.4254, 0.4235, 0.4232, 0.4213, 0.421, 0.419, 0.4187, 0.4167, 0.4164, 0.4144, 0.414, 0.412, 0.4116, 0.4096, 0.4092, 0.4072, 0.4067, 0.4047, 0.4043, 0.4023, 0.4019, 0.3998, 0.3987, 0.3982, 0.3962, 0.3958, 0.3937, 0.3934, 0.3913, 0.391, 0.389, 0.3886, 0.3866, 0.3863, 0.3843, 0.384, 0.382, 0.3817, 0.3798, 0.3795, 0.3776, 0.3773, 0.3754, 0.3752, 0.3733, 0.3731, 0.3712, 0.3711, 0.3692, 0.3691, 0.3673, 0.3671, 0.3654, 0.3652, 0.3635, 0.3634, 0.3617, 0.3616, 0.36, 0.3599, 0.3583, 0.3575, 0.3574, 0.3558, 0.3559, 0.3543, 0.3543, 0.3528, 0.3529, 0.3513, 0.3514, 0.3499, 0.3501, 0.3486, 0.3488, 0.3473, 0.3475, 0.3461, 0.3463, 0.3449, 0.3452, 0.3438, 0.3441, 0.3427, 0.343, 0.3417, 0.3421, 0.3408, 0.3411, 0.3399, 0.3402, 0.339, 0.3394, 0.3382, 0.3386, 0.3375, 0.3379, 0.3368, 0.3373, 0.3361, 0.3366, 0.3355, 0.3354, 0.3358, 0.3347, 0.3353, 0.3343, 0.3349, 0.3339, 0.3345, 0.3335, 0.3342, 0.3332, 0.3339, 0.3329, 0.3336, 0.3327, 0.3334, 0.3326, 0.3333, 0.3324, 0.3332, 0.3324, 0.3332, 0.3324, 0.3332, 0.3324, 0.3333, 0.3325, 0.3334, 0.3326, 0.3335, 0.3328, 0.3337, 0.333, 0.334, 0.3333, 0.3343, 0.3337, 0.3347, 0.3341],
+    "fN": [0.3659, 0.5684, 0.5622, 0.5565, 0.5617, 0.5625, 0.5622, 0.5624, 0.5624, 0.5626, 0.5626, 0.5628, 0.5628, 0.563, 0.563, 0.5633, 0.5633, 0.5635, 0.5635, 0.5638, 0.5638, 0.5641, 0.5641, 0.5644, 0.5645, 0.5648, 0.5648, 0.5651, 0.5652, 0.5655, 0.5656, 0.566, 0.5661, 0.5664, 0.5666, 0.5669, 0.5671, 0.5675, 0.5676, 0.568, 0.5682, 0.5685, 0.5689, 0.5691, 0.5696, 0.5698, 0.5703, 0.5706, 0.5711, 0.5713, 0.5718, 0.5721, 0.5727, 0.573, 0.5735, 0.5739, 0.5745, 0.5748, 0.5754, 0.5758, 0.5765, 0.5769, 0.5775, 0.5779, 0.5786, 0.5791, 0.5797, 0.5802, 0.5809, 0.5814, 0.5821, 0.5827, 0.5834, 0.5839, 0.5847, 0.5852, 0.586, 0.5866, 0.5874, 0.5879, 0.5887, 0.5893, 0.59, 0.5908, 0.5915, 0.5923, 0.5929, 0.5937, 0.5943, 0.5952, 0.5958, 0.5966, 0.5973, 0.5981, 0.5987, 0.5996, 0.6002, 0.601, 0.6017, 0.6025, 0.6031, 0.604, 0.6046, 0.6054, 0.606, 0.6068, 0.6075, 0.6083, 0.6089, 0.6097, 0.6103, 0.6111, 0.6117, 0.6124, 0.613, 0.6138, 0.6144, 0.6151, 0.6157, 0.6164, 0.617, 0.6176, 0.6183, 0.6189, 0.6196, 0.6201, 0.6208, 0.6213, 0.6219, 0.6224, 0.6231, 0.6235, 0.6242, 0.6246, 0.6252, 0.6257, 0.6262, 0.6267, 0.6272, 0.6277, 0.6282, 0.6286, 0.6291, 0.6295, 0.63, 0.6304, 0.6308, 0.6312, 0.6316, 0.6319, 0.6324, 0.6327, 0.6331, 0.6334, 0.6338, 0.634, 0.6344, 0.6346, 0.635, 0.6352, 0.6355, 0.6357, 0.636, 0.6363, 0.6364, 0.6367, 0.6369, 0.6371, 0.6372, 0.6375, 0.6376, 0.6378, 0.6379, 0.638, 0.6381, 0.6383, 0.6383, 0.6384, 0.6385, 0.6386, 0.6386, 0.6387, 0.6386, 0.6387, 0.6387, 0.6387, 0.6386, 0.6387, 0.6386, 0.6386, 0.6385, 0.6385, 0.6383, 0.6383, 0.6381, 0.6381, 0.6379, 0.6378, 0.6376, 0.6375]
+  },
+  "plot_data": {
+    "N_pred": {
+      "Time": [0, 0.503, 1.005, 1.508, 2.01, 2.513, 3.015, 3.518, 4.02, 4.523, 5.025, 5.528, 6.03, 6.533, 7.035, 7.538, 8.04, 8.543, 9.045, 9.548, 10.05, 10.553, 11.055, 11.558, 12.06, 12.563, 13.065, 13.568, 14.07, 14.573, 15.075, 15.578, 16.08, 16.583, 17.085, 17.588, 18.09, 18.593, 19.095, 19.598, 20.101, 20.603, 21.106, 21.608, 22.111, 22.613, 23.116, 23.618, 24.121, 24.623, 25.126, 25.628, 26.131, 26.633, 27.136, 27.638, 28.141, 28.643, 29.146, 29.648, 30.151, 30.653, 31.156, 31.658, 32.161, 32.663, 33.166, 33.668, 34.171, 34.673, 35.176, 35.678, 36.181, 36.683, 37.186, 37.688, 38.191, 38.693, 39.196, 39.698, 40.201, 40.704, 41.206, 41.709, 42.211, 42.714, 43.216, 43.719, 44.221, 44.724, 45.226, 45.729, 46.231, 46.734, 47.236, 47.739, 48.241, 48.744, 49.246, 49.749, 50.251, 50.754, 51.256, 51.759, 52.261, 52.764, 53.266, 53.769, 54.271, 54.774, 55.276, 55.779, 56.281, 56.784, 57.286, 57.789, 58.291, 58.794, 59.296, 59.799, 60.302, 60.804, 61.307, 61.809, 62.312, 62.814, 63.317, 63.819, 64.322, 64.824, 65.327, 65.829, 66.332, 66.834, 67.337, 67.839, 68.342, 68.844, 69.347, 69.849, 70.352, 70.854, 71.357, 71.859, 72.362, 72.864, 73.367, 73.869, 74.372, 74.874, 75.377, 75.879, 76.382, 76.884, 77.387, 77.889, 78.392, 78.894, 79.397, 79.899, 80.402, 80.905, 81.407, 81.91, 82.412, 82.915, 83.417, 83.92, 84.422, 84.925, 85.427, 85.93, 86.432, 86.935, 87.437, 87.94, 88.442, 88.945, 89.447, 89.95, 90.452, 90.955, 91.457, 91.96, 92.462, 92.965, 93.467, 93.97, 94.472, 94.975, 95.477, 95.98, 96.482, 96.985, 97.487, 97.99, 98.492, 98.995, 99.497, 100],
+      "Modeled": [0.4, 0.3615, 0.3267, 0.3586, 0.3634, 0.3613, 0.3626, 0.3625, 0.3639, 0.3637, 0.3651, 0.365, 0.3665, 0.3664, 0.368, 0.368, 0.3696, 0.3696, 0.3713, 0.3714, 0.3731, 0.3733, 0.3751, 0.3754, 0.3772, 0.3776, 0.3795, 0.38, 0.382, 0.3826, 0.3847, 0.3853, 0.3875, 0.3883, 0.3906, 0.3914, 0.3939, 0.3948, 0.3974, 0.3985, 0.4004, 0.4031, 0.4044, 0.4072, 0.4086, 0.4116, 0.4131, 0.4162, 0.4179, 0.4212, 0.423, 0.4264, 0.4284, 0.4319, 0.4341, 0.4377, 0.44, 0.4438, 0.4463, 0.4502, 0.4528, 0.4569, 0.4597, 0.4639, 0.4668, 0.4711, 0.4742, 0.4787, 0.4819, 0.4865, 0.4898, 0.4945, 0.498, 0.5028, 0.5064, 0.5114, 0.5151, 0.5201, 0.5239, 0.5291, 0.533, 0.5375, 0.5427, 0.5468, 0.5522, 0.5563, 0.5616, 0.5658, 0.5712, 0.5755, 0.5809, 0.5852, 0.5907, 0.595, 0.6005, 0.6048, 0.6104, 0.6147, 0.6202, 0.6246, 0.6301, 0.6344, 0.6399, 0.6443, 0.6498, 0.6541, 0.6595, 0.6638, 0.6692, 0.6735, 0.6788, 0.683, 0.6883, 0.6925, 0.6977, 0.7018, 0.7069, 0.711, 0.716, 0.72, 0.7243, 0.7293, 0.7332, 0.7381, 0.7418, 0.7466, 0.7503, 0.7549, 0.7585, 0.763, 0.7665, 0.7709, 0.7742, 0.7785, 0.7818, 0.7859, 0.7891, 0.7931, 0.7961, 0.8001, 0.803, 0.8067, 0.8095, 0.8131, 0.8158, 0.8192, 0.8218, 0.8251, 0.8275, 0.8307, 0.8329, 0.8359, 0.838, 0.8409, 0.8429, 0.8456, 0.8474, 0.85, 0.8516, 0.854, 0.8555, 0.8572, 0.8594, 0.8608, 0.8628, 0.8639, 0.8658, 0.8667, 0.8684, 0.8692, 0.8708, 0.8714, 0.8728, 0.8732, 0.8744, 0.8747, 0.8758, 0.8759, 0.8768, 0.8767, 0.8774, 0.8772, 0.8778, 0.8774, 0.8778, 0.8772, 0.8775, 0.8768, 0.8768, 0.8759, 0.8758, 0.8748, 0.8745, 0.8733, 0.8729, 0.8715, 0.8709, 0.8694, 0.8686, 0.8669],
+      "Observed": [0.4, 0.375, 0.346, 0.314, 0.278, 0.239, 0.197, 0.155, 0.114, 0.076, 0.048, 0.031, 0.023, 0.021, 0.021, 0.021, 0.022, 0.023, 0.024, 0.025, 0.026, 0.028, 0.03, 0.032, 0.035, 0.038, 0.043, 0.048, 0.055, 0.064, 0.075, 0.086, 0.098, 0.11, 0.122, 0.133, 0.144, 0.154, 0.165, 0.174, 0.184, 0.193, 0.201, 0.21, 0.217, 0.225, 0.232, 0.238, 0.245, 0.251, 0.256, 0.261, 0.266, 0.27, 0.274, 0.278, 0.281, 0.284, 0.287, 0.289, 0.291, 0.293, 0.295, 0.296, 0.296, 0.297, 0.297, 0.297, 0.297, 0.296, 0.295, 0.294, 0.293, 0.292, 0.29, 0.288, 0.286, 0.284, 0.282, 0.279, 0.277, 0.275, 0.272, 0.27, 0.268, 0.266, 0.264, 0.262, 0.261, 0.26, 0.259, 0.258, 0.258, 0.258, 0.259, 0.259, 0.26, 0.261, 0.263, 0.265, 0.266, 0.268, 0.27, 0.272, 0.274, 0.276, 0.278, 0.28, 0.282, 0.284, 0.285, 0.287, 0.288, 0.289, 0.29, 0.291, 0.292, 0.293, 0.293, 0.294, 0.294, 0.294, 0.294, 0.294, 0.293, 0.293, 0.292, 0.292, 0.291, 0.29, 0.289, 0.288, 0.287, 0.286, 0.285, 0.284, 0.283, 0.282, 0.281, 0.281, 0.28, 0.279, 0.278, 0.278, 0.278, 0.277, 0.277, 0.277, 0.277, 0.277, 0.277, 0.278, 0.278, 0.279, 0.279, 0.28, 0.281, 0.281, 0.282, 0.283, 0.284, 0.285, 0.285, 0.286, 0.287, 0.288, 0.289, 0.289, 0.29, 0.29, 0.291, 0.291, 0.291, 0.291, 0.291, 0.291, 0.291, 0.291, 0.291, 0.291, 0.29, 0.29, 0.29, 0.289, 0.289, 0.288, 0.288, 0.287, 0.287, 0.286, 0.286, 0.285, 0.285, 0.284, 0.284, 0.284, 0.283, 0.283, 0.283, 0.283]
+    },
+    "P_pred": {
+      "Time": [0, 0.503, 1.005, 1.508, 2.01, 2.513, 3.015, 3.518, 4.02, 4.523, 5.025, 5.528, 6.03, 6.533, 7.035, 7.538, 8.04, 8.543, 9.045, 9.548, 10.05, 10.553, 11.055, 11.558, 12.06, 12.563, 13.065, 13.568, 14.07, 14.573, 15.075, 15.578, 16.08, 16.583, 17.085, 17.588, 18.09, 18.593, 19.095, 19.598, 20.101, 20.603, 21.106, 21.608, 22.111, 22.613, 23.116, 23.618, 24.121, 24.623, 25.126, 25.628, 26.131, 26.633, 27.136, 27.638, 28.141, 28.643, 29.146, 29.648, 30.151, 30.653, 31.156, 31.658, 32.161, 32.663, 33.166, 33.668, 34.171, 34.673, 35.176, 35.678, 36.181, 36.683, 37.186, 37.688, 38.191, 38.693, 39.196, 39.698, 40.201, 40.704, 41.206, 41.709, 42.211, 42.714, 43.216, 43.719, 44.221, 44.724, 45.226, 45.729, 46.231, 46.734, 47.236, 47.739, 48.241, 48.744, 49.246, 49.749, 50.251, 50.754, 51.256, 51.759, 52.261, 52.764, 53.266, 53.769, 54.271, 54.774, 55.276, 55.779, 56.281, 56.784, 57.286, 57.789, 58.291, 58.794, 59.296, 59.799, 60.302, 60.804, 61.307, 61.809, 62.312, 62.814, 63.317, 63.819, 64.322, 64.824, 65.327, 65.829, 66.332, 66.834, 67.337, 67.839, 68.342, 68.844, 69.347, 69.849, 70.352, 70.854, 71.357, 71.859, 72.362, 72.864, 73.367, 73.869, 74.372, 74.874, 75.377, 75.879, 76.382, 76.884, 77.387, 77.889, 78.392, 78.894, 79.397, 79.899, 80.402, 80.905, 81.407, 81.91, 82.412, 82.915, 83.417, 83.92, 84.422, 84.925, 85.427, 85.93, 86.432, 86.935, 87.437, 87.94, 88.442, 88.945, 89.447, 89.95, 90.452, 90.955, 91.457, 91.96, 92.462, 92.965, 93.467, 93.97, 94.472, 94.975, 95.477, 95.98, 96.482, 96.985, 97.487, 97.99, 98.492, 98.995, 99.497, 100],
+      "Modeled": [0.1, 0.5196, 0.4737, 0.4534, 0.4584, 0.4583, 0.4585, 0.4575, 0.458, 0.457, 0.4574, 0.4564, 0.4569, 0.4558, 0.4562, 0.4552, 0.4556, 0.4545, 0.4548, 0.4537, 0.4541, 0.4529, 0.4532, 0.4521, 0.4523, 0.4511, 0.4514, 0.4502, 0.4504, 0.4491, 0.4493, 0.448, 0.4482, 0.4468, 0.447, 0.4456, 0.4457, 0.4442, 0.4443, 0.4428, 0.4421, 0.4421, 0.4406, 0.4406, 0.439, 0.4389, 0.4373, 0.4372, 0.4356, 0.4354, 0.4337, 0.4336, 0.4318, 0.4316, 0.4299, 0.4296, 0.4278, 0.4276, 0.4257, 0.4254, 0.4235, 0.4232, 0.4213, 0.421, 0.419, 0.4187, 0.4167, 0.4164, 0.4144, 0.414, 0.412, 0.4116, 0.4096, 0.4092, 0.4072, 0.4067, 0.4047, 0.4043, 0.4023, 0.4019, 0.3998, 0.3987, 0.3982, 0.3962, 0.3958, 0.3937, 0.3934, 0.3913, 0.391, 0.389, 0.3886, 0.3866, 0.3863, 0.3843, 0.384, 0.382, 0.3817, 0.3798, 0.3795, 0.3776, 0.3773, 0.3754, 0.3752, 0.3733, 0.3731, 0.3712, 0.3711, 0.3692, 0.3691, 0.3673, 0.3671, 0.3654, 0.3652, 0.3635, 0.3634, 0.3617, 0.3616, 0.36, 0.3599, 0.3583, 0.3575, 0.3574, 0.3558, 0.3559, 0.3543, 0.3543, 0.3528, 0.3529, 0.3513, 0.3514, 0.3499, 0.3501, 0.3486, 0.3488, 0.3473, 0.3475, 0.3461, 0.3463, 0.3449, 0.3452, 0.3438, 0.3441, 0.3427, 0.343, 0.3417, 0.3421, 0.3408, 0.3411, 0.3399, 0.3402, 0.339, 0.3394, 0.3382, 0.3386, 0.3375, 0.3379, 0.3368, 0.3373, 0.3361, 0.3366, 0.3355, 0.3354, 0.3358, 0.3347, 0.3353, 0.3343, 0.3349, 0.3339, 0.3345, 0.3335, 0.3342, 0.3332, 0.3339, 0.3329, 0.3336, 0.3327, 0.3334, 0.3326, 0.3333, 0.3324, 0.3332, 0.3324, 0.3332, 0.3324, 0.3332, 0.3324, 0.3333, 0.3325, 0.3334, 0.3326, 0.3335, 0.3328, 0.3337, 0.333, 0.334, 0.3333, 0.3343, 0.3337, 0.3347, 0.3341],
+      "Observed": [0.1, 0.117, 0.138, 0.161, 0.187, 0.215, 0.245, 0.275, 0.303, 0.327, 0.341, 0.344, 0.336, 0.324, 0.31, 0.295, 0.28, 0.266, 0.251, 0.236, 0.22, 0.205, 0.19, 0.174, 0.157, 0.141, 0.123, 0.106, 0.087, 0.068, 0.05, 0.036, 0.025, 0.02, 0.016, 0.014, 0.013, 0.013, 0.013, 0.013, 0.013, 0.013, 0.013, 0.014, 0.014, 0.014, 0.015, 0.016, 0.016, 0.017, 0.017, 0.018, 0.019, 0.02, 0.02, 0.021, 0.022, 0.023, 0.024, 0.025, 0.026, 0.027, 0.027, 0.029, 0.03, 0.031, 0.032, 0.033, 0.034, 0.035, 0.036, 0.037, 0.038, 0.039, 0.04, 0.041, 0.042, 0.043, 0.044, 0.044, 0.045, 0.045, 0.046, 0.046, 0.046, 0.046, 0.046, 0.045, 0.045, 0.044, 0.043, 0.042, 0.041, 0.04, 0.038, 0.037, 0.036, 0.035, 0.033, 0.032, 0.031, 0.031, 0.03, 0.029, 0.029, 0.029, 0.029, 0.029, 0.029, 0.029, 0.029, 0.029, 0.029, 0.03, 0.03, 0.03, 0.031, 0.031, 0.032, 0.032, 0.033, 0.033, 0.034, 0.034, 0.035, 0.035, 0.036, 0.036, 0.037, 0.037, 0.038, 0.038, 0.038, 0.039, 0.039, 0.039, 0.039, 0.039, 0.039, 0.039, 0.039, 0.039, 0.039, 0.038, 0.038, 0.038, 0.037, 0.037, 0.036, 0.036, 0.036, 0.035, 0.035, 0.034, 0.034, 0.034, 0.033, 0.033, 0.033, 0.032, 0.032, 0.032, 0.032, 0.032, 0.032, 0.032, 0.032, 0.032, 0.032, 0.033, 0.033, 0.033, 0.033, 0.034, 0.034, 0.034, 0.034, 0.035, 0.035, 0.035, 0.035, 0.036, 0.036, 0.036, 0.036, 0.037, 0.037, 0.037, 0.037, 0.037, 0.037, 0.037, 0.037, 0.037, 0.037, 0.037, 0.037, 0.037, 0.036, 0.036]
+    },
+    "Z_pred": {
+      "Time": [0, 0.503, 1.005, 1.508, 2.01, 2.513, 3.015, 3.518, 4.02, 4.523, 5.025, 5.528, 6.03, 6.533, 7.035, 7.538, 8.04, 8.543, 9.045, 9.548, 10.05, 10.553, 11.055, 11.558, 12.06, 12.563, 13.065, 13.568, 14.07, 14.573, 15.075, 15.578, 16.08, 16.583, 17.085, 17.588, 18.09, 18.593, 19.095, 19.598, 20.101, 20.603, 21.106, 21.608, 22.111, 22.613, 23.116, 23.618, 24.121, 24.623, 25.126, 25.628, 26.131, 26.633, 27.136, 27.638, 28.141, 28.643, 29.146, 29.648, 30.151, 30.653, 31.156, 31.658, 32.161, 32.663, 33.166, 33.668, 34.171, 34.673, 35.176, 35.678, 36.181, 36.683, 37.186, 37.688, 38.191, 38.693, 39.196, 39.698, 40.201, 40.704, 41.206, 41.709, 42.211, 42.714, 43.216, 43.719, 44.221, 44.724, 45.226, 45.729, 46.231, 46.734, 47.236, 47.739, 48.241, 48.744, 49.246, 49.749, 50.251, 50.754, 51.256, 51.759, 52.261, 52.764, 53.266, 53.769, 54.271, 54.774, 55.276, 55.779, 56.281, 56.784, 57.286, 57.789, 58.291, 58.794, 59.296, 59.799, 60.302, 60.804, 61.307, 61.809, 62.312, 62.814, 63.317, 63.819, 64.322, 64.824, 65.327, 65.829, 66.332, 66.834, 67.337, 67.839, 68.342, 68.844, 69.347, 69.849, 70.352, 70.854, 71.357, 71.859, 72.362, 72.864, 73.367, 73.869, 74.372, 74.874, 75.377, 75.879, 76.382, 76.884, 77.387, 77.889, 78.392, 78.894, 79.397, 79.899, 80.402, 80.905, 81.407, 81.91, 82.412, 82.915, 83.417, 83.92, 84.422, 84.925, 85.427, 85.93, 86.432, 86.935, 87.437, 87.94, 88.442, 88.945, 89.447, 89.95, 90.452, 90.955, 91.457, 91.96, 92.462, 92.965, 93.467, 93.97, 94.472, 94.975, 95.477, 95.98, 96.482, 96.985, 97.487, 97.99, 98.492, 98.995, 99.497, 100],
+      "Modeled": [0.05, 0.5011, 0.5896, 0.5812, 0.5796, 0.5796, 0.5803, 0.5796, 0.5802, 0.5795, 0.5801, 0.5794, 0.58, 0.5794, 0.58, 0.5793, 0.5799, 0.5792, 0.5798, 0.5791, 0.5797, 0.579, 0.5796, 0.5789, 0.5795, 0.5788, 0.5794, 0.5787, 0.5792, 0.5785, 0.5791, 0.5784, 0.579, 0.5782, 0.5788, 0.5781, 0.5786, 0.5779, 0.5785, 0.5777, 0.5776, 0.5782, 0.5775, 0.578, 0.5772, 0.5778, 0.577, 0.5776, 0.5768, 0.5773, 0.5766, 0.5771, 0.5763, 0.5768, 0.5761, 0.5766, 0.5758, 0.5763, 0.5755, 0.576, 0.5753, 0.5758, 0.575, 0.5755, 0.5747, 0.5752, 0.5744, 0.5749, 0.5741, 0.5745, 0.5737, 0.5742, 0.5734, 0.5739, 0.5731, 0.5736, 0.5728, 0.5732, 0.5724, 0.5729, 0.5721, 0.5719, 0.5724, 0.5716, 0.5721, 0.5713, 0.5718, 0.571, 0.5714, 0.5706, 0.5711, 0.5703, 0.5708, 0.57, 0.5705, 0.5697, 0.5702, 0.5694, 0.5699, 0.5691, 0.5696, 0.5688, 0.5693, 0.5685, 0.569, 0.5682, 0.5687, 0.5679, 0.5684, 0.5676, 0.5681, 0.5674, 0.5679, 0.5671, 0.5676, 0.5669, 0.5674, 0.5666, 0.5671, 0.5664, 0.5662, 0.5668, 0.566, 0.5665, 0.5658, 0.5663, 0.5656, 0.5661, 0.5654, 0.5659, 0.5652, 0.5657, 0.565, 0.5655, 0.5648, 0.5653, 0.5646, 0.5652, 0.5645, 0.565, 0.5643, 0.5648, 0.5641, 0.5647, 0.564, 0.5645, 0.5639, 0.5644, 0.5637, 0.5643, 0.5636, 0.5642, 0.5635, 0.5641, 0.5634, 0.5639, 0.5633, 0.5638, 0.5632, 0.5638, 0.5631, 0.5629, 0.5637, 0.563, 0.5636, 0.5629, 0.5635, 0.5628, 0.5634, 0.5628, 0.5634, 0.5627, 0.5633, 0.5627, 0.5633, 0.5627, 0.5633, 0.5626, 0.5632, 0.5626, 0.5632, 0.5626, 0.5632, 0.5626, 0.5632, 0.5626, 0.5632, 0.5626, 0.5632, 0.5626, 0.5633, 0.5626, 0.5633, 0.5627, 0.5633, 0.5627, 0.5634, 0.5628, 0.5634, 0.5628],
+      "Observed": [0.05, 0.052, 0.053, 0.055, 0.057, 0.059, 0.061, 0.064, 0.066, 0.068, 0.071, 0.074, 0.076, 0.079, 0.082, 0.085, 0.088, 0.092, 0.095, 0.099, 0.102, 0.106, 0.11, 0.114, 0.118, 0.122, 0.126, 0.13, 0.134, 0.137, 0.139, 0.14, 0.14, 0.137, 0.134, 0.131, 0.127, 0.124, 0.12, 0.117, 0.113, 0.11, 0.107, 0.104, 0.101, 0.099, 0.096, 0.094, 0.091, 0.089, 0.087, 0.085, 0.083, 0.082, 0.08, 0.079, 0.078, 0.076, 0.075, 0.074, 0.073, 0.073, 0.072, 0.071, 0.071, 0.07, 0.07, 0.07, 0.07, 0.07, 0.07, 0.07, 0.07, 0.07, 0.071, 0.071, 0.071, 0.072, 0.072, 0.073, 0.074, 0.074, 0.075, 0.076, 0.077, 0.077, 0.078, 0.079, 0.08, 0.08, 0.081, 0.082, 0.082, 0.083, 0.083, 0.083, 0.083, 0.083, 0.083, 0.083, 0.083, 0.082, 0.082, 0.082, 0.081, 0.08, 0.08, 0.079, 0.079, 0.078, 0.078, 0.077, 0.076, 0.076, 0.076, 0.075, 0.075, 0.074, 0.074, 0.074, 0.074, 0.074, 0.073, 0.073, 0.073, 0.073, 0.073, 0.073, 0.074, 0.074, 0.074, 0.074, 0.074, 0.075, 0.075, 0.075, 0.076, 0.076, 0.076, 0.077, 0.077, 0.077, 0.077, 0.078, 0.078, 0.078, 0.078, 0.079, 0.079, 0.079, 0.079, 0.079, 0.079, 0.079, 0.079, 0.079, 0.079, 0.079, 0.078, 0.078, 0.078, 0.078, 0.078, 0.077, 0.077, 0.077, 0.076, 0.076, 0.076, 0.076, 0.076, 0.075, 0.075, 0.075, 0.075, 0.075, 0.075, 0.075, 0.075, 0.075, 0.075, 0.075, 0.075, 0.075, 0.075, 0.075, 0.075, 0.076, 0.076, 0.076, 0.076, 0.076, 0.076, 0.077, 0.077, 0.077, 0.077, 0.077, 0.077, 0.077]
+    }
+  }
+}
+JSON_REPORT_END[0m
+[93m[PID 3491079] R script stdout END <<<[0m
+[93m[PID 3491079] R script stderr BEGIN >>>[0m
+[0mLoading required package: TMB
+Loading required package: jsonlite
+using C++ compiler: ‘g++ (Ubuntu 13.3.0-6ubuntu2~24.04) 13.3.0’
+Warning message:
+`aes_string()` was deprecated in ggplot2 3.0.0.
+ℹ Please use tidy evaluation idioms with `aes()`.
+ℹ See also `vignette("ggplot2-in-packages")` for more information.[0m
+[93m[PID 3491079] R script stderr END <<<[0m
+[96m[PID 3491079] JSON detected, parsing...[0m
+[96m[PID 3491079] Writing model report...[0m
+[94m[PID 3491079] Objective value: 289.1274[0m
+[96m[PID 3491079] Generating plots...[0m
+[94m[PID 3491079] Objective Value: 289.1274[0m
+[92m[PID 3491079] Successful model run[0m
+[0m----------------------------------------------[0m
+MODEL RUN FINISHED
+Model run successful. Objective value: 289.1274
+Model ran successful and returned meaningful objective value... enhancing parameter descriptions.
+Enhancing parameter descriptions...
+Parameter descriptions enhanced successfully.
+Running parameter processing...
+DEBUG: get_params() called with directory_path: POPULATIONS/POPULATION_0009/INDIVIDUAL_A6H9SGZE
+DEBUG: population_dir: POPULATIONS/POPULATION_0009
+DEBUG: meta_file path: POPULATIONS/POPULATION_0009/population_metadata.json
+DEBUG: Checking if meta_file exists...
+DEBUG: meta_file exists, attempting to read...
+DEBUG: Successfully read meta_file
+DEBUG: rag_choice: gpt-4.1-mini, doc_store_dir: doc_store
+DEBUG: About to resolve model name...
+[get_params] Using model from rag_choice: 'gpt-4.1-mini' -> 'gpt-4.1-mini'
+[get_params] Using doc_store_dir: 'doc_store'
+Processing literature parameter: mu_max
+Searching for mu_max with query: Maximum phytoplankton growth rate (per day)
+Engine order for mu_max: ['rag', 'semantic_scholar']
+Loading llama_index.core.storage.kvstore.simple_kvstore from /home/spi085/Documents/_Projects/EMs-with-LLMs/storage_chroma_doc_store/docstore.json.
+Loading llama_index.core.storage.kvstore.simple_kvstore from /home/spi085/Documents/_Projects/EMs-with-LLMs/storage_chroma_doc_store/index_store.json.
+Search results found for mu_max (engine=rag, attempt=1)
+S2 Response Status Code: 200
+S2 Query: Maximum phytoplankton growth rate (per day)
+S2 Total results: 20116
+Search results found for mu_max (engine=semantic_scholar, attempt=1)
+DEBUG: Aggregated 7 total source chunks for mu_max:
+ Source [1]: C:\Users\spi085\OneDrive - CSIRO\Documents\_Projects\SCCP-QuantModelling\doc_store\Pratchett-2017-Thirty years of research on cro.pdf
+ Source [2]: s10811-014-0370-y.pdf
+ Source [3]: Oca et al. - 2019 - Culture of the seaweed Ulva ohnoi integrated in a .pdf
+ Source [4]: https://www.semanticscholar.org/paper/f398398f034269b8384f279809e35b257ba079d5
+ Source [5]: https://www.semanticscholar.org/paper/dc5883b5c4c63f249631ba80a228ecbef6f1c244
+ Source [6]: https://www.semanticscholar.org/paper/df1406f0b0a1eb0b26914777921f90cc60fd54e9
+ Source [7]: https://www.semanticscholar.org/paper/ab8f3ea4ef314cb0a9f411fd2f94769fd24c035e
+Asking gpt-4.1-mini
+DEBUG: LLM response for mu_max: No relevant values found
+Processing literature parameter: K_N
+Searching for K_N with query: Half-saturation nutrient concentration for phytoplankton growth
+Engine order for K_N: ['rag', 'semantic_scholar']
+Search results found for K_N (engine=rag, attempt=1)
+S2 Response Status Code: 200
+S2 Query: Half-saturation nutrient concentration for phytoplankton growth
+S2 Total results: 238
+Search results found for K_N (engine=semantic_scholar, attempt=1)
+DEBUG: Aggregated 5 total source chunks for K_N:
+ Source [1]: C:\Users\spi085\OneDrive - CSIRO\Documents\_Projects\SCCP-QuantModelling\doc_store\Pratchett-2017-Thirty years of research on cro.pdf
+ Source [2]: s10811-014-0370-y.pdf
+ Source [3]: Oca et al. - 2019 - Culture of the seaweed Ulva ohnoi integrated in a .pdf
+ Source [4]: https://www.semanticscholar.org/paper/268a1b736f5d3ea55934bfff06c4b5a45346450e
+ Source [5]: https://www.semanticscholar.org/paper/dbdfa91c9fc263eb3dd15b96386772eed366fae1
+Asking gpt-4.1-mini
+DEBUG: LLM response for K_N: No relevant values found
+Processing literature parameter: s_lim
+Searching for s_lim with query: Smoothness exponent for nutrient-light co-limitation
+Engine order for s_lim: ['rag', 'semantic_scholar']
+Search results found for s_lim (engine=rag, attempt=1)
+S2 Response Status Code: 200
+S2 Query: Smoothness exponent for nutrient-light co-limitation
+S2 Total results: 0
+No papers found.
+No search results for s_lim (engine=semantic_scholar, attempt=1)
+S2 Response Status Code: 200
+S2 Query: Smoothness exponent for nutrient-light co-limitation
+S2 Total results: 0
+No papers found.
+No search results for s_lim (engine=semantic_scholar, attempt=2)
+S2 Response Status Code: 200
+S2 Query: Smoothness exponent for nutrient-light co-limitation
+S2 Total results: 0
+No papers found.
+No search results for s_lim (engine=semantic_scholar, attempt=3)
+DEBUG: Aggregated 3 total source chunks for s_lim:
+ Source [1]: Oca et al. - 2019 - Culture of the seaweed Ulva ohnoi integrated in a .pdf
+ Source [2]: C:\Users\spi085\OneDrive - CSIRO\Documents\_Projects\SCCP-QuantModelling\doc_store\Rogers-2022-Culling corallivores improves shor.pdf
+ Source [3]: s10811-014-0370-y.pdf
+Asking gpt-4.1-mini
+DEBUG: LLM response for s_lim: No relevant values found
+Processing literature parameter: g_max
+Searching for g_max with query: Maximum zooplankton per-capita grazing rate (per day)
+Engine order for g_max: ['semantic_scholar', 'rag']
+S2 Response Status Code: 200
+S2 Query: Maximum zooplankton per-capita grazing rate (per day)
+S2 Total results: 226
+Search results found for g_max (engine=semantic_scholar, attempt=1)
+Search results found for g_max (engine=rag, attempt=1)
+DEBUG: Aggregated 6 total source chunks for g_max:
+ Source [1]: https://www.semanticscholar.org/paper/22663ebc36ce9985a428bb0d959618c42ae424be
+ Source [2]: https://www.semanticscholar.org/paper/27c209fdd61166f48d8febe64d3034da6c4c86fe
+ Source [3]: https://www.semanticscholar.org/paper/0a51f9458d93a8bd4e92a92dfb01b8f118ebf43b
+ Source [4]: C:\Users\spi085\OneDrive - CSIRO\Documents\_Projects\SCCP-QuantModelling\doc_store\Pratchett-2017-Thirty years of research on cro.pdf
+ Source [5]: Oca et al. - 2019 - Culture of the seaweed Ulva ohnoi integrated in a .pdf
+ Source [6]: C:\Users\spi085\OneDrive - CSIRO\Documents\_Projects\SCCP-QuantModelling\doc_store\Plaganyi (2007) - Ecosystemmodellingfullversion.pdf
+Asking gpt-4.1-mini
+DEBUG: LLM response for g_max: No relevant values found
+Processing literature parameter: K_P_g
+Searching for K_P_g with query: Half-saturation constant for zooplankton grazing on phytoplankton
+Engine order for K_P_g: ['rag', 'semantic_scholar']
+Search results found for K_P_g (engine=rag, attempt=1)
+S2 Response Status Code: 200
+S2 Query: Half-saturation constant for zooplankton grazing on phytoplankton
+S2 Total results: 10
+Search results found for K_P_g (engine=semantic_scholar, attempt=1)
+DEBUG: Aggregated 3 total source chunks for K_P_g:
+ Source [1]: C:\Users\spi085\OneDrive - CSIRO\Documents\_Projects\SCCP-QuantModelling\doc_store\Pratchett-2017-Thirty years of research on cro.pdf
+ Source [2]: C:\Users\spi085\OneDrive - CSIRO\Documents\_Projects\SCCP-QuantModelling\doc_store\Plaganyi (2007) - Ecosystemmodellingfullversion.pdf
+ Source [3]: https://www.semanticscholar.org/paper/4e0680fa36d5c7bdb5ec8b2d7c475336032972b5
+Asking gpt-4.1-mini
+DEBUG: LLM response for K_P_g: No relevant values found
+Processing literature parameter: h_g
+Searching for h_g with query: Hill exponent controlling grazing functional response shape
+Engine order for h_g: ['rag', 'semantic_scholar']
+Search results found for h_g (engine=rag, attempt=1)
+S2 Response Status Code: 200
+S2 Query: Hill exponent controlling grazing functional response shape
+S2 Total results: 31
+Search results found for h_g (engine=semantic_scholar, attempt=1)
+DEBUG: Aggregated 6 total source chunks for h_g:
+ Source [1]: C:\Users\spi085\OneDrive - CSIRO\Documents\_Projects\SCCP-QuantModelling\doc_store\Plaganyi (2007) - Ecosystemmodellingfullversion.pdf
+ Source [2]: https://www.semanticscholar.org/paper/1f3e066fb6305bcbbdd83bba071947d7edeacac1
+ Source [3]: https://www.semanticscholar.org/paper/c8977a2d3df7deeab97101200cf7261761929291
+ Source [4]: https://www.semanticscholar.org/paper/5668a853e8bbbed19df856097da5a9320324ac40
+ Source [5]: https://www.semanticscholar.org/paper/74ae52717b592762195b88563eec56ea1996e76e
+ Source [6]: https://www.semanticscholar.org/paper/3f885bce8b753d566e3e3eaae8da02ce6400daf8
+Asking gpt-4.1-mini
+DEBUG: LLM response for h_g: No relevant values found
+Processing literature parameter: beta_Z
+Searching for beta_Z with query: Zooplankton assimilation efficiency of ingested phytoplankton
+Engine order for beta_Z: ['semantic_scholar', 'rag']
+S2 Response Status Code: 200
+S2 Query: Zooplankton assimilation efficiency of ingested phytoplankton
+S2 Total results: 164
+Search results found for beta_Z (engine=semantic_scholar, attempt=1)
+Search results found for beta_Z (engine=rag, attempt=1)
+DEBUG: Aggregated 2 total source chunks for beta_Z:
+ Source [1]: https://www.semanticscholar.org/paper/ecaeee2d13397a9b1a2467ac10fcb2575e5b47c3
+ Source [2]: C:\Users\spi085\OneDrive - CSIRO\Documents\_Projects\SCCP-QuantModelling\doc_store\Pratchett-2017-Thirty years of research on cro.pdf
+Asking gpt-4.1-mini
+DEBUG: LLM response for beta_Z: No relevant values found
+Processing literature parameter: phi_remin
+Searching for phi_remin with query: Fraction of mortality and unassimilated ingestion remineralized
+Engine order for phi_remin: ['semantic_scholar', 'rag']
+S2 Response Status Code: 200
+S2 Query: Fraction of mortality and unassimilated ingestion remineralized
+S2 Total results: 0
+No papers found.
+No search results for phi_remin (engine=semantic_scholar, attempt=1)
+S2 Response Status Code: 200
+S2 Query: Fraction of mortality and unassimilated ingestion remineralized
+S2 Total results: 0
+No papers found.
+No search results for phi_remin (engine=semantic_scholar, attempt=2)
+S2 Response Status Code: 200
+S2 Query: Fraction of mortality and unassimilated ingestion remineralized
+S2 Total results: 0
+No papers found.
+No search results for phi_remin (engine=semantic_scholar, attempt=3)
+Search results found for phi_remin (engine=rag, attempt=1)
+DEBUG: Aggregated 3 total source chunks for phi_remin:
+ Source [1]: s10811-014-0370-y.pdf
+ Source [2]: C:\Users\spi085\OneDrive - CSIRO\Documents\_Projects\SCCP-QuantModelling\doc_store\Rogers-2022-Culling corallivores improves shor.pdf
+ Source [3]: C:\Users\spi085\OneDrive - CSIRO\Documents\_Projects\SCCP-QuantModelling\doc_store\Pratchett-2017-Thirty years of research on cro.pdf
+Asking gpt-4.1-mini
+DEBUG: LLM response for phi_remin: No relevant values found
+Processing literature parameter: m_P
+Searching for m_P with query: Linear phytoplankton non-grazing mortality rate (per day)
+Engine order for m_P: ['semantic_scholar', 'rag']
+S2 Response Status Code: 200
+S2 Query: Linear phytoplankton non-grazing mortality rate (per day)
+S2 Total results: 66
+Search results found for m_P (engine=semantic_scholar, attempt=1)
+Search results found for m_P (engine=rag, attempt=1)
+DEBUG: Aggregated 5 total source chunks for m_P:
+ Source [1]: https://www.semanticscholar.org/paper/df164c55a47d8d911a16b0b26d9dbe1a5b3a4475
+ Source [2]: C:\Users\spi085\OneDrive - CSIRO\Documents\_Projects\SCCP-QuantModelling\doc_store\Pratchett-2017-Thirty years of research on cro.pdf
+ Source [3]: Oca et al. - 2019 - Culture of the seaweed Ulva ohnoi integrated in a .pdf
+ Source [4]: s10811-014-0370-y.pdf
+ Source [5]: C:\Users\spi085\OneDrive - CSIRO\Documents\_Projects\SCCP-QuantModelling\doc_store\Plagányi-2014-Ecosystem modelling provides clu.pdf
+Asking gpt-4.1-mini
+DEBUG: LLM response for m_P: No relevant values found
+Processing literature parameter: q_P
+Searching for q_P with query: Quadratic density-dependent phytoplankton loss rate
+Engine order for q_P: ['semantic_scholar', 'rag']
+S2 Response Status Code: 200
+S2 Query: Quadratic density-dependent phytoplankton loss rate
+S2 Total results: 1127
+Search results found for q_P (engine=semantic_scholar, attempt=1)
+Search results found for q_P (engine=rag, attempt=1)
+DEBUG: Aggregated 13 total source chunks for q_P:
+ Source [1]: https://www.semanticscholar.org/paper/b9ac778ded12ff8fb50dd756932713c93def08d2
+ Source [2]: https://www.semanticscholar.org/paper/543e8e00444ec8c2bb762cb39a2577a53a186c62
+ Source [3]: https://www.semanticscholar.org/paper/2b8dcc2a31dbda7cd71fdccb5260509f59cdea94
+ Source [4]: https://www.semanticscholar.org/paper/8286d7bf192caed00bc9ec6e97923408fe49ad82
+ Source [5]: https://www.semanticscholar.org/paper/70b8699c34342d3c7efbef83d17c75a1faff7edc
+ Source [6]: https://www.semanticscholar.org/paper/f267a6ee0f5f1a195418fa7d17e2c995823173bf
+ Source [7]: https://www.semanticscholar.org/paper/1e044431ff4a0c68204000397ec94920b27ba60f
+ Source [8]: https://www.semanticscholar.org/paper/f32c6c13b0e66cc08cb66f137cd3985e5f7b2065
+ Source [9]: https://www.semanticscholar.org/paper/ab93cb12f118bfd3af75202fac8b8ee3df5dbbc1
+ Source [10]: C:\Users\spi085\OneDrive - CSIRO\Documents\_Projects\SCCP-QuantModelling\doc_store\Plagányi-2014-Ecosystem modelling provides clu.pdf
+ Source [11]: s10811-014-0370-y.pdf
+ Source [12]: Oca et al. - 2019 - Culture of the seaweed Ulva ohnoi integrated in a .pdf
+ Source [13]: C:\Users\spi085\OneDrive - CSIRO\Documents\_Projects\SCCP-QuantModelling\doc_store\Plaganyi (2007) - Ecosystemmodellingfullversion.pdf
+Asking gpt-4.1-mini
+DEBUG: LLM response for q_P: No relevant values found
+Processing literature parameter: m_Z
+Searching for m_Z with query: Linear zooplankton mortality rate (per day)
+Engine order for m_Z: ['semantic_scholar', 'rag']
+S2 Response Status Code: 200
+S2 Query: Linear zooplankton mortality rate (per day)
+S2 Total results: 4402
+Search results found for m_Z (engine=semantic_scholar, attempt=1)
+Search results found for m_Z (engine=rag, attempt=1)
+DEBUG: Aggregated 6 total source chunks for m_Z:
+ Source [1]: https://www.semanticscholar.org/paper/22663ebc36ce9985a428bb0d959618c42ae424be
+ Source [2]: https://www.semanticscholar.org/paper/35cec193537a23366507b5db10411eeade70ca9b
+ Source [3]: https://www.semanticscholar.org/paper/76b5f185383fe8040531ca0568a8b851a0394545
+ Source [4]: C:\Users\spi085\OneDrive - CSIRO\Documents\_Projects\SCCP-QuantModelling\doc_store\Plagányi-2014-Ecosystem modelling provides clu.pdf
+ Source [5]: C:\Users\spi085\OneDrive - CSIRO\Documents\_Projects\SCCP-QuantModelling\doc_store\Plaganyi (2007) - Ecosystemmodellingfullversion.pdf
+ Source [6]: C:\Users\spi085\OneDrive - CSIRO\Documents\_Projects\SCCP-QuantModelling\doc_store\Pratchett-2017-Thirty years of research on cro.pdf
+Asking gpt-4.1-mini
+DEBUG: LLM response for m_Z: No relevant values found
+Processing literature parameter: q_Z
+Searching for q_Z with query: Quadratic density-dependent zooplankton mortality rate
+Engine order for q_Z: ['rag', 'semantic_scholar']
+Search results found for q_Z (engine=rag, attempt=1)
+S2 Response Status Code: 200
+S2 Query: Quadratic density-dependent zooplankton mortality rate
+S2 Total results: 2016
+Search results found for q_Z (engine=semantic_scholar, attempt=1)
+DEBUG: Aggregated 10 total source chunks for q_Z:
+ Source [1]: C:\Users\spi085\OneDrive - CSIRO\Documents\_Projects\SCCP-QuantModelling\doc_store\Plaganyi (2007) - Ecosystemmodellingfullversion.pdf
+ Source [2]: C:\Users\spi085\OneDrive - CSIRO\Documents\_Projects\SCCP-QuantModelling\doc_store\Plagányi-2014-Ecosystem modelling provides clu.pdf
+ Source [3]: https://www.semanticscholar.org/paper/10592c3a33ca1ebfb99848a6d731a9ffd54714eb
+ Source [4]: https://www.semanticscholar.org/paper/3f34dc2a9182aed7c02a34d895072fdd3b122eb7
+ Source [5]: https://www.semanticscholar.org/paper/881803b08bf70b6f1ed196822539044b9f96fdda
+ Source [6]: https://www.semanticscholar.org/paper/fe847a4d12bbabfdb92a78408d6259aeb2ff86d7
+ Source [7]: https://www.semanticscholar.org/paper/3059fff674b986925dbb76b4cf92e51f1872308a
+ Source [8]: https://www.semanticscholar.org/paper/543e8e00444ec8c2bb762cb39a2577a53a186c62
+ Source [9]: https://www.semanticscholar.org/paper/5a1cf556db91dba9ae780a70f0e4be4368a8dde4
+ Source [10]: https://www.semanticscholar.org/paper/174a4bc2344689d358ff789ce815bfb27c580ea3
+Asking gpt-4.1-mini
+DEBUG: LLM response for q_Z: No relevant values found
+Processing literature parameter: k_mix
+Searching for k_mix with query: First-order nutrient mixing rate toward external concentration
+Engine order for k_mix: ['semantic_scholar', 'rag']
+S2 Response Status Code: 200
+S2 Query: First-order nutrient mixing rate toward external concentration
+S2 Total results: 70
+Search results found for k_mix (engine=semantic_scholar, attempt=1)
+Search results found for k_mix (engine=rag, attempt=1)
+DEBUG: Aggregated 6 total source chunks for k_mix:
+ Source [1]: https://www.semanticscholar.org/paper/9f181320ad766a8d309444f6a4108fa150db5dd9
+ Source [2]: https://www.semanticscholar.org/paper/bfb75bf4d78dac1c66d2a52363a598da575ce8e6
+ Source [3]: https://www.semanticscholar.org/paper/fd494154158c21b9eb8fe72528b344d95cd13f08
+ Source [4]: https://www.semanticscholar.org/paper/b47b9333823f07568afc8017826bbe4f4934c0cc
+ Source [5]: s10811-014-0370-y.pdf
+ Source [6]: Oca et al. - 2019 - Culture of the seaweed Ulva ohnoi integrated in a .pdf
+Asking gpt-4.1-mini
+DEBUG: LLM response for k_mix: No relevant values found
+Processing literature parameter: e_P_uptake_eff
+Searching for e_P_uptake_eff with query: Efficiency converting nutrient uptake to phytoplankton biomass
+Engine order for e_P_uptake_eff: ['rag', 'semantic_scholar']
+Search results found for e_P_uptake_eff (engine=rag, attempt=1)
+S2 Response Status Code: 200
+S2 Query: Efficiency converting nutrient uptake to phytoplankton biomass
+S2 Total results: 35
+Search results found for e_P_uptake_eff (engine=semantic_scholar, attempt=1)
+DEBUG: Aggregated 3 total source chunks for e_P_uptake_eff:
+ Source [1]: C:\Users\spi085\OneDrive - CSIRO\Documents\_Projects\SCCP-QuantModelling\doc_store\Pratchett-2017-Thirty years of research on cro.pdf
+ Source [2]: s10811-014-0370-y.pdf
+ Source [3]: https://www.semanticscholar.org/paper/e4fbe8b1722945a83157490029e07e8d36c63a56
+Asking gpt-4.1-mini
+DEBUG: LLM response for e_P_uptake_eff: No relevant values found
+Parameter processing completed successfully.
+Re-running model after parameter processing...
+[93m[PID 3491079] Running model for individual...[0m
+[0m[PID 3491079] Individual directory: POPULATIONS/POPULATION_0009/INDIVIDUAL_A6H9SGZE[0m
+[93m[PID 3491079] Removed old compilation: model.o[0m
+[96m[PID 3491079] Launching Rscript... (timeout=none)[0m
+[93m[PID 3491079] R script stdout BEGIN >>>[0m
+[0mg++ -std=gnu++17 -I"/usr/share/R/include" -DNDEBUG -I"/home/spi085/R/x86_64-pc-linux-gnu-library/4.4/TMB/include" -I"/home/spi085/R/x86_64-pc-linux-gnu-library/4.4/RcppEigen/include"   -DTMB_EIGEN_DISABLE_WARNINGS   -DTMB_LIB_INIT=R_init_model  -DCPPAD_FRAMEWORK      -fpic  -O2  -c POPULATIONS/POPULATION_0009/INDIVIDUAL_A6H9SGZE/model.cpp -o POPULATIONS/POPULATION_0009/INDIVIDUAL_A6H9SGZE/model.o
+g++ -std=gnu++17 -shared -L/usr/lib/R/lib -Wl,-Bsymbolic-functions -flto=auto -ffat-lto-objects -Wl,-z,relro -o POPULATIONS/POPULATION_0009/INDIVIDUAL_A6H9SGZE/model.so POPULATIONS/POPULATION_0009/INDIVIDUAL_A6H9SGZE/model.o -L/usr/lib/R/lib -lR
+
+NA counts per required column:
+ Time N_dat P_dat Z_dat 
+    0     0     0     0 
+
+NA counts per required column:
+ Time N_dat P_dat Z_dat 
+    0     0     0     0 
+
+PARAMETER starts (first few):
+      mu_max          K_N light_logit0    light_amp season_phase        s_lim 
+         1.0          0.1          0.0          1.0          0.0          4.0 
+       g_max        K_P_g          h_g          i_Z       beta_Z    phi_remin 
+         0.7          0.1          2.0          0.2          0.3          0.7 
+Starting model phases
+Number of phases: 6 
+Phase 1 
+Initial parameter values for phase 1 :
+mu_max 
+     1 
+Final parameter values for phase 1 :
+  mu_max 
+3.004985 
+Convergence message: relative convergence (4) 
+Number of iterations: 7 
+Objective function value: 156470.8 
+Gradient at solution for phase 1 :
+              [,1]
+[1,] -0.0001238221
+Phase 2 
+Initial parameter values for phase 2 :
+    K_N   g_max   K_P_g sigma_N sigma_P sigma_Z 
+    0.1     0.7     0.1     0.1     0.1     0.1 
+Final parameter values for phase 2 :
+    K_N   g_max   K_P_g sigma_N sigma_P sigma_Z 
+  1e-06   5e+00   1e-06   1e+00   1e+00   1e+00 
+Convergence message: both X-convergence and relative convergence (5) 
+Number of iterations: 10 
+Objective function value: 2387.447 
+Gradient at solution for phase 2 :
+         [,1]      [,2]     [,3]      [,4]      [,5]      [,6]
+[1,] 7.286236 -15.19863 39.14285 -839.3829 -1169.785 -1042.368
+Phase 3 
+Initial parameter values for phase 3 :
+  light_logit0      light_amp         beta_Z e_P_uptake_eff 
+           0.0            1.0            0.3            0.8 
+Final parameter values for phase 3 :
+  light_logit0      light_amp         beta_Z e_P_uptake_eff 
+      4.169652       3.104267       0.000000       0.000000 
+Convergence message: relative convergence (4) 
+Number of iterations: 12 
+Objective function value: 2130.85 
+Gradient at solution for phase 3 :
+             [,1]          [,2]     [,3]    [,4]
+[1,] 3.129881e-05 -5.933656e-06 59.94878 301.525
+Phase 4 
+Initial parameter values for phase 4 :
+season_phase        s_lim          i_Z          m_P          m_Z 
+        0.00         4.00         0.20         0.05         0.05 
+Final parameter values for phase 4 :
+season_phase        s_lim          i_Z          m_P          m_Z 
+   0.6569455    9.4868466    0.0000000    1.0000000    1.0000000 
+Convergence message: relative convergence (4) 
+Number of iterations: 10 
+Objective function value: 1988.082 
+Gradient at solution for phase 4 :
+             [,1]         [,2]     [,3]      [,4]      [,5]
+[1,] 1.587671e-05 4.678557e-05 24.59225 -56.55977 -74.28201
+Phase 5 
+Initial parameter values for phase 5 :
+      h_g phi_remin     k_mix 
+     2.00      0.70      0.02 
+Final parameter values for phase 5 :
+      h_g phi_remin     k_mix 
+        3         0         1 
+Convergence message: both X-convergence and relative convergence (5) 
+Number of iterations: 2 
+Objective function value: 1813.135 
+Gradient at solution for phase 5 :
+          [,1]     [,2]      [,3]
+[1,] -10.32856 160.6907 -26.61015
+Phase 6 
+Initial parameter values for phase 6 :
+  q_P   q_Z N_ext 
+  0.1   0.1   0.3 
+Final parameter values for phase 6 :
+  q_P   q_Z N_ext 
+    1     1     0 
+Convergence message: both X-convergence and relative convergence (5) 
+Number of iterations: 2 
+Objective function value: 1670.059 
+Gradient at solution for phase 6 :
+          [,1]      [,2]     [,3]
+[1,] -60.04964 -68.43367 80.58906
+Final Phase
+Initial parameter values for final phase:
+        mu_max            K_N   light_logit0      light_amp   season_phase 
+     3.0049850      0.0000010      4.1696519      3.1042666      0.6569455 
+         s_lim          g_max          K_P_g            h_g            i_Z 
+     9.4868466      5.0000000      0.0000010      3.0000000      0.0000000 
+        beta_Z      phi_remin            m_P            q_P            m_Z 
+     0.0000000      0.0000000      1.0000000      1.0000000      1.0000000 
+           q_Z          k_mix          N_ext e_P_uptake_eff        sigma_N 
+     1.0000000      1.0000000      0.0000000      0.0000000      1.0000000 
+       sigma_P        sigma_Z 
+     1.0000000      1.0000000 
+Final parameter values for final phase:
+        mu_max            K_N   light_logit0      light_amp   season_phase 
+     5.0000000      0.0000010      0.7251770      0.8859055      3.1415927 
+         s_lim          g_max          K_P_g            h_g            i_Z 
+     9.4460645      5.0000000      0.0000010      3.0000000      0.0000000 
+        beta_Z      phi_remin            m_P            q_P            m_Z 
+     0.0000000      0.0000000      1.0000000      1.0000000      1.0000000 
+           q_Z          k_mix          N_ext e_P_uptake_eff        sigma_N 
+     1.0000000      1.0000000      0.0000000      0.0000000      1.0000000 
+       sigma_P        sigma_Z 
+     1.0000000      1.0000000 
+Convergence message: relative convergence (4) 
+Number of iterations: 49 
+Objective function value: 1625.803 
+Gradient at solution for final phase:
+          [,1]    [,2]          [,3]         [,4]      [,5]          [,6]
+[1,] -12.67778 20.7304 -0.0005708142 0.0002860906 -5.274895 -5.600346e-06
+        [,7]     [,8]      [,9]    [,10]    [,11]    [,12]     [,13]     [,14]
+[1,] -30.226 108.8666 -10.18202 46.33141 49.89107 150.7418 -80.66283 -72.49909
+        [,15]     [,16]     [,17]    [,18]    [,19]     [,20]     [,21]
+[1,] -70.7568 -71.91917 -25.72829 65.66176 209.6457 -75.71102 -887.7987
+        [,22]
+[1,] -562.209
+All phases completed
+Successfully updated parameters_metadata.json with optimized values
+[1] "Train test split:"
+[1] 1
+
+Running model validation...
+No test data available (train_test_split >= 1.0)
+NULL
+
+DEBUG: Report contents:
+List of 8
+ $ env_mult: num [1:200] 1.22e-16 1.22e-16 -8.66e-03 -1.73e-02 -2.60e-02 ...
+ $ N_pred  : num [1:200] 0.4 0.362 0.327 0.359 0.363 ...
+ $ nll     : num 1617
+ $ penalty : num 8.92
+ $ fI      : num [1:200] 0.674 0.674 0.671 0.669 0.667 ...
+ $ Z_pred  : num [1:200] 0.05 0.501 0.59 0.581 0.58 ...
+ $ P_pred  : num [1:200] 0.1 0.52 0.474 0.453 0.458 ...
+ $ fN      : num [1:200] 0.366 0.568 0.562 0.557 0.562 ...
+NULL
+
+DEBUG: Available variables in report:
+[1] "env_mult" "N_pred"   "nll"      "penalty"  "fI"       "Z_pred"   "P_pred"  
+[8] "fN"      
+
+Checking predictions and calculating objective function...
+
+DEBUG: Processing N_pred 
+DEBUG: First few predictions: 0.4 0.3615242 0.3266757 0.3586427 0.3634118 0.3613163 
+DEBUG: Summary statistics:
+   Min. 1st Qu.  Median    Mean 3rd Qu.    Max. 
+ 0.3267  0.4226  0.6273  0.6254  0.8312  0.8778 
+DEBUG: All zeros? FALSE 
+DEBUG: Any infinities? FALSE 
+
+DEBUG: Processing P_pred 
+DEBUG: First few predictions: 0.1 0.5196446 0.4736753 0.4534255 0.4584172 0.4583248 
+DEBUG: Summary statistics:
+   Min. 1st Qu.  Median    Mean 3rd Qu.    Max. 
+ 0.1000  0.3393  0.3764  0.3853  0.4336  0.5196 
+DEBUG: All zeros? FALSE 
+DEBUG: Any infinities? FALSE 
+
+DEBUG: Processing Z_pred 
+DEBUG: First few predictions: 0.05 0.5010559 0.5896181 0.5811786 0.5795713 0.5795805 
+DEBUG: Summary statistics:
+   Min. 1st Qu.  Median    Mean 3rd Qu.    Max. 
+ 0.0500  0.5639  0.5690  0.5674  0.5766  0.5896 
+DEBUG: All zeros? FALSE 
+DEBUG: Any infinities? FALSE 
+
+DEBUG: Using the following variables for objective function:
+N_dat -> N_pred
+P_dat -> P_pred
+Z_dat -> Z_pred
+
+DEBUG: Calculating MSE for prediction variables only:
+
+DEBUG: N_pred 
+Observed: 0.4 0.375 0.346 0.314 0.278 0.239 ...
+Predicted: 0.4 0.3615242 0.3266757 0.3586427 0.3634118 0.3613163 ...
+MSE (normalized): 24.10974 
+
+DEBUG: P_pred 
+Observed: 0.1 0.117 0.138 0.161 0.187 0.215 ...
+Predicted: 0.1 0.5196446 0.4736753 0.4534255 0.4584172 0.4583248 ...
+MSE (normalized): 20.08962 
+
+DEBUG: Z_pred 
+Observed: 0.05 0.052 0.053 0.055 0.057 0.059 ...
+Predicted: 0.05 0.5010559 0.5896181 0.5811786 0.5795713 0.5795805 ...
+MSE (normalized): 823.1829 
+
+DEBUG: MSE values:
+    N_dat     P_dat     Z_dat 
+ 24.10974  20.08962 823.18286 
+
+DEBUG: Final objective value (mean of MSEs): 289.1274 
+
+Final objective function value: 289.1274 
+
+JSON_REPORT_START
+{
+  "status": "SUCCESS",
+  "objective_value": 289.1274,
+  "model_summary": ["            Length Class  Mode     ", "par         22     -none- numeric  ", "objective    1     -none- numeric  ", "convergence  1     -none- numeric  ", "iterations   1     -none- numeric  ", "evaluations  2     -none- numeric  ", "message      1     -none- character"],
+  "model_report": {
+    "env_mult": [1.2246e-16, 1.2246e-16, -0.0087, -0.0173, -0.026, -0.0346, -0.0432, -0.0519, -0.0605, -0.0691, -0.0778, -0.0864, -0.095, -0.1036, -0.1122, -0.1208, -0.1294, -0.138, -0.1465, -0.1551, -0.1636, -0.1721, -0.1807, -0.1892, -0.1977, -0.2061, -0.2146, -0.223, -0.2314, -0.2398, -0.2482, -0.2566, -0.265, -0.2733, -0.2816, -0.2899, -0.2982, -0.3064, -0.3146, -0.3228, -0.331, -0.3392, -0.3473, -0.3554, -0.3634, -0.3715, -0.3795, -0.3875, -0.3955, -0.4034, -0.4113, -0.4192, -0.427, -0.4348, -0.4426, -0.4503, -0.458, -0.4657, -0.4733, -0.4809, -0.4885, -0.496, -0.5035, -0.511, -0.5184, -0.5258, -0.5331, -0.5404, -0.5477, -0.5549, -0.5621, -0.5692, -0.5763, -0.5833, -0.5903, -0.5973, -0.6042, -0.6111, -0.6179, -0.6247, -0.6314, -0.6381, -0.6447, -0.6513, -0.6579, -0.6644, -0.6708, -0.6772, -0.6835, -0.6898, -0.6961, -0.7022, -0.7084, -0.7144, -0.7205, -0.7264, -0.7324, -0.7382, -0.744, -0.7498, -0.7555, -0.7611, -0.7667, -0.7722, -0.7777, -0.7831, -0.7885, -0.7937, -0.799, -0.8041, -0.8093, -0.8143, -0.8193, -0.8242, -0.8291, -0.8339, -0.8386, -0.8433, -0.8479, -0.8525, -0.857, -0.8614, -0.8658, -0.8701, -0.8743, -0.8785, -0.8826, -0.8866, -0.8906, -0.8945, -0.8983, -0.9021, -0.9058, -0.9094, -0.913, -0.9165, -0.9199, -0.9232, -0.9265, -0.9298, -0.9329, -0.936, -0.939, -0.9419, -0.9448, -0.9476, -0.9503, -0.953, -0.9556, -0.9581, -0.9605, -0.9629, -0.9652, -0.9674, -0.9696, -0.9717, -0.9737, -0.9756, -0.9775, -0.9793, -0.981, -0.9826, -0.9842, -0.9857, -0.9871, -0.9884, -0.9897, -0.9909, -0.992, -0.9931, -0.9941, -0.995, -0.9958, -0.9966, -0.9972, -0.9978, -0.9984, -0.9988, -0.9992, -0.9995, -0.9997, -0.9999, -1, -1, -0.9999, -0.9998, -0.9996, -0.9993, -0.9989, -0.9985, -0.9979, -0.9974, -0.9967, -0.9959, -0.9951, -0.9942, -0.9933, -0.9922, -0.9911, -0.9899],
+    "N_pred": [0.4, 0.3615, 0.3267, 0.3586, 0.3634, 0.3613, 0.3626, 0.3625, 0.3639, 0.3637, 0.3651, 0.365, 0.3665, 0.3664, 0.368, 0.368, 0.3696, 0.3696, 0.3713, 0.3714, 0.3731, 0.3733, 0.3751, 0.3754, 0.3772, 0.3776, 0.3795, 0.38, 0.382, 0.3826, 0.3847, 0.3853, 0.3875, 0.3883, 0.3906, 0.3914, 0.3939, 0.3948, 0.3974, 0.3985, 0.4004, 0.4031, 0.4044, 0.4072, 0.4086, 0.4116, 0.4131, 0.4162, 0.4179, 0.4212, 0.423, 0.4264, 0.4284, 0.4319, 0.4341, 0.4377, 0.44, 0.4438, 0.4463, 0.4502, 0.4528, 0.4569, 0.4597, 0.4639, 0.4668, 0.4711, 0.4742, 0.4787, 0.4819, 0.4865, 0.4898, 0.4945, 0.498, 0.5028, 0.5064, 0.5114, 0.5151, 0.5201, 0.5239, 0.5291, 0.533, 0.5375, 0.5427, 0.5468, 0.5522, 0.5563, 0.5616, 0.5658, 0.5712, 0.5755, 0.5809, 0.5852, 0.5907, 0.595, 0.6005, 0.6048, 0.6104, 0.6147, 0.6202, 0.6246, 0.6301, 0.6344, 0.6399, 0.6443, 0.6498, 0.6541, 0.6595, 0.6638, 0.6692, 0.6735, 0.6788, 0.683, 0.6883, 0.6925, 0.6977, 0.7018, 0.7069, 0.711, 0.716, 0.72, 0.7243, 0.7293, 0.7332, 0.7381, 0.7418, 0.7466, 0.7503, 0.7549, 0.7585, 0.763, 0.7665, 0.7709, 0.7742, 0.7785, 0.7818, 0.7859, 0.7891, 0.7931, 0.7961, 0.8001, 0.803, 0.8067, 0.8095, 0.8131, 0.8158, 0.8192, 0.8218, 0.8251, 0.8275, 0.8307, 0.8329, 0.8359, 0.838, 0.8409, 0.8429, 0.8456, 0.8474, 0.85, 0.8516, 0.854, 0.8555, 0.8572, 0.8594, 0.8608, 0.8628, 0.8639, 0.8658, 0.8667, 0.8684, 0.8692, 0.8708, 0.8714, 0.8728, 0.8732, 0.8744, 0.8747, 0.8758, 0.8759, 0.8768, 0.8767, 0.8774, 0.8772, 0.8778, 0.8774, 0.8778, 0.8772, 0.8775, 0.8768, 0.8768, 0.8759, 0.8758, 0.8748, 0.8745, 0.8733, 0.8729, 0.8715, 0.8709, 0.8694, 0.8686, 0.8669],
+    "nll": 1616.8787,
+    "penalty": 8.9246,
+    "fI": [0.6737, 0.6737, 0.6714, 0.669, 0.6667, 0.6643, 0.6619, 0.6596, 0.6572, 0.6548, 0.6524, 0.6499, 0.6475, 0.6451, 0.6427, 0.6402, 0.6378, 0.6354, 0.6329, 0.6305, 0.628, 0.6256, 0.6231, 0.6206, 0.6182, 0.6157, 0.6133, 0.6108, 0.6083, 0.6058, 0.6034, 0.6009, 0.5984, 0.596, 0.5935, 0.591, 0.5886, 0.5861, 0.5837, 0.5812, 0.5788, 0.5763, 0.5739, 0.5714, 0.569, 0.5666, 0.5641, 0.5617, 0.5593, 0.5569, 0.5545, 0.5521, 0.5497, 0.5473, 0.545, 0.5426, 0.5402, 0.5379, 0.5355, 0.5332, 0.5309, 0.5286, 0.5263, 0.524, 0.5217, 0.5195, 0.5172, 0.515, 0.5127, 0.5105, 0.5083, 0.5061, 0.5039, 0.5018, 0.4996, 0.4975, 0.4953, 0.4932, 0.4911, 0.489, 0.487, 0.4849, 0.4829, 0.4808, 0.4788, 0.4768, 0.4749, 0.4729, 0.4709, 0.469, 0.4671, 0.4652, 0.4633, 0.4615, 0.4596, 0.4578, 0.456, 0.4542, 0.4524, 0.4507, 0.4489, 0.4472, 0.4455, 0.4439, 0.4422, 0.4405, 0.4389, 0.4373, 0.4357, 0.4342, 0.4326, 0.4311, 0.4296, 0.4281, 0.4266, 0.4252, 0.4238, 0.4224, 0.421, 0.4196, 0.4183, 0.4169, 0.4156, 0.4143, 0.4131, 0.4118, 0.4106, 0.4094, 0.4082, 0.4071, 0.4059, 0.4048, 0.4037, 0.4026, 0.4016, 0.4006, 0.3995, 0.3986, 0.3976, 0.3966, 0.3957, 0.3948, 0.3939, 0.3931, 0.3922, 0.3914, 0.3906, 0.3898, 0.3891, 0.3883, 0.3876, 0.3869, 0.3862, 0.3856, 0.385, 0.3844, 0.3838, 0.3832, 0.3827, 0.3821, 0.3817, 0.3812, 0.3807, 0.3803, 0.3799, 0.3795, 0.3791, 0.3788, 0.3784, 0.3781, 0.3778, 0.3776, 0.3773, 0.3771, 0.3769, 0.3768, 0.3766, 0.3765, 0.3764, 0.3763, 0.3762, 0.3762, 0.3761, 0.3761, 0.3762, 0.3762, 0.3763, 0.3763, 0.3765, 0.3766, 0.3767, 0.3769, 0.3771, 0.3773, 0.3775, 0.3778, 0.3781, 0.3784, 0.3787, 0.379],
+    "Z_pred": [0.05, 0.5011, 0.5896, 0.5812, 0.5796, 0.5796, 0.5803, 0.5796, 0.5802, 0.5795, 0.5801, 0.5794, 0.58, 0.5794, 0.58, 0.5793, 0.5799, 0.5792, 0.5798, 0.5791, 0.5797, 0.579, 0.5796, 0.5789, 0.5795, 0.5788, 0.5794, 0.5787, 0.5792, 0.5785, 0.5791, 0.5784, 0.579, 0.5782, 0.5788, 0.5781, 0.5786, 0.5779, 0.5785, 0.5777, 0.5776, 0.5782, 0.5775, 0.578, 0.5772, 0.5778, 0.577, 0.5776, 0.5768, 0.5773, 0.5766, 0.5771, 0.5763, 0.5768, 0.5761, 0.5766, 0.5758, 0.5763, 0.5755, 0.576, 0.5753, 0.5758, 0.575, 0.5755, 0.5747, 0.5752, 0.5744, 0.5749, 0.5741, 0.5745, 0.5737, 0.5742, 0.5734, 0.5739, 0.5731, 0.5736, 0.5728, 0.5732, 0.5724, 0.5729, 0.5721, 0.5719, 0.5724, 0.5716, 0.5721, 0.5713, 0.5718, 0.571, 0.5714, 0.5706, 0.5711, 0.5703, 0.5708, 0.57, 0.5705, 0.5697, 0.5702, 0.5694, 0.5699, 0.5691, 0.5696, 0.5688, 0.5693, 0.5685, 0.569, 0.5682, 0.5687, 0.5679, 0.5684, 0.5676, 0.5681, 0.5674, 0.5679, 0.5671, 0.5676, 0.5669, 0.5674, 0.5666, 0.5671, 0.5664, 0.5662, 0.5668, 0.566, 0.5665, 0.5658, 0.5663, 0.5656, 0.5661, 0.5654, 0.5659, 0.5652, 0.5657, 0.565, 0.5655, 0.5648, 0.5653, 0.5646, 0.5652, 0.5645, 0.565, 0.5643, 0.5648, 0.5641, 0.5647, 0.564, 0.5645, 0.5639, 0.5644, 0.5637, 0.5643, 0.5636, 0.5642, 0.5635, 0.5641, 0.5634, 0.5639, 0.5633, 0.5638, 0.5632, 0.5638, 0.5631, 0.5629, 0.5637, 0.563, 0.5636, 0.5629, 0.5635, 0.5628, 0.5634, 0.5628, 0.5634, 0.5627, 0.5633, 0.5627, 0.5633, 0.5627, 0.5633, 0.5626, 0.5632, 0.5626, 0.5632, 0.5626, 0.5632, 0.5626, 0.5632, 0.5626, 0.5632, 0.5626, 0.5632, 0.5626, 0.5633, 0.5626, 0.5633, 0.5627, 0.5633, 0.5627, 0.5634, 0.5628, 0.5634, 0.5628],
+    "P_pred": [0.1, 0.5196, 0.4737, 0.4534, 0.4584, 0.4583, 0.4585, 0.4575, 0.458, 0.457, 0.4574, 0.4564, 0.4569, 0.4558, 0.4562, 0.4552, 0.4556, 0.4545, 0.4548, 0.4537, 0.4541, 0.4529, 0.4532, 0.4521, 0.4523, 0.4511, 0.4514, 0.4502, 0.4504, 0.4491, 0.4493, 0.448, 0.4482, 0.4468, 0.447, 0.4456, 0.4457, 0.4442, 0.4443, 0.4428, 0.4421, 0.4421, 0.4406, 0.4406, 0.439, 0.4389, 0.4373, 0.4372, 0.4356, 0.4354, 0.4337, 0.4336, 0.4318, 0.4316, 0.4299, 0.4296, 0.4278, 0.4276, 0.4257, 0.4254, 0.4235, 0.4232, 0.4213, 0.421, 0.419, 0.4187, 0.4167, 0.4164, 0.4144, 0.414, 0.412, 0.4116, 0.4096, 0.4092, 0.4072, 0.4067, 0.4047, 0.4043, 0.4023, 0.4019, 0.3998, 0.3987, 0.3982, 0.3962, 0.3958, 0.3937, 0.3934, 0.3913, 0.391, 0.389, 0.3886, 0.3866, 0.3863, 0.3843, 0.384, 0.382, 0.3817, 0.3798, 0.3795, 0.3776, 0.3773, 0.3754, 0.3752, 0.3733, 0.3731, 0.3712, 0.3711, 0.3692, 0.3691, 0.3673, 0.3671, 0.3654, 0.3652, 0.3635, 0.3634, 0.3617, 0.3616, 0.36, 0.3599, 0.3583, 0.3575, 0.3574, 0.3558, 0.3559, 0.3543, 0.3543, 0.3528, 0.3529, 0.3513, 0.3514, 0.3499, 0.3501, 0.3486, 0.3488, 0.3473, 0.3475, 0.3461, 0.3463, 0.3449, 0.3452, 0.3438, 0.3441, 0.3427, 0.343, 0.3417, 0.3421, 0.3408, 0.3411, 0.3399, 0.3402, 0.339, 0.3394, 0.3382, 0.3386, 0.3375, 0.3379, 0.3368, 0.3373, 0.3361, 0.3366, 0.3355, 0.3354, 0.3358, 0.3347, 0.3353, 0.3343, 0.3349, 0.3339, 0.3345, 0.3335, 0.3342, 0.3332, 0.3339, 0.3329, 0.3336, 0.3327, 0.3334, 0.3326, 0.3333, 0.3324, 0.3332, 0.3324, 0.3332, 0.3324, 0.3332, 0.3324, 0.3333, 0.3325, 0.3334, 0.3326, 0.3335, 0.3328, 0.3337, 0.333, 0.334, 0.3333, 0.3343, 0.3337, 0.3347, 0.3341],
+    "fN": [0.3659, 0.5684, 0.5622, 0.5565, 0.5617, 0.5625, 0.5622, 0.5624, 0.5624, 0.5626, 0.5626, 0.5628, 0.5628, 0.563, 0.563, 0.5633, 0.5633, 0.5635, 0.5635, 0.5638, 0.5638, 0.5641, 0.5641, 0.5644, 0.5645, 0.5648, 0.5648, 0.5651, 0.5652, 0.5655, 0.5656, 0.566, 0.5661, 0.5664, 0.5666, 0.5669, 0.5671, 0.5675, 0.5676, 0.568, 0.5682, 0.5685, 0.5689, 0.5691, 0.5696, 0.5698, 0.5703, 0.5706, 0.5711, 0.5713, 0.5718, 0.5721, 0.5727, 0.573, 0.5735, 0.5739, 0.5745, 0.5748, 0.5754, 0.5758, 0.5765, 0.5769, 0.5775, 0.5779, 0.5786, 0.5791, 0.5797, 0.5802, 0.5809, 0.5814, 0.5821, 0.5827, 0.5834, 0.5839, 0.5847, 0.5852, 0.586, 0.5866, 0.5874, 0.5879, 0.5887, 0.5893, 0.59, 0.5908, 0.5915, 0.5923, 0.5929, 0.5937, 0.5943, 0.5952, 0.5958, 0.5966, 0.5973, 0.5981, 0.5987, 0.5996, 0.6002, 0.601, 0.6017, 0.6025, 0.6031, 0.604, 0.6046, 0.6054, 0.606, 0.6068, 0.6075, 0.6083, 0.6089, 0.6097, 0.6103, 0.6111, 0.6117, 0.6124, 0.613, 0.6138, 0.6144, 0.6151, 0.6157, 0.6164, 0.617, 0.6176, 0.6183, 0.6189, 0.6196, 0.6201, 0.6208, 0.6213, 0.6219, 0.6224, 0.6231, 0.6235, 0.6242, 0.6246, 0.6252, 0.6257, 0.6262, 0.6267, 0.6272, 0.6277, 0.6282, 0.6286, 0.6291, 0.6295, 0.63, 0.6304, 0.6308, 0.6312, 0.6316, 0.6319, 0.6324, 0.6327, 0.6331, 0.6334, 0.6338, 0.634, 0.6344, 0.6346, 0.635, 0.6352, 0.6355, 0.6357, 0.636, 0.6363, 0.6364, 0.6367, 0.6369, 0.6371, 0.6372, 0.6375, 0.6376, 0.6378, 0.6379, 0.638, 0.6381, 0.6383, 0.6383, 0.6384, 0.6385, 0.6386, 0.6386, 0.6387, 0.6386, 0.6387, 0.6387, 0.6387, 0.6386, 0.6387, 0.6386, 0.6386, 0.6385, 0.6385, 0.6383, 0.6383, 0.6381, 0.6381, 0.6379, 0.6378, 0.6376, 0.6375]
+  },
+  "plot_data": {
+    "N_pred": {
+      "Time": [0, 0.503, 1.005, 1.508, 2.01, 2.513, 3.015, 3.518, 4.02, 4.523, 5.025, 5.528, 6.03, 6.533, 7.035, 7.538, 8.04, 8.543, 9.045, 9.548, 10.05, 10.553, 11.055, 11.558, 12.06, 12.563, 13.065, 13.568, 14.07, 14.573, 15.075, 15.578, 16.08, 16.583, 17.085, 17.588, 18.09, 18.593, 19.095, 19.598, 20.101, 20.603, 21.106, 21.608, 22.111, 22.613, 23.116, 23.618, 24.121, 24.623, 25.126, 25.628, 26.131, 26.633, 27.136, 27.638, 28.141, 28.643, 29.146, 29.648, 30.151, 30.653, 31.156, 31.658, 32.161, 32.663, 33.166, 33.668, 34.171, 34.673, 35.176, 35.678, 36.181, 36.683, 37.186, 37.688, 38.191, 38.693, 39.196, 39.698, 40.201, 40.704, 41.206, 41.709, 42.211, 42.714, 43.216, 43.719, 44.221, 44.724, 45.226, 45.729, 46.231, 46.734, 47.236, 47.739, 48.241, 48.744, 49.246, 49.749, 50.251, 50.754, 51.256, 51.759, 52.261, 52.764, 53.266, 53.769, 54.271, 54.774, 55.276, 55.779, 56.281, 56.784, 57.286, 57.789, 58.291, 58.794, 59.296, 59.799, 60.302, 60.804, 61.307, 61.809, 62.312, 62.814, 63.317, 63.819, 64.322, 64.824, 65.327, 65.829, 66.332, 66.834, 67.337, 67.839, 68.342, 68.844, 69.347, 69.849, 70.352, 70.854, 71.357, 71.859, 72.362, 72.864, 73.367, 73.869, 74.372, 74.874, 75.377, 75.879, 76.382, 76.884, 77.387, 77.889, 78.392, 78.894, 79.397, 79.899, 80.402, 80.905, 81.407, 81.91, 82.412, 82.915, 83.417, 83.92, 84.422, 84.925, 85.427, 85.93, 86.432, 86.935, 87.437, 87.94, 88.442, 88.945, 89.447, 89.95, 90.452, 90.955, 91.457, 91.96, 92.462, 92.965, 93.467, 93.97, 94.472, 94.975, 95.477, 95.98, 96.482, 96.985, 97.487, 97.99, 98.492, 98.995, 99.497, 100],
+      "Modeled": [0.4, 0.3615, 0.3267, 0.3586, 0.3634, 0.3613, 0.3626, 0.3625, 0.3639, 0.3637, 0.3651, 0.365, 0.3665, 0.3664, 0.368, 0.368, 0.3696, 0.3696, 0.3713, 0.3714, 0.3731, 0.3733, 0.3751, 0.3754, 0.3772, 0.3776, 0.3795, 0.38, 0.382, 0.3826, 0.3847, 0.3853, 0.3875, 0.3883, 0.3906, 0.3914, 0.3939, 0.3948, 0.3974, 0.3985, 0.4004, 0.4031, 0.4044, 0.4072, 0.4086, 0.4116, 0.4131, 0.4162, 0.4179, 0.4212, 0.423, 0.4264, 0.4284, 0.4319, 0.4341, 0.4377, 0.44, 0.4438, 0.4463, 0.4502, 0.4528, 0.4569, 0.4597, 0.4639, 0.4668, 0.4711, 0.4742, 0.4787, 0.4819, 0.4865, 0.4898, 0.4945, 0.498, 0.5028, 0.5064, 0.5114, 0.5151, 0.5201, 0.5239, 0.5291, 0.533, 0.5375, 0.5427, 0.5468, 0.5522, 0.5563, 0.5616, 0.5658, 0.5712, 0.5755, 0.5809, 0.5852, 0.5907, 0.595, 0.6005, 0.6048, 0.6104, 0.6147, 0.6202, 0.6246, 0.6301, 0.6344, 0.6399, 0.6443, 0.6498, 0.6541, 0.6595, 0.6638, 0.6692, 0.6735, 0.6788, 0.683, 0.6883, 0.6925, 0.6977, 0.7018, 0.7069, 0.711, 0.716, 0.72, 0.7243, 0.7293, 0.7332, 0.7381, 0.7418, 0.7466, 0.7503, 0.7549, 0.7585, 0.763, 0.7665, 0.7709, 0.7742, 0.7785, 0.7818, 0.7859, 0.7891, 0.7931, 0.7961, 0.8001, 0.803, 0.8067, 0.8095, 0.8131, 0.8158, 0.8192, 0.8218, 0.8251, 0.8275, 0.8307, 0.8329, 0.8359, 0.838, 0.8409, 0.8429, 0.8456, 0.8474, 0.85, 0.8516, 0.854, 0.8555, 0.8572, 0.8594, 0.8608, 0.8628, 0.8639, 0.8658, 0.8667, 0.8684, 0.8692, 0.8708, 0.8714, 0.8728, 0.8732, 0.8744, 0.8747, 0.8758, 0.8759, 0.8768, 0.8767, 0.8774, 0.8772, 0.8778, 0.8774, 0.8778, 0.8772, 0.8775, 0.8768, 0.8768, 0.8759, 0.8758, 0.8748, 0.8745, 0.8733, 0.8729, 0.8715, 0.8709, 0.8694, 0.8686, 0.8669],
+      "Observed": [0.4, 0.375, 0.346, 0.314, 0.278, 0.239, 0.197, 0.155, 0.114, 0.076, 0.048, 0.031, 0.023, 0.021, 0.021, 0.021, 0.022, 0.023, 0.024, 0.025, 0.026, 0.028, 0.03, 0.032, 0.035, 0.038, 0.043, 0.048, 0.055, 0.064, 0.075, 0.086, 0.098, 0.11, 0.122, 0.133, 0.144, 0.154, 0.165, 0.174, 0.184, 0.193, 0.201, 0.21, 0.217, 0.225, 0.232, 0.238, 0.245, 0.251, 0.256, 0.261, 0.266, 0.27, 0.274, 0.278, 0.281, 0.284, 0.287, 0.289, 0.291, 0.293, 0.295, 0.296, 0.296, 0.297, 0.297, 0.297, 0.297, 0.296, 0.295, 0.294, 0.293, 0.292, 0.29, 0.288, 0.286, 0.284, 0.282, 0.279, 0.277, 0.275, 0.272, 0.27, 0.268, 0.266, 0.264, 0.262, 0.261, 0.26, 0.259, 0.258, 0.258, 0.258, 0.259, 0.259, 0.26, 0.261, 0.263, 0.265, 0.266, 0.268, 0.27, 0.272, 0.274, 0.276, 0.278, 0.28, 0.282, 0.284, 0.285, 0.287, 0.288, 0.289, 0.29, 0.291, 0.292, 0.293, 0.293, 0.294, 0.294, 0.294, 0.294, 0.294, 0.293, 0.293, 0.292, 0.292, 0.291, 0.29, 0.289, 0.288, 0.287, 0.286, 0.285, 0.284, 0.283, 0.282, 0.281, 0.281, 0.28, 0.279, 0.278, 0.278, 0.278, 0.277, 0.277, 0.277, 0.277, 0.277, 0.277, 0.278, 0.278, 0.279, 0.279, 0.28, 0.281, 0.281, 0.282, 0.283, 0.284, 0.285, 0.285, 0.286, 0.287, 0.288, 0.289, 0.289, 0.29, 0.29, 0.291, 0.291, 0.291, 0.291, 0.291, 0.291, 0.291, 0.291, 0.291, 0.291, 0.29, 0.29, 0.29, 0.289, 0.289, 0.288, 0.288, 0.287, 0.287, 0.286, 0.286, 0.285, 0.285, 0.284, 0.284, 0.284, 0.283, 0.283, 0.283, 0.283]
+    },
+    "P_pred": {
+      "Time": [0, 0.503, 1.005, 1.508, 2.01, 2.513, 3.015, 3.518, 4.02, 4.523, 5.025, 5.528, 6.03, 6.533, 7.035, 7.538, 8.04, 8.543, 9.045, 9.548, 10.05, 10.553, 11.055, 11.558, 12.06, 12.563, 13.065, 13.568, 14.07, 14.573, 15.075, 15.578, 16.08, 16.583, 17.085, 17.588, 18.09, 18.593, 19.095, 19.598, 20.101, 20.603, 21.106, 21.608, 22.111, 22.613, 23.116, 23.618, 24.121, 24.623, 25.126, 25.628, 26.131, 26.633, 27.136, 27.638, 28.141, 28.643, 29.146, 29.648, 30.151, 30.653, 31.156, 31.658, 32.161, 32.663, 33.166, 33.668, 34.171, 34.673, 35.176, 35.678, 36.181, 36.683, 37.186, 37.688, 38.191, 38.693, 39.196, 39.698, 40.201, 40.704, 41.206, 41.709, 42.211, 42.714, 43.216, 43.719, 44.221, 44.724, 45.226, 45.729, 46.231, 46.734, 47.236, 47.739, 48.241, 48.744, 49.246, 49.749, 50.251, 50.754, 51.256, 51.759, 52.261, 52.764, 53.266, 53.769, 54.271, 54.774, 55.276, 55.779, 56.281, 56.784, 57.286, 57.789, 58.291, 58.794, 59.296, 59.799, 60.302, 60.804, 61.307, 61.809, 62.312, 62.814, 63.317, 63.819, 64.322, 64.824, 65.327, 65.829, 66.332, 66.834, 67.337, 67.839, 68.342, 68.844, 69.347, 69.849, 70.352, 70.854, 71.357, 71.859, 72.362, 72.864, 73.367, 73.869, 74.372, 74.874, 75.377, 75.879, 76.382, 76.884, 77.387, 77.889, 78.392, 78.894, 79.397, 79.899, 80.402, 80.905, 81.407, 81.91, 82.412, 82.915, 83.417, 83.92, 84.422, 84.925, 85.427, 85.93, 86.432, 86.935, 87.437, 87.94, 88.442, 88.945, 89.447, 89.95, 90.452, 90.955, 91.457, 91.96, 92.462, 92.965, 93.467, 93.97, 94.472, 94.975, 95.477, 95.98, 96.482, 96.985, 97.487, 97.99, 98.492, 98.995, 99.497, 100],
+      "Modeled": [0.1, 0.5196, 0.4737, 0.4534, 0.4584, 0.4583, 0.4585, 0.4575, 0.458, 0.457, 0.4574, 0.4564, 0.4569, 0.4558, 0.4562, 0.4552, 0.4556, 0.4545, 0.4548, 0.4537, 0.4541, 0.4529, 0.4532, 0.4521, 0.4523, 0.4511, 0.4514, 0.4502, 0.4504, 0.4491, 0.4493, 0.448, 0.4482, 0.4468, 0.447, 0.4456, 0.4457, 0.4442, 0.4443, 0.4428, 0.4421, 0.4421, 0.4406, 0.4406, 0.439, 0.4389, 0.4373, 0.4372, 0.4356, 0.4354, 0.4337, 0.4336, 0.4318, 0.4316, 0.4299, 0.4296, 0.4278, 0.4276, 0.4257, 0.4254, 0.4235, 0.4232, 0.4213, 0.421, 0.419, 0.4187, 0.4167, 0.4164, 0.4144, 0.414, 0.412, 0.4116, 0.4096, 0.4092, 0.4072, 0.4067, 0.4047, 0.4043, 0.4023, 0.4019, 0.3998, 0.3987, 0.3982, 0.3962, 0.3958, 0.3937, 0.3934, 0.3913, 0.391, 0.389, 0.3886, 0.3866, 0.3863, 0.3843, 0.384, 0.382, 0.3817, 0.3798, 0.3795, 0.3776, 0.3773, 0.3754, 0.3752, 0.3733, 0.3731, 0.3712, 0.3711, 0.3692, 0.3691, 0.3673, 0.3671, 0.3654, 0.3652, 0.3635, 0.3634, 0.3617, 0.3616, 0.36, 0.3599, 0.3583, 0.3575, 0.3574, 0.3558, 0.3559, 0.3543, 0.3543, 0.3528, 0.3529, 0.3513, 0.3514, 0.3499, 0.3501, 0.3486, 0.3488, 0.3473, 0.3475, 0.3461, 0.3463, 0.3449, 0.3452, 0.3438, 0.3441, 0.3427, 0.343, 0.3417, 0.3421, 0.3408, 0.3411, 0.3399, 0.3402, 0.339, 0.3394, 0.3382, 0.3386, 0.3375, 0.3379, 0.3368, 0.3373, 0.3361, 0.3366, 0.3355, 0.3354, 0.3358, 0.3347, 0.3353, 0.3343, 0.3349, 0.3339, 0.3345, 0.3335, 0.3342, 0.3332, 0.3339, 0.3329, 0.3336, 0.3327, 0.3334, 0.3326, 0.3333, 0.3324, 0.3332, 0.3324, 0.3332, 0.3324, 0.3332, 0.3324, 0.3333, 0.3325, 0.3334, 0.3326, 0.3335, 0.3328, 0.3337, 0.333, 0.334, 0.3333, 0.3343, 0.3337, 0.3347, 0.3341],
+      "Observed": [0.1, 0.117, 0.138, 0.161, 0.187, 0.215, 0.245, 0.275, 0.303, 0.327, 0.341, 0.344, 0.336, 0.324, 0.31, 0.295, 0.28, 0.266, 0.251, 0.236, 0.22, 0.205, 0.19, 0.174, 0.157, 0.141, 0.123, 0.106, 0.087, 0.068, 0.05, 0.036, 0.025, 0.02, 0.016, 0.014, 0.013, 0.013, 0.013, 0.013, 0.013, 0.013, 0.013, 0.014, 0.014, 0.014, 0.015, 0.016, 0.016, 0.017, 0.017, 0.018, 0.019, 0.02, 0.02, 0.021, 0.022, 0.023, 0.024, 0.025, 0.026, 0.027, 0.027, 0.029, 0.03, 0.031, 0.032, 0.033, 0.034, 0.035, 0.036, 0.037, 0.038, 0.039, 0.04, 0.041, 0.042, 0.043, 0.044, 0.044, 0.045, 0.045, 0.046, 0.046, 0.046, 0.046, 0.046, 0.045, 0.045, 0.044, 0.043, 0.042, 0.041, 0.04, 0.038, 0.037, 0.036, 0.035, 0.033, 0.032, 0.031, 0.031, 0.03, 0.029, 0.029, 0.029, 0.029, 0.029, 0.029, 0.029, 0.029, 0.029, 0.029, 0.03, 0.03, 0.03, 0.031, 0.031, 0.032, 0.032, 0.033, 0.033, 0.034, 0.034, 0.035, 0.035, 0.036, 0.036, 0.037, 0.037, 0.038, 0.038, 0.038, 0.039, 0.039, 0.039, 0.039, 0.039, 0.039, 0.039, 0.039, 0.039, 0.039, 0.038, 0.038, 0.038, 0.037, 0.037, 0.036, 0.036, 0.036, 0.035, 0.035, 0.034, 0.034, 0.034, 0.033, 0.033, 0.033, 0.032, 0.032, 0.032, 0.032, 0.032, 0.032, 0.032, 0.032, 0.032, 0.032, 0.033, 0.033, 0.033, 0.033, 0.034, 0.034, 0.034, 0.034, 0.035, 0.035, 0.035, 0.035, 0.036, 0.036, 0.036, 0.036, 0.037, 0.037, 0.037, 0.037, 0.037, 0.037, 0.037, 0.037, 0.037, 0.037, 0.037, 0.037, 0.037, 0.036, 0.036]
+    },
+    "Z_pred": {
+      "Time": [0, 0.503, 1.005, 1.508, 2.01, 2.513, 3.015, 3.518, 4.02, 4.523, 5.025, 5.528, 6.03, 6.533, 7.035, 7.538, 8.04, 8.543, 9.045, 9.548, 10.05, 10.553, 11.055, 11.558, 12.06, 12.563, 13.065, 13.568, 14.07, 14.573, 15.075, 15.578, 16.08, 16.583, 17.085, 17.588, 18.09, 18.593, 19.095, 19.598, 20.101, 20.603, 21.106, 21.608, 22.111, 22.613, 23.116, 23.618, 24.121, 24.623, 25.126, 25.628, 26.131, 26.633, 27.136, 27.638, 28.141, 28.643, 29.146, 29.648, 30.151, 30.653, 31.156, 31.658, 32.161, 32.663, 33.166, 33.668, 34.171, 34.673, 35.176, 35.678, 36.181, 36.683, 37.186, 37.688, 38.191, 38.693, 39.196, 39.698, 40.201, 40.704, 41.206, 41.709, 42.211, 42.714, 43.216, 43.719, 44.221, 44.724, 45.226, 45.729, 46.231, 46.734, 47.236, 47.739, 48.241, 48.744, 49.246, 49.749, 50.251, 50.754, 51.256, 51.759, 52.261, 52.764, 53.266, 53.769, 54.271, 54.774, 55.276, 55.779, 56.281, 56.784, 57.286, 57.789, 58.291, 58.794, 59.296, 59.799, 60.302, 60.804, 61.307, 61.809, 62.312, 62.814, 63.317, 63.819, 64.322, 64.824, 65.327, 65.829, 66.332, 66.834, 67.337, 67.839, 68.342, 68.844, 69.347, 69.849, 70.352, 70.854, 71.357, 71.859, 72.362, 72.864, 73.367, 73.869, 74.372, 74.874, 75.377, 75.879, 76.382, 76.884, 77.387, 77.889, 78.392, 78.894, 79.397, 79.899, 80.402, 80.905, 81.407, 81.91, 82.412, 82.915, 83.417, 83.92, 84.422, 84.925, 85.427, 85.93, 86.432, 86.935, 87.437, 87.94, 88.442, 88.945, 89.447, 89.95, 90.452, 90.955, 91.457, 91.96, 92.462, 92.965, 93.467, 93.97, 94.472, 94.975, 95.477, 95.98, 96.482, 96.985, 97.487, 97.99, 98.492, 98.995, 99.497, 100],
+      "Modeled": [0.05, 0.5011, 0.5896, 0.5812, 0.5796, 0.5796, 0.5803, 0.5796, 0.5802, 0.5795, 0.5801, 0.5794, 0.58, 0.5794, 0.58, 0.5793, 0.5799, 0.5792, 0.5798, 0.5791, 0.5797, 0.579, 0.5796, 0.5789, 0.5795, 0.5788, 0.5794, 0.5787, 0.5792, 0.5785, 0.5791, 0.5784, 0.579, 0.5782, 0.5788, 0.5781, 0.5786, 0.5779, 0.5785, 0.5777, 0.5776, 0.5782, 0.5775, 0.578, 0.5772, 0.5778, 0.577, 0.5776, 0.5768, 0.5773, 0.5766, 0.5771, 0.5763, 0.5768, 0.5761, 0.5766, 0.5758, 0.5763, 0.5755, 0.576, 0.5753, 0.5758, 0.575, 0.5755, 0.5747, 0.5752, 0.5744, 0.5749, 0.5741, 0.5745, 0.5737, 0.5742, 0.5734, 0.5739, 0.5731, 0.5736, 0.5728, 0.5732, 0.5724, 0.5729, 0.5721, 0.5719, 0.5724, 0.5716, 0.5721, 0.5713, 0.5718, 0.571, 0.5714, 0.5706, 0.5711, 0.5703, 0.5708, 0.57, 0.5705, 0.5697, 0.5702, 0.5694, 0.5699, 0.5691, 0.5696, 0.5688, 0.5693, 0.5685, 0.569, 0.5682, 0.5687, 0.5679, 0.5684, 0.5676, 0.5681, 0.5674, 0.5679, 0.5671, 0.5676, 0.5669, 0.5674, 0.5666, 0.5671, 0.5664, 0.5662, 0.5668, 0.566, 0.5665, 0.5658, 0.5663, 0.5656, 0.5661, 0.5654, 0.5659, 0.5652, 0.5657, 0.565, 0.5655, 0.5648, 0.5653, 0.5646, 0.5652, 0.5645, 0.565, 0.5643, 0.5648, 0.5641, 0.5647, 0.564, 0.5645, 0.5639, 0.5644, 0.5637, 0.5643, 0.5636, 0.5642, 0.5635, 0.5641, 0.5634, 0.5639, 0.5633, 0.5638, 0.5632, 0.5638, 0.5631, 0.5629, 0.5637, 0.563, 0.5636, 0.5629, 0.5635, 0.5628, 0.5634, 0.5628, 0.5634, 0.5627, 0.5633, 0.5627, 0.5633, 0.5627, 0.5633, 0.5626, 0.5632, 0.5626, 0.5632, 0.5626, 0.5632, 0.5626, 0.5632, 0.5626, 0.5632, 0.5626, 0.5632, 0.5626, 0.5633, 0.5626, 0.5633, 0.5627, 0.5633, 0.5627, 0.5634, 0.5628, 0.5634, 0.5628],
+      "Observed": [0.05, 0.052, 0.053, 0.055, 0.057, 0.059, 0.061, 0.064, 0.066, 0.068, 0.071, 0.074, 0.076, 0.079, 0.082, 0.085, 0.088, 0.092, 0.095, 0.099, 0.102, 0.106, 0.11, 0.114, 0.118, 0.122, 0.126, 0.13, 0.134, 0.137, 0.139, 0.14, 0.14, 0.137, 0.134, 0.131, 0.127, 0.124, 0.12, 0.117, 0.113, 0.11, 0.107, 0.104, 0.101, 0.099, 0.096, 0.094, 0.091, 0.089, 0.087, 0.085, 0.083, 0.082, 0.08, 0.079, 0.078, 0.076, 0.075, 0.074, 0.073, 0.073, 0.072, 0.071, 0.071, 0.07, 0.07, 0.07, 0.07, 0.07, 0.07, 0.07, 0.07, 0.07, 0.071, 0.071, 0.071, 0.072, 0.072, 0.073, 0.074, 0.074, 0.075, 0.076, 0.077, 0.077, 0.078, 0.079, 0.08, 0.08, 0.081, 0.082, 0.082, 0.083, 0.083, 0.083, 0.083, 0.083, 0.083, 0.083, 0.083, 0.082, 0.082, 0.082, 0.081, 0.08, 0.08, 0.079, 0.079, 0.078, 0.078, 0.077, 0.076, 0.076, 0.076, 0.075, 0.075, 0.074, 0.074, 0.074, 0.074, 0.074, 0.073, 0.073, 0.073, 0.073, 0.073, 0.073, 0.074, 0.074, 0.074, 0.074, 0.074, 0.075, 0.075, 0.075, 0.076, 0.076, 0.076, 0.077, 0.077, 0.077, 0.077, 0.078, 0.078, 0.078, 0.078, 0.079, 0.079, 0.079, 0.079, 0.079, 0.079, 0.079, 0.079, 0.079, 0.079, 0.079, 0.078, 0.078, 0.078, 0.078, 0.078, 0.077, 0.077, 0.077, 0.076, 0.076, 0.076, 0.076, 0.076, 0.075, 0.075, 0.075, 0.075, 0.075, 0.075, 0.075, 0.075, 0.075, 0.075, 0.075, 0.075, 0.075, 0.075, 0.075, 0.075, 0.076, 0.076, 0.076, 0.076, 0.076, 0.076, 0.077, 0.077, 0.077, 0.077, 0.077, 0.077, 0.077]
+    }
+  }
+}
+JSON_REPORT_END[0m
+[93m[PID 3491079] R script stdout END <<<[0m
+[93m[PID 3491079] R script stderr BEGIN >>>[0m
+[0mLoading required package: TMB
+Loading required package: jsonlite
+using C++ compiler: ‘g++ (Ubuntu 13.3.0-6ubuntu2~24.04) 13.3.0’
+Warning message:
+`aes_string()` was deprecated in ggplot2 3.0.0.
+ℹ Please use tidy evaluation idioms with `aes()`.
+ℹ See also `vignette("ggplot2-in-packages")` for more information.[0m
+[93m[PID 3491079] R script stderr END <<<[0m
+[96m[PID 3491079] JSON detected, parsing...[0m
+[96m[PID 3491079] Writing model report...[0m
+[94m[PID 3491079] Objective value: 289.1274[0m
+[96m[PID 3491079] Generating plots...[0m
+[94m[PID 3491079] Objective Value: 289.1274[0m
+[92m[PID 3491079] Successful model run[0m
+[0m----------------------------------------------[0m
+FINAL MODEL RUN FINISHED
+Final model run successful. Objective value: 289.1274

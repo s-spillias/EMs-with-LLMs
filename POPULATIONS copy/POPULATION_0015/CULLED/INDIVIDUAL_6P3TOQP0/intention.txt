@@ -1,0 +1,68 @@
+ASSESSMENT AND RATIONALE
+
+Scope and limitations
+- Residuals file not provided in this chat context, so I cannot quantify bias/variance patterns. The evaluation below focuses on structure and expected behavior. If you provide the residuals, I will tailor diagnostics (bias over time, seasonal phasing, conditional variance, and cross-correlation among N/P/Z residuals).
+
+1) Fit to data (qualitative assessment without residuals)
+- Observation model: Lognormal errors with a small SD floor is appropriate for positive biomass and nutrient data, especially when values approach detection limits.
+- Process structure: The model uses Monod nutrient limitation, a self-shading light proxy, generalized Holling grazing (exponent h), and a smooth grazing threshold. This is flexible and should fit a range of bloom dynamics. Seasonality enters both growth and grazing via exp(a*sin(...)), which is flexible and maintains positivity.
+- Typical fit issues in NPZ models that may appear in residuals:
+  - Over-amplified zooplankton peaks and delayed Z relative to P (positive Z residuals near peaks, negative P residuals during declines).
+  - Excess oscillations due to weak top-down damping (autonomous predator-prey cycles).
+  - Mismatch in seasonal timing if only sinusoidal modifiers are used (phase/period misfit).
+  - Bias at low concentrations if the observation SD floor is too small/large.
+
+2) Alignment with the project context
+- The model simulates N, P, Z in a mixed layer with mass-balance-consistent fluxes: uptake, grazing, recycling, and mortality. This directly addresses the stated project context.
+- Seasonality: Represented by multiplicative exp(a*sin(...)) on growth and grazing, which is a reasonable stand-in for unobserved light/temperature forcing when environmental drivers are not explicitly available.
+- Missing/oversimplified processes relative to the mixed layer:
+  - No explicit higher-trophic “closure” on zooplankton beyond linear mortality.
+  - No explicit physical mixing/dilution or external nutrient supply (entrainment/upwelling).
+  - Light is proxied by self-shading and unspecific seasonality; no explicit irradiance forcing.
+  - Constant assimilation/efficiency terms; no stoichiometry or temperature modulation.
+
+3) Parameter review and implications
+- log_K_N has updated_from_literature = true and a narrow range (0.02–0.08 g C m^-3 in real scale). Given this, the Monod structure remains appropriate; no scaling change needed.
+- Other parameters look plausible. epsilon_P (~0.6) and e_Z (~0.3) are common priors. Linear mortalities (m_P, m_Z ~0.05 d^-1) are reasonable.
+- One structural gap likely affecting realism is the absence of a quadratic zooplankton mortality (closure). Literature and classic NPZ formulations (e.g., Steele, Fasham) often include m2_Z * Z^2 to represent higher trophic predation/cannibalism and stabilize cycles.
+
+SELECTED ECOLOGICAL IMPROVEMENT
+
+Chosen approach: Add a quadratic zooplankton mortality term (closure)
+- What: Introduce M2_Z = m2_Z * Z^2 into the Z loss term; fully remineralize to N for mass balance.
+- Why (ecological reasoning):
+  - Captures density-dependent top-down control by higher trophic levels, cannibalism, and unmodeled predation.
+  - Stabilizes predator-prey oscillations and reduces unrealistically large Z peaks frequently seen with only linear mortality.
+  - Often improves seasonal phase and amplitude of P decline and Z peaks.
+- Why this instead of alternatives:
+  - Variable efficiencies or additional environmental drivers add parameters and identifiability burden without guaranteed improvement in the absence of explicit forcing data.
+  - The closure term is a minimal-complexity enhancement with strong precedent and interpretability.
+
+Expected effects on residuals (to be verified once residuals are available)
+- Reduced positive Z residuals during peak periods; dampened oscillations.
+- Improved timing and magnitude of P decline following blooms (less overgrazing lag).
+- Potential reduction of bias at high Z and associated negative P residuals.
+
+IMPLEMENTATION DETAILS
+
+State equations (per time step, using predictions only; no data leakage):
+- Previously:
+  dN = -U + (1 - epsilon_P)*U + (1 - e_Z)*G + M_P + M_Z
+  dP =  epsilon_P*U - G - M_P
+  dZ =  e_Z*G - M_Z
+
+- Now (added quadratic Z mortality M2_Z = m2_Z * Z^2):
+  dN = -U + (1 - epsilon_P)*U + (1 - e_Z)*G + M_P + M_Z + M2_Z
+  dP =  epsilon_P*U - G - M_P
+  dZ =  e_Z*G - M_Z - M2_Z
+
+Parameters
+- New parameter: log_m2_Z (transformed as m2_Z = exp(log_m2_Z))
+  Units (real scale): m^3 gC^-1 day^-1
+  Suggested bounds (real scale): [0.0, 5.0] for soft penalties; typical values ~0.01–1.0.
+  Default value: exp(-4.60517) ≈ 0.01 m^3 gC^-1 day^-1
+
+Notes
+- Mass balance preserved by routing M2_Z to N.
+- No *_dat values are used in prediction updates; only previous-step predictions drive dynamics.
+- If residuals reveal remaining structure (e.g., systematic seasonal phase error), consider explicit temperature/light drivers or variable efficiency terms as a next step.

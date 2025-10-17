@@ -1,0 +1,74 @@
+Assessment and rationale for changes
+
+A) Model–data fit
+- A residuals file was referenced but was not provided in this chat context, so I cannot compute specific diagnostics. Based on typical behavior of single-compartment COTS models (adults only), common misfits include:
+  - Peak underestimation or timing mismatch: outbreaks rise too slowly or peak too early/late.
+  - Overly smooth adult dynamics: lacking sharp booms due to immediate translation of reproduction into adults without storage.
+  - Coral composition residuals: the model captures total coral cover better than the partition between fast (Acropora) and slow (Faviidae/Porites), especially during and after outbreaks.
+
+B) Alignment with the PROJECT CONTEXT
+- The current model already includes key mechanisms: selective predation on coral groups, temperature effects on larvae and corals, food-dependent adult survival, fertilization Allee effect, immigration saturation, and adult crowding (Beverton–Holt). These are appropriate.
+- However, episodic boom–bust cycles of COTS are widely linked to (i) pulses in larval survival/settlement, and (ii) a cryptic juvenile/subadult reservoir that can accumulate under low-coral conditions and mature en masse once coral food becomes abundant. The current model routes reproduction and immigration directly into adults (after one year), which tends to smooth and dampen outbreaks and can misalign timing.
+
+C) Missing or oversimplified ecological processes
+- Juvenile/subadult stage: Absent. This stage can store cohorts across years and drives delayed density dependence essential for outbreak “release.”
+- Maturation dependence on coral availability: Not represented. Adult emergence should accelerate when food (live coral) is abundant.
+- Immigration routing: Currently adds directly to adults; ecologically, immigration contributes to settlers/juveniles first.
+
+Chosen improvement (ONE meaningful ecological improvement)
+
+Introduce a latent juvenile/subadult state with food-dependent maturation:
+- Add an unobserved juvenile state J(t) that accumulates recruits (local reproduction) and immigration.
+- Juveniles experience their own survival, then a fraction matures into adults each year.
+- Maturation depends on coral availability via a saturating/threshold-like function of total coral cover, creating delayed density dependence and enabling episodic outbreaks when coral recovers.
+- Adults now gain new members primarily through maturation from the juvenile pool, not direct larval-to-adult conversion.
+
+Why this helps the PROJECT CONTEXT
+- Storage and release: The juvenile pool stores cohorts during periods unfavorable for adult emergence (e.g., low coral) and releases adults when coral rebounds, producing sharper and better-timed boom–bust cycles.
+- Realistic stage structure: Reflects known life history where juveniles/subadults are cryptic and not counted in adult surveys but later contribute to adult outbreaks.
+- Minimal added complexity vs. payoff: One added state and three maturation/juvenile parameters provide strong mechanistic leverage on outbreak timing and magnitude.
+
+Summary of model changes
+
+State dynamics (annual time step):
+- Previous recruits and immigration flowed directly into adults. Now they flow into J:
+  J_surv(t) = J(t) * exp(-mJ)
+  M(t)      = gammaJ_max * [phi_food(t)]^etaJ * J_surv(t)     // 0 ≤ gammaJ_max ≤ 1
+  J(t+1)    = J_surv(t) - M(t) + recruits_J(t) + I_J(t)
+
+- Adults:
+  C_surv(t)     = C(t) * exp( -[ mC + mC_food * (1 - phi_food(t)) ] )
+  C_raw(t+1)    = C_surv(t) + M(t)
+  C(t+1)        = C_raw(t+1) / (1 + beta_dd * C_raw(t+1))      // Beverton–Holt
+
+- Recruitment and immigration now target juveniles:
+  recruits_J(t) = fec_eff(t) * C(t) * phi_spawn(t) * phi_T_COTS(t)
+  I_J(t)        = alpha_imm * cotsimm_dat(t) / (k_imm + cotsimm_dat(t))
+
+- Fecundity and fertilization remain as implemented, with fec now interpreted as effective recruits to the juvenile pool (not direct adults).
+
+- Predation on coral remains driven by adult density C(t), preserving selective predation dynamics.
+
+New/modified parameters
+- New:
+  - mJ: juvenile/subadult annual mortality rate (yr^-1).
+  - gammaJ_max: maximum annual maturation fraction from juveniles to adults (0–1).
+  - etaJ: shape exponent for coral-food dependence of maturation (dimensionless, >0) to allow threshold-like maturation.
+  - J0: initial juvenile density at t=0 (ind m^-2).
+- Modified interpretation:
+  - fec: now produces juveniles (enters J), not immediate adults.
+  - alpha_imm: now converts immigration to juveniles, not immediate adults.
+
+Bounds and priors
+- Bounds chosen to be biologically plausible and to aid identifiability:
+  - mJ ∈ [0, 3] yr^-1; gammaJ_max ∈ [0, 1]; etaJ ∈ [0.5, 5]; J0 ∈ [0, 5] ind m^-2.
+- Existing bounds retained; no change to likelihood structure; penalties added for new parameters.
+
+Data leakage avoidance
+- No current-time observations (variables ending with _dat) are used in the state updates beyond initialization at t=0. Immigration and SST are exogenous drivers and allowed. The new juvenile state is unobserved and driven only by lagged states and exogenous inputs.
+
+Testing expectations
+- With the juvenile reservoir, expect improved timing and magnitude of outbreak peaks, stronger boom-bust contrast, and more realistic lag between coral recovery and adult COTS surges.
+
+If residuals become available
+- Examine whether adult peaks are now better aligned and whether coral composition residuals (fast vs slow) decrease during outbreaks. If peaks are still damped, consider allowing maturation to depend weakly on temperature as well, or refining the predation switching exponent q.

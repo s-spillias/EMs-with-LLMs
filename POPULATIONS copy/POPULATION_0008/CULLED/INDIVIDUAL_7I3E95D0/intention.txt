@@ -1,0 +1,70 @@
+Assessment and motivation for change
+
+A) Fit to data (pending residuals)
+- The residuals file was not provided here. Based on structure alone, the current model may struggle to match outbreak timing and amplitude because COTS population growth responds within the same year to food and temperature (via a logistic growth term). In empirical COTS dynamics, recruitment pulses typically follow favorable larval conditions with about a 1-year lag, producing sudden booms that a same-year growth formulation can smear or mis-time.
+- Once residuals are available, we will validate whether peaks are too early/late and whether amplitude is under/overestimated (common symptoms of missing recruitment lags).
+
+B) Project context alignment
+- Goal: episodic boom-bust outbreaks driven by selective predation and environment. The model already includes:
+  - Selective foraging on fast/slow corals (multi-prey functional response).
+  - Coral thermal bleaching effects.
+  - COTS thermal performance for reproduction.
+  - Carrying capacity tied to coral composition.
+  - Allee effect and immigration.
+- Missing/oversimplified for outbreak realism:
+  - No explicit recruitment delay (core to pulse dynamics in COTS).
+  - Adult mortality is linear (can go negative at high rates) rather than hazard-based survival.
+  - Recruitment density dependence is embedded in same-year logistic growth of adults, not in a recruit-production/settlement stage.
+  - Other possible omissions (not acted on here): runoff/nutrient pulses, cyclones, predator fish dynamics, multi-year temperature stress accumulation, stage structure.
+
+C) Key ecological processes possibly missing or oversimplified
+- Recruitment lag: COTS larvae settle and appear in counts roughly a year after spawning; favorable larval survival (temperature, food) leads to pulses that are not synchronized with the adult population within the same year.
+- Density dependence at settlement: high adult densities and limited habitat reduce the success of recruits; this is better represented in a recruitment function than in same-year adult logistic growth.
+- Adult mortality as a hazard: rate parameters are most consistent when applied via exponential survival.
+
+Chosen improvement: add a 1-year recruitment delay with Ricker-type density-dependent settlement and hazard-based adult survival
+
+Rationale
+- Ecological: Captures the delayed, pulsed nature of COTS outbreaks and allows environmental drivers (temperature, food intake) to shape recruitment one year later, aligning with observed boom timing.
+- Mathematical: Moving density dependence into the recruitment pathway (Ricker) combined with exponential adult survival can generate realistic boom-bust cycles with sharp increases followed by rapid declines as density rises and food/capacity saturate.
+- Data discipline: Only uses previous-year predicted states for reproduction, avoiding data leakage.
+
+Implementation summary (model.cpp)
+- Adults (survival only):
+  C_survive = C_{t-1} * exp(-mC_base)
+- Reproduction (from previous year):
+  rC_eff = rC_max * epsilon_food * I_sat(F_{t-1}, S_{t-1}) * T_perf(sst_{t-1}) * Allee(C_{t-1})
+  R_pot = rC_eff * C_{t-1}
+- Settlement density dependence (Ricker):
+  R_rec = R_pot * exp(-C_{t-1} / Kc_{t-1}), where Kc_{t-1} = Kc0 + kCF*F_{t-1} + kCS*S_{t-1}
+- Update with immigration:
+  C_t = softplus(C_survive + R_rec + gamma_imm * immigration_t, k=5)
+- Coral submodel unchanged (bleaching and growth remain as implemented).
+
+Parameter review and implications
+- No new parameters added. Existing parameters retain units and ecological meaning:
+  - mC_base is now applied as an instantaneous rate via exponential survival; its units (year^-1) remain consistent with the description and bounds in parameters.json.
+  - rC_max remains a per-capita reproductive potential, now governing recruits rather than same-year adult logistic growth.
+  - Kc0, kCF, kCS define capacity that throttles recruitment success via the Ricker term exp(-C/Kc).
+  - Topt, sigma_T, and K_food continue to modulate reproduction; we now evaluate T at t-1 to reflect the lag.
+- T_bleach was updated from literature in parameters.json; no structural change needed for coral bleaching at this stage.
+
+Expected effects on dynamics
+- Sharper, lagged outbreaks when food and thermal conditions are favorable, synchronized with observed post-spawning recruitment timing.
+- Stronger busts as density approaches capacity (via Ricker suppression) and adults experience hazard mortality.
+- Reduced tendency for unrealistically immediate or gradual increases driven by same-year logistic adult growth.
+
+Next steps (after residuals)
+- Inspect residuals timing around outbreak peaks; if peaks are still late/early:
+  - Consider adding runoff/nutrient proxy or a low-order autoregressive term on recruitment driver.
+- If amplitude remains too high:
+  - Introduce a settlement saturation parameter or incorporate “free capacity” (Kc - C)+ into settlement.
+- If coral decline during outbreaks is too slow/fast:
+  - Adjust aF, aS, hF, hS or the functional response exponent q_func.
+
+Note on data usage
+- The implementation avoids using current-year response variables in prediction.
+- Coral processes use SST_t; COTS recruitment uses SST_{t-1}, consistent with a 1-year lag.
+
+Summary
+- One focused ecological improvement—the explicit 1-year recruitment delay with Ricker settlement and hazard-based adult survival—was implemented to better capture episodic boom-bust dynamics without adding new parameters or data dependencies. Please provide the residuals to validate and fine-tune this change.

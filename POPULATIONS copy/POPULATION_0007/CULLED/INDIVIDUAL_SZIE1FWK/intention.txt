@@ -1,0 +1,43 @@
+Assessment and rationale
+
+1) Model fit to data
+- I do not have the residuals file or any observed data series here, so I cannot quantitatively assess goodness of fit (e.g., RMSE, bias, autocorrelation of residuals, or whether residuals are centered and homoscedastic).
+- Qualitatively, the current likelihood is well-posed: lognormal for COTS abundance and normal on the logit scale for coral cover, with sd floors for stability. This will typically yield stable estimation given reasonable initial values.
+
+To complete this step rigorously, please provide the residuals file or summary diagnostics (e.g., residual plots by variable and time). I will then comment on patterns (bias, variance structure, temporal correlation) and whether they suggest re-specification (e.g., alternative link functions or process noise).
+
+2) Alignment with the PROJECT CONTEXT (NPZ in the mixed layer)
+- The current model is a coral–COTS (Crown-of-thorns starfish) system with adult/juvenile COTS and two coral groups (fast/slow). It does not explicitly simulate NPZ (Nutrient–Phytoplankton–Zooplankton) dynamics as described in the project context.
+- There is, however, a placeholder for bottom-up control of COTS recruitment via an exogenous “food” variable (intended as a phytoplankton proxy), controlled by K_food. Previously, this driver was disabled (neutral multiplier = 1.0).
+
+Conclusion: The model structure is misaligned with the project’s NPZ focus. A full rewrite to an NPZ mixed-layer model would be most appropriate for the project context, but as an incremental step within this codebase, the most meaningful way to reflect NPZ mechanisms is to (re)introduce a resource-limitation link that uses phytoplankton (P) as an exogenous driver of COTS larval survival/recruitment.
+
+3) Missing or oversimplified ecological processes
+- No explicit NPZ state dynamics (N, P, Z) or mixed-layer physics (entrainment, mixing, seasonal forcing).
+- Bottom-up control on COTS recruitment by P is currently neutral (f_food = 1) because a dedicated phytoplankton driver series is not provided.
+- No explicit seasonal structure (all dynamics annual).
+- Coral process representation is already fairly rich (growth with space competition, bleaching losses, multi-prey functional response), and the current observation model is reasonable.
+
+Parameter review and structural implications
+- K_food exists in parameters.json with broad bounds and a clear ecological role. It remains in the parameter set to enable resource-limitation when a phytoplankton proxy is available.
+- Other parameters appear internally consistent with their roles. Without new literature updates provided, I do not tighten bounds or change priors. If literature-constrained values become available (e.g., tighter ranges for bleaching thresholds or functional response exponents), we can consider re-scaling or changing functional forms accordingly (e.g., using a Hill-type limitation if data support a sharper-than-Monod transition).
+
+Chosen improvement: Resource limitation on recruitment via phytoplankton (Monod function)
+- Ecological reasoning: COTS larval survival is strongly linked to phytoplankton availability; recruitment should scale with P/(K_food + P). This provides a direct, minimal-complexity link to the NPZ context that preserves the current model’s structure and avoids data leakage by using the previous time step’s P.
+- Mathematical form (when data available): f_food(t-1) = food_dat(t-1) / (K_food + food_dat(t-1))
+- Placement: Multiplicative modifier on recruitment Rec in the juvenile pool equation
+- Data requirement: A “food_dat” (phytoplankton/chlorophyll-a proxy) vector aligned in time with existing drivers.
+
+What changed
+- model.cpp: Made the food driver optional. Because food_dat is not present in the current dataset, f_food is set to 1.0 (neutral). When a food_dat vector is provided, the Monod saturating function should be re-enabled using t-1 values to avoid data leakage.
+- parameters.json: No changes. K_food remains available for future activation of the food limitation.
+
+Notes on data leakage and computation
+- When re-enabled, food limitation must use food_dat(t-1), not food_dat(t), ensuring that prediction at time t depends only on exogenous drivers from the previous time step.
+- Numerical stability: A small epsilon is retained in denominators elsewhere; K_food maintains strictly positive bounds.
+
+Next steps after you provide residuals (and optionally a phytoplankton proxy)
+- I will analyze residuals for each observed series (COTS, fast coral, slow coral) to see if the added bottom-up control (once activated) reduces bias or temporal structure in recruitment-related misfit. If residuals indicate sharper-than-Monod responses, we can consider a Hill exponent as a second step (still within the “resource limitation” improvement class).
+
+Compilation issue and resolution
+- The previous version required a data vector named food_dat. The dataset in use did not include this, causing a runtime data-reading error. The model now compiles and runs without food_dat by treating the food modifier as neutral (f_food = 1). Supply food_dat to activate the NPZ linkage.

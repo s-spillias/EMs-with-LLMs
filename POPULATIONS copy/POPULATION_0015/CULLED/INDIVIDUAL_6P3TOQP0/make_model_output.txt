@@ -1,0 +1,1147 @@
+Warning: Input is not a terminal (fd=4).
+Skipping POPULATIONS/POPULATION_0015/INDIVIDUAL_6P3TOQP0/model.cpp that matches gitignore spec.
+Skipping POPULATIONS/POPULATION_0015/INDIVIDUAL_6P3TOQP0/parameters.json that matches gitignore spec.
+Skipping POPULATIONS/POPULATION_0015/INDIVIDUAL_6P3TOQP0/intention.txt that matches gitignore spec.
+Creating empty file POPULATIONS/POPULATION_0015/INDIVIDUAL_6P3TOQP0/intention.txt
+Here’s my plan and the resulting changes.                                                                                                                                                                                   
+
+ 1 Are code changes needed?                                                                                                                                                                                                 
+
+Yes. To better capture mixed-layer NPZ dynamics and provide a realistic “closure” for zooplankton losses, I’m adding a quadratic zooplankton mortality term (m2_Z * Z^2). This represents higher-trophic predation and      
+density-dependent losses, a common and ecologically grounded enhancement that stabilizes oscillations and improves fit when Z peaks are too large or delayed.                                                               
+
+ 2 What changes are needed?                                                                                                                                                                                                 
+
+ • parameters.json: Add a new parameter log_m2_Z with documentation and plausible bounds.                                                                                                                                   
+ • model.cpp: Add the new parameter, transform it, and include the quadratic mortality term in the state equations (added to dN recycling and subtracted from dZ). Report the parameter and apply soft penalties for        
+   plausible ranges.                                                                                                                                                                                                        
+ • intention.txt: Document the assessment, the rationale (including limitations due to missing residuals file), and the expected effects of the change.                                                                     
+
+Note: I couldn’t access a residuals file in the provided context. If you share it, I can refine the assessment and, if needed, tune priors/bounds.                                                                          
+
+POPULATIONS/POPULATION_0015/INDIVIDUAL_6P3TOQP0/intention.txt                                                                                                                                                               
+
+                                                                                                                                                                                                                            
+ @@ -0,0 +1,68 @@                                                                                                                                                                                                           
+ +ASSESSMENT AND RATIONALE                                                                                                                                                                                                  
+ +                                                                                                                                                                                                                          
+ +Scope and limitations                                                                                                                                                                                                     
+ +- Residuals file not provided in this chat context, so I cannot quantify bias/variance patterns. The evaluation below focuses on structure and expected behavior. If you provide the residuals, I will tailor diagnostics 
+ (bias over time, seasonal phasing, conditional variance, and cross-correlation among N/P/Z residuals).                                                                                                                     
+ +                                                                                                                                                                                                                          
+ +1) Fit to data (qualitative assessment without residuals)                                                                                                                                                                 
+ +- Observation model: Lognormal errors with a small SD floor is appropriate for positive biomass and nutrient data, especially when values approach detection limits.                                                      
+ +- Process structure: The model uses Monod nutrient limitation, a self-shading light proxy, generalized Holling grazing (exponent h), and a smooth grazing threshold. This is flexible and should fit a range of bloom     
+ dynamics. Seasonality enters both growth and grazing via exp(a*sin(...)), which is flexible and maintains positivity.                                                                                                      
+ +- Typical fit issues in NPZ models that may appear in residuals:                                                                                                                                                          
+ +  - Over-amplified zooplankton peaks and delayed Z relative to P (positive Z residuals near peaks, negative P residuals during declines).                                                                                 
+ +  - Excess oscillations due to weak top-down damping (autonomous predator-prey cycles).                                                                                                                                   
+ +  - Mismatch in seasonal timing if only sinusoidal modifiers are used (phase/period misfit).                                                                                                                              
+ +  - Bias at low concentrations if the observation SD floor is too small/large.                                                                                                                                            
+ +                                                                                                                                                                                                                          
+ +2) Alignment with the project context                                                                                                                                                                                     
+ +- The model simulates N, P, Z in a mixed layer with mass-balance-consistent fluxes: uptake, grazing, recycling, and mortality. This directly addresses the stated project context.                                        
+ +- Seasonality: Represented by multiplicative exp(a*sin(...)) on growth and grazing, which is a reasonable stand-in for unobserved light/temperature forcing when environmental drivers are not explicitly available.      
+ +- Missing/oversimplified processes relative to the mixed layer:                                                                                                                                                           
+ +  - No explicit higher-trophic “closure” on zooplankton beyond linear mortality.                                                                                                                                          
+ +  - No explicit physical mixing/dilution or external nutrient supply (entrainment/upwelling).                                                                                                                             
+ +  - Light is proxied by self-shading and unspecific seasonality; no explicit irradiance forcing.                                                                                                                          
+ +  - Constant assimilation/efficiency terms; no stoichiometry or temperature modulation.                                                                                                                                   
+ +                                                                                                                                                                                                                          
+ +3) Parameter review and implications                                                                                                                                                                                      
+ +- log_K_N has updated_from_literature = true and a narrow range (0.02–0.08 g C m^-3 in real scale). Given this, the Monod structure remains appropriate; no scaling change needed.                                        
+ +- Other parameters look plausible. epsilon_P (~0.6) and e_Z (~0.3) are common priors. Linear mortalities (m_P, m_Z ~0.05 d^-1) are reasonable.                                                                            
+ +- One structural gap likely affecting realism is the absence of a quadratic zooplankton mortality (closure). Literature and classic NPZ formulations (e.g., Steele, Fasham) often include m2_Z * Z^2 to represent higher  
+ trophic predation/cannibalism and stabilize cycles.                                                                                                                                                                        
+ +                                                                                                                                                                                                                          
+ +SELECTED ECOLOGICAL IMPROVEMENT                                                                                                                                                                                           
+ +                                                                                                                                                                                                                          
+ +Chosen approach: Add a quadratic zooplankton mortality term (closure)                                                                                                                                                     
+ +- What: Introduce M2_Z = m2_Z * Z^2 into the Z loss term; fully remineralize to N for mass balance.                                                                                                                       
+ +- Why (ecological reasoning):                                                                                                                                                                                             
+ +  - Captures density-dependent top-down control by higher trophic levels, cannibalism, and unmodeled predation.                                                                                                           
+ +  - Stabilizes predator-prey oscillations and reduces unrealistically large Z peaks frequently seen with only linear mortality.                                                                                           
+ +  - Often improves seasonal phase and amplitude of P decline and Z peaks.                                                                                                                                                 
+ +- Why this instead of alternatives:                                                                                                                                                                                       
+ +  - Variable efficiencies or additional environmental drivers add parameters and identifiability burden without guaranteed improvement in the absence of explicit forcing data.                                           
+ +  - The closure term is a minimal-complexity enhancement with strong precedent and interpretability.                                                                                                                      
+ +                                                                                                                                                                                                                          
+ +Expected effects on residuals (to be verified once residuals are available)                                                                                                                                               
+ +- Reduced positive Z residuals during peak periods; dampened oscillations.                                                                                                                                                
+ +- Improved timing and magnitude of P decline following blooms (less overgrazing lag).                                                                                                                                     
+ +- Potential reduction of bias at high Z and associated negative P residuals.                                                                                                                                              
+ +                                                                                                                                                                                                                          
+ +IMPLEMENTATION DETAILS                                                                                                                                                                                                    
+ +                                                                                                                                                                                                                          
+ +State equations (per time step, using predictions only; no data leakage):                                                                                                                                                 
+ +- Previously:                                                                                                                                                                                                             
+ +  dN = -U + (1 - epsilon_P)*U + (1 - e_Z)*G + M_P + M_Z                                                                                                                                                                   
+ +  dP =  epsilon_P*U - G - M_P                                                                                                                                                                                             
+ +  dZ =  e_Z*G - M_Z                                                                                                                                                                                                       
+ +                                                                                                                                                                                                                          
+ +- Now (added quadratic Z mortality M2_Z = m2_Z * Z^2):                                                                                                                                                                    
+ +  dN = -U + (1 - epsilon_P)*U + (1 - e_Z)*G + M_P + M_Z + M2_Z                                                                                                                                                            
+ +  dP =  epsilon_P*U - G - M_P                                                                                                                                                                                             
+ +  dZ =  e_Z*G - M_Z - M2_Z                                                                                                                                                                                                
+ +                                                                                                                                                                                                                          
+ +Parameters                                                                                                                                                                                                                
+ +- New parameter: log_m2_Z (transformed as m2_Z = exp(log_m2_Z))                                                                                                                                                           
+ +  Units (real scale): m^3 gC^-1 day^-1                                                                                                                                                                                    
+ +  Suggested bounds (real scale): [0.0, 5.0] for soft penalties; typical values ~0.01–1.0.                                                                                                                                 
+ +  Default value: exp(-4.60517) ≈ 0.01 m^3 gC^-1 day^-1                                                                                                                                                                    
+ +                                                                                                                                                                                                                          
+ +Notes                                                                                                                                                                                                                     
+ +- Mass balance preserved by routing M2_Z to N.                                                                                                                                                                            
+ +- No *_dat values are used in prediction updates; only previous-step predictions drive dynamics.                                                                                                                          
+ +- If residuals reveal remaining structure (e.g., systematic seasonal phase error), consider explicit temperature/light drivers or variable efficiency terms as a next step.                                               
+                                                                                                                                                                                                                            
+
+POPULATIONS/POPULATION_0015/INDIVIDUAL_6P3TOQP0/parameters.json                                                                                                                                                             
+
+                                                                                                                                                                                                                            
+ @@ -1,4 +1,5 @@                                                                                                                                                                                                            
+  {                                                                                                                                                                                                                         
+          {                                                                                                                                                                                                                 
+              "parameter": "log_mu_max",                                                                                                                                                                                    
+              "value": -0.3566749439,                                                                                                                                                                                       
+              "units": "log(day^-1)",                                                                                                                                                                                       
+ -            "description": "Log of maximum phytoplankton specific uptake rate mu_max (day^-1). Typical values 0.1\u20131.5 day^-1 depending on taxa and conditions.",                                                     
+ +            "description": "Log of maximum phytoplankton specific uptake rate mu_max (day^-1). Typical values 0.1–1.5 day^-1 depending on taxa and conditions.",                                                          
+              "source": "literature",                                                                                                                                                                                       
+              "import_type": "PARAMETER",                                                                                                                                                                                   
+              "priority": 1,                                                                                                                                                                                                
+              "lower_bound": 0.05,                                                                                                                                                                                          
+              "upper_bound": 3.0,                                                                                                                                                                                           
+              "enhanced_semantic_description": "Log max phytoplankton specific uptake rate (day^-1)",                                                                                                                       
+              "updated_from_literature": false,                                                                                                                                                                             
+              "import_type": "PARAMETER",                                                                                                                                                                                   
+              "priority": 3,                                                                                                                                                                                                
+              "lower_bound": 1.0,                                                                                                                                                                                           
+              "upper_bound": 3.0,                                                                                                                                                                                           
+ -            "enhanced_semantic_description": "Log of (Holling exponent minus one), h \u2265 1 dimensionless",                                                                                                             
+ +            "enhanced_semantic_description": "Log of (Holling exponent minus one), h ≥ 1 dimensionless",                                                                                                                  
+              "updated_from_literature": false,                                                                                                                                                                             
+              "updated_fields_from_literature": []                                                                                                                                                                          
+          },                                                                                                                                                                                                                
+          {                                                                                                                                                                                                                 
+              "parameter": "log_P_star",                                                                                                                                                                                    
+              "value": -3.912023005,                                                                                                                                                                                        
+              "description": "Log of smooth grazing threshold concentration P_star; below this, grazing is strongly reduced.",                                                                                              
+              "updated_from_literature": false,                                                                                                                                                                             
+              "updated_fields_from_literature": []                                                                                                                                                                          
+          },                                                                                                                                                                                                                
+          {                                                                                                                                                                                                                 
+ -            "parameter": "logit_epsilon_P",                                                                                                                                                                               
+ -            "value": 0.4054651081,                                                                                                                                                                                        
+ -            "units": "logit(dimensionless)",                                                                                                                                                                              
+ -            "description": "Logit of phytoplankton carbon-use efficiency (fraction of uptake retained as biomass). Prior mean ~0.6.",                                                                                     
+ +            "parameter": "log_m2_Z",                                                                                                                                                                                      
+ +            "value": -4.605170186,                                                                                                                                                                                        
+ +            "units": "log(m^3 gC^-1 day^-1)",                                                                                                                                                                             
+ +            "description": "Log of quadratic zooplankton mortality coefficient (closure term) accounting for predation by higher trophic levels and density-dependent losses. Contributes m2_Z * Z^2 to Z mortality.",    
+              "source": "literature",                                                                                                                                                                                       
+              "import_type": "PARAMETER",                                                                                                                                                                                   
+              "priority": 2,                                                                                                                                                                                                
+ -            "lower_bound": 0.2,                                                                                                                                                                                           
+ -            "upper_bound": 0.9,                                                                                                                                                                                           
+ -            "enhanced_semantic_description": "Logit phytoplankton carbon-use efficiency (fraction 0\u20131)",                                                                                                             
+ -            "updated_from_literature": false,                                                                                                                                                                             
+ -            "updated_fields_from_literature": []                                                                                                                                                                          
+ -        },                                                                                                                                                                                                                
+ -        {                                                                                                                                                                                                                 
+ -            "parameter": "logit_e_Z",                                                                                                                                                                                     
+ -            "value": -0.8472978604,                                                                                                                                                                                       
+ -            "units": "logit(dimensionless)",                                                                                                                                                                              
+ -            "description": "Logit of zooplankton assimilation efficiency (fraction of ingestion converted to Z). Prior mean ~0.3.",                                                                                       
+ -            "source": "literature",                                                                                                                                                                                       
+ -            "import_type": "PARAMETER",                                                                                                                                                                                   
+ -            "priority": 2,                                                                                                                                                                                                
+ -            "lower_bound": 0.2,                                                                                                                                                                                           
+ -            "upper_bound": 0.8,                                                                                                                                                                                           
+ -            "enhanced_semantic_description": "Logit zooplankton assimilation efficiency (fraction 0\u20131)",                                                                                                             
+ -            "updated_from_literature": false,                                                                                                                                                                             
+ -            "updated_fields_from_literature": []                                                                                                                                                                          
+ -        },                                                                                                                                                                                                                
+ -        {                                                                                                                                                                                                                 
+ -            "parameter": "a_season_grow",                                                                                                                                                                                 
+ -            "value": 0.2,                                                                                                                                                                                                 
+ -            "units": "dimensionless",                                                                                                                                                                                     
+ -            "description": "Amplitude of seasonal modulation for phytoplankton growth used in exp(a*sin(...)). Values in [-1, 1] are typical.",                                                                           
+ -            "source": "initial estimate",                                                                                                                                                                                 
+ -            "import_type": "PARAMETER",                                                                                                                                                                                   
+ -            "priority": 3,                                                                                                                                                                                                
+ -            "lower_bound": -1.0,                                                                                                                                                                                          
+ -            "upper_bound": 1.0,                                                                                                                                                                                           
+ -            "enhanced_semantic_description": "Amplitude of seasonal phytoplankton growth modulation (dimensionless)",                                                                                                     
+ -            "updated_from_literature": false,                                                                                                                                                                             
+ -            "updated_fields_from_literature": []                                                                                                                                                                          
+ -        },                                                                                                                                                                                                                
+ -        {                                                                                                                                                                                                                 
+ -            "parameter": "phi_grow",                                                                                                                                                                                      
+ -            "value": 0.0,                                                                                                                                                                                                 
+ -            "units": "radians",                                                                                                                                                                                           
+ -            "description": "Phase of seasonal modulation for growth.",                                                                                                                                                    
+ -            "source": "initial estimate",                                                                                                                                                                                 
+ -            "import_type": "PARAMETER",                                                                                                                                                                                   
+POPULATIONS/POPULATION_0015/INDIVIDUAL_6P3TOQP0/model.cpp                                                                                                                                                                   
+
+                                                                                                                                                                                                                            
+ @@ -1,4 +1,5 @@                                                                                                                                                                                                            
+  #include <TMB.hpp>                                                                                                                                                                                                        
+    PARAMETER(log_K_N);          // log of half-saturation constant for nutrient uptake (g C m^-3). Start from literature on nutrient half-sat.                                                                             
+    PARAMETER(log_alpha_shade);  // log of self-shading coefficient (m^3 gC^-1, dimensionless in this box model). Estimated; initial estimate.                                                                              
+                                                                                                                                                                                                                            
+    // Grazing                                                                                                                                                                                                              
+ +  59 / 263 lines [██████░░░░░░░░░░░░░░░░░░░░░░░░]  22%                                                                                                                                                                    
+                                                                                                                                                                                                                            
+
+Tokens: 8.0k sent, 5.4k received. Cost: $0.06 message, $0.06 session.
+Committing POPULATIONS/POPULATION_0015/INDIVIDUAL_6P3TOQP0/intention.txt before applying edits.
+Committing POPULATIONS/POPULATION_0015/INDIVIDUAL_6P3TOQP0/parameters.json before applying edits.
+Committing POPULATIONS/POPULATION_0015/INDIVIDUAL_6P3TOQP0/model.cpp before applying edits.
+Unable to add /home/spi085/Documents/_Projects/EMs-with-LLMs/POPULATIONS/POPULATION_0015/INDIVIDUAL_6P3TOQP0/parameters.json: Cmd('git') failed due to: exit code(1)
+  cmdline: git add /home/spi085/Documents/_Projects/EMs-with-LLMs/POPULATIONS/POPULATION_0015/INDIVIDUAL_6P3TOQP0/parameters.json
+  stderr: 'The following paths are ignored by one of your .gitignore files:
+POPULATIONS
+hint: Use -f if you really want to add them.
+hint: Turn this message off by running
+hint: "git config advice.addIgnoredFile false"'
+Unable to add /home/spi085/Documents/_Projects/EMs-with-LLMs/POPULATIONS/POPULATION_0015/INDIVIDUAL_6P3TOQP0/model.cpp: Cmd('git') failed due to: exit code(1)
+  cmdline: git add /home/spi085/Documents/_Projects/EMs-with-LLMs/POPULATIONS/POPULATION_0015/INDIVIDUAL_6P3TOQP0/model.cpp
+  stderr: 'The following paths are ignored by one of your .gitignore files:
+POPULATIONS
+hint: Use -f if you really want to add them.
+hint: Turn this message off by running
+hint: "git config advice.addIgnoredFile false"'
+Unable to add /home/spi085/Documents/_Projects/EMs-with-LLMs/POPULATIONS/POPULATION_0015/INDIVIDUAL_6P3TOQP0/intention.txt: Cmd('git') failed due to: exit code(1)
+  cmdline: git add /home/spi085/Documents/_Projects/EMs-with-LLMs/POPULATIONS/POPULATION_0015/INDIVIDUAL_6P3TOQP0/intention.txt
+  stderr: 'The following paths are ignored by one of your .gitignore files:
+POPULATIONS
+hint: Use -f if you really want to add them.
+hint: Turn this message off by running
+hint: "git config advice.addIgnoredFile false"'
+Unable to commit: Cmd('git') failed due to: exit code(1)
+  cmdline: git commit -m feat: Add INDIVIDUAL_6P3TOQP0 to POPULATION_0015 with model and params --no-verify -- 
+/home/spi085/Documents/_Projects/EMs-with-LLMs/POPULATIONS/POPULATION_0015/INDIVIDUAL_6P3TOQP0/parameters.json /home/spi085/Documents/_Projects/EMs-with-LLMs/POPULATIONS/POPULATION_0015/INDIVIDUAL_6P3TOQP0/model.cpp 
+/home/spi085/Documents/_Projects/EMs-with-LLMs/POPULATIONS/POPULATION_0015/INDIVIDUAL_6P3TOQP0/intention.txt
+  stderr: 'error: pathspec '/home/spi085/Documents/_Projects/EMs-with-LLMs/POPULATIONS/POPULATION_0015/INDIVIDUAL_6P3TOQP0/parameters.json' did not match any file(s) known to git
+error: pathspec '/home/spi085/Documents/_Projects/EMs-with-LLMs/POPULATIONS/POPULATION_0015/INDIVIDUAL_6P3TOQP0/model.cpp' did not match any file(s) known to git
+error: pathspec '/home/spi085/Documents/_Projects/EMs-with-LLMs/POPULATIONS/POPULATION_0015/INDIVIDUAL_6P3TOQP0/intention.txt' did not match any file(s) known to git'
+Applied edit to POPULATIONS/POPULATION_0015/INDIVIDUAL_6P3TOQP0/parameters.json
+Applied edit to POPULATIONS/POPULATION_0015/INDIVIDUAL_6P3TOQP0/model.cpp
+Applied edit to POPULATIONS/POPULATION_0015/INDIVIDUAL_6P3TOQP0/intention.txt
+
+# Fix any errors below, if possible.
+
+
+## See relevant line below marked with █.
+
+POPULATIONS/POPULATION_0015/INDIVIDUAL_6P3TOQP0/model.cpp:
+...⋮...
+ 33│template<class Type>
+ 34│Type objective_function<Type>::operator() () {
+ 35│  // Small constants for numerical stability
+ 36│  const Type eps = Type(1e-8);                  // prevents division by zero and log(0)
+ 37│  const Type min_pred = Type(1e-10);            // lower floor for state predictions
+ 38│  const Type k_smax = Type(20.0);               // smoothness for smooth_max
+ 39│  const Type two_pi = Type(6.28318530717958647692);
+ 40│  const Type sigma_min = Type(0.05);            // minimum observation SD in log space
+ 41│  const Type pen_wt = Type(1e-3);               // global weight for bound penalties
+ 42│  const Type pen_alpha = Type(5.0);             // steepness for soft penalties
+ 43│
+...⋮...
+ 57│  PARAMETER(log_alpha_shade);  // log of self-shading coefficient (m^3 gC^-1, dimensionless in this box model). Estimated; initial estimate.
+ 58│
+ 59│  // Grazing
+ 60█  PARAMETER(log_g_max);
+
+
+Yes, code changes are needed. The file POPULATIONS/POPULATION_0015/INDIVIDUAL_6P3TOQP0/model.cpp was truncated at the grazing parameter declaration, causing a compile-time error and leaving the model unimplemented.      
+
+What I changed:                                                                                                                                                                                                             
+
+ • Completed the parameter declarations to match parameters.json (including log_m2_Z).                                                                                                                                      
+ • Implemented the full NPZ process model with:                                                                                                                                                                             
+    • Monod nutrient limitation and self-shading for phytoplankton uptake.                                                                                                                                                  
+    • Generalized Holling-type grazing with a smooth threshold and seasonal modifiers.                                                                                                                                      
+    • Linear and quadratic zooplankton mortality (closure), preserving mass balance by routing mortality to nutrient.                                                                                                       
+ • Ensured no use of current timestep observations in the process update (only in the observation likelihood).                                                                                                              
+ • Added lognormal observation model with an SD floor and a soft penalty on m2_Z within [0, 5] as documented.                                                                                                               
+
+POPULATIONS/POPULATION_0015/INDIVIDUAL_6P3TOQP0/model.cpp                                                                                                                                                                   
+
+                                                                                                                                                                                                                            
+ @@ -1,4 +1,5 @@                                                                                                                                                                                                            
+  #include <TMB.hpp>                                                                                                                                                                                                        
+    int n = N_dat.size();                                                                                                                                                                                                   
+                                                                                                                                                                                                                            
+    // Parameters (declared with clear units and intended ranges)                                                                                                                                                           
+    // Growth and uptake                                                                                                                                                                                                    
+ -  PARAMETER(log_mu_max);       // log of max phytoplankton specific uptake rate (day^-1). Start from literature/plankton culture rates.                                                                                   
+ -  PARAMETER(log_K_N);          // log of half-saturation constant for nutrient uptake (g C m^-3). Start from literature on nutrient half-sat.                                                                             
+ -  PARAMETER(log_alpha_shade);  // log of self-shading coefficient (m^3 gC^-1, dimensionless in this box model). Estimated; initial estimate.                                                                              
+ +  PARAMETER(log_mu_max);       // log of max phytoplankton specific uptake rate (day^-1)                                                                                                                                  
+ +  PARAMETER(log_K_N);          // log of half-saturation constant for nutrient uptake (g C m^-3)                                                                                                                          
+ +  PARAMETER(log_alpha_shade);  // log of self-shading coefficient (m^3 gC^-1)                                                                                                                                             
+                                                                                                                                                                                                                            
+    // Grazing                                                                                                                                                                                                              
+ +  PARAMETER(log_g_max);        // log of max zooplankton ingestion rate per Z biomass (day^-1)                                                                                                                            
+ +  PARAMETER(log_K_P);          // log half-saturation for grazing (g C m^-3)                                                                                                                                              
+ +  PARAMETER(log_h_minus1);     // log(h - 1) where h >= 1                                                                                                                                                                 
+ +  PARAMETER(log_P_star);       // log of smooth grazing threshold P_star (g C m^-3)                                                                                                                                       
+ +  PARAMETER(log_k_thr);        // log of steepness k_thr for threshold ((g C m^-3)^-1)                                                                                                                                    
+ +                                                                                                                                                                                                                          
+ +  // Mortality and efficiencies                                                                                                                                                                                           
+ +  PARAMETER(log_m_P);          // log P linear mortality (day^-1)                                                                                                                                                         
+ +  PARAMETER(log_m_Z);          // log Z linear mortality (day^-1)                                                                                                                                                         
+ +  PARAMETER(log_m2_Z);         // log quadratic Z mortality (m^3 gC^-1 day^-1)                                                                                                                                            
+ +  PARAMETER(logit_epsilon_P);  // logit of phytoplankton carbon-use efficiency (fraction 0–1)                                                                                                                             
+ +  PARAMETER(logit_e_Z);        // logit of zooplankton assimilation efficiency (fraction 0–1)                                                                                                                             
+ +                                                                                                                                                                                                                          
+ +  // Seasonality                                                                                                                                                                                                          
+ +  PARAMETER(a_season_grow);    // amplitude for growth modulation (dimensionless)                                                                                                                                         
+ +  PARAMETER(phi_grow);         // phase for growth modulation (radians)                                                                                                                                                   
+ +  PARAMETER(a_season_graze);   // amplitude for grazing modulation (dimensionless)                                                                                                                                        
+ +  PARAMETER(phi_graze);        // phase for grazing modulation (radians)                                                                                                                                                  
+ +  PARAMETER(T_season);         // seasonal period (days)                                                                                                                                                                  
+ +                                                                                                                                                                                                                          
+ +  // Observation error (log-space SDs)                                                                                                                                                                                    
+ +  PARAMETER(log_sigma_N);                                                                                                                                                                                                 
+ +  PARAMETER(log_sigma_P);                                                                                                                                                                                                 
+ +  PARAMETER(log_sigma_Z);                                                                                                                                                                                                 
+ +                                                                                                                                                                                                                          
+ +  // Transform parameters to real scales                                                                                                                                                                                  
+ +  Type mu_max       = exp(log_mu_max);                                                                                                                                                                                    
+ +  Type K_N          = exp(log_K_N);                                                                                                                                                                                       
+ +  Type alpha_shade  = exp(log_alpha_shade);                                                                                                                                                                               
+ +                                                                                                                                                                                                                          
+ +  Type g_max        = exp(log_g_max);                                                                                                                                                                                     
+ +  Type K_P          = exp(log_K_P);                                                                                                                                                                                       
+ +  Type h            = Type(1.0) + exp(log_h_minus1);                                                                                                                                                                      
+ +  Type P_star       = exp(log_P_star);                                                                                                                                                                                    
+ +  Type k_thr        = exp(log_k_thr);                                                                                                                                                                                     
+ +                                                                                                                                                                                                                          
+ +  Type m_P          = exp(log_m_P);                                                                                                                                                                                       
+ +  Type m_Z          = exp(log_m_Z);                                                                                                                                                                                       
+ +  Type m2_Z         = exp(log_m2_Z);                                                                                                                                                                                      
+ +  Type epsilon_P    = inv_logit(logit_epsilon_P);                                                                                                                                                                         
+ +  Type e_Z          = inv_logit(logit_e_Z);                                                                                                                                                                               
+ +                                                                                                                                                                                                                          
+ +  Type sigmaN       = (exp(log_sigma_N) < sigma_min ? sigma_min : exp(log_sigma_N));                                                                                                                                      
+ +  Type sigmaP       = (exp(log_sigma_P) < sigma_min ? sigma_min : exp(log_sigma_P));                                                                                                                                      
+ +  Type sigmaZ       = (exp(log_sigma_Z) < sigma_min ? sigma_min : exp(log_sigma_Z));                                                                                                                                      
+ +                                                                                                                                                                                                                          
+ +  // State predictions                                                                                                                                                                                                    
+ +  vector<Type> N_pred(n);                                                                                                                                                                                                 
+ +  vector<Type> P_pred(n);                                                                                                                                                                                                 
+ +  vector<Type> Z_pred(n);                                                                                                                                                                                                 
+ +                                                                                                                                                                                                                          
+ +  // Initialize states using first observations as initial conditions (not reused thereafter)                                                                                                                             
+ +  N_pred(0) = smooth_max(N_dat(0), min_pred, k_smax);                                                                                                                                                                     
+ +  P_pred(0) = smooth_max(P_dat(0), min_pred, k_smax);                                                                                                                                                                     
+ +  Z_pred(0) = smooth_max(Z_dat(0), min_pred, k_smax);                                                                                                                                                                     
+ +                                                                                                                                                                                                                          
+ +  // Process model: forward Euler integration using previous-step predictions only                                                                                                                                        
+ +  for (int i = 1; i < n; i++) {                                                                                                                                                                                           
+ +    Type dt = Time(i) - Time(i - 1);                                                                                                                                                                                      
+ +    if (!(dt > Type(0))) dt = Type(1); // fallback to 1 day if non-increasing or invalid                                                                                                                                  
+ +                                                                                                                                                                                                                          
+ +    // Previous-step predicted states                                                                                                                                                                                     
+ +    Type N_prev = N_pred(i - 1);                                                                                                                                                                                          
+ +    Type P_prev = P_pred(i - 1);                                                                                                                                                                                          
+ +    Type Z_prev = Z_pred(i - 1);                                                                                                                                                                                          
+ +                                                                                                                                                                                                                          
+ +    // Seasonal modifiers evaluated at previous time                                                                                                                                                                      
+ +    Type t_prev = Time(i - 1);                                                                                                                                                                                            
+ +    Type grow_mod  = exp(a_season_grow  * sin(two_pi * t_prev / T_season + phi_grow));                                                                                                                                    
+ +    Type graze_mod = exp(a_season_graze * sin(two_pi * t_prev / T_season + phi_graze));                                                                                                                                   
+ +                                                                                                                                                                                                                          
+ +    // Limitations and rates                                                                                                                                                                                              
+ +    Type fN   = N_prev / (K_N + N_prev + eps);                // Monod nutrient limitation                                                                                                                                
+ +    Type fL   = Type(1) / (Type(1) + alpha_shade * P_prev);   // self-shading light proxy                                                                                                                                 
+ +    Type U    = mu_max * grow_mod * fN * fL * P_prev;         // phytoplankton carbon uptake (flux)                                                                                                                       
+ +                                                                                                                                                                                                                          
+ +    // Grazing functional response with smooth threshold                                                                                                                                                                  
+ +    Type fP_num = pow(P_prev, h);                                                                                                                                                                                         
+ +    Type fP_den = pow(K_P, h) + fP_num + eps;                                                                                                                                                                             
+ +    Type fP     = fP_num / fP_den;                            // Hill response                                                                                                                                            
+ +    Type thr    = inv_logit(k_thr * (P_prev - P_star));       // smooth on/off near P_star                                                                                                                                
+ +    Type G      = g_max * graze_mod * thr * fP * Z_prev;      // ingestion flux (P -> Z)                                                                                                                                  
+ +                                                                                                                                                                                                                          
+ +    // Mortalities                                                                                                                                                                                                        
+ +    Type M_P   = m_P  * P_prev;                                                                                                                                                                                           
+ +    Type M_Z   = m_Z  * Z_prev;                                                                                                                                                                                           
+ +    Type M2_Z  = m2_Z * Z_prev * Z_prev;                      // quadratic closure                                                                                                                                        
+ +                                                                                                                                                                                                                          
+ +    // State derivatives (mass balanced)                                                                                                                                                                                  
+ +    Type dN = -U + (Type(1) - epsilon_P) * U + (Type(1) - e_Z) * G + M_P + M_Z + M2_Z;                                                                                                                                    
+ +    Type dP =  epsilon_P * U - G - M_P;                                                                                                                                                                                   
+ +    Type dZ =  e_Z * G - M_Z - M2_Z;                                                                                                                                                                                      
+ +                                                                                                                                                                                                                          
+ +    // Euler update with smooth non-negativity enforcement                                                                                                                                                                
+ +    N_pred(i) = smooth_max(N_prev + dt * dN, min_pred, k_smax);                                                                                                                                                           
+ +    P_pred(i) = smooth_max(P_prev + dt * dP, min_pred, k_smax);                                                                                                                                                           
+ +    Z_pred(i) = smooth_max(Z_prev + dt * dZ, min_pred, k_smax);                                                                                                                                                           
+ +  }                                                                                                                                                                                                                       
+ +                                                                                                                                                                                                                          
+ +  // Observation likelihood: lognormal errors on N, P, Z                                                                                                                                                                  
+ +  using namespace density;                                                                                                                                                                                                
+ +  Type nll = 0.0;                                                                                                                                                                                                         
+ +  for (int i = 0; i < n; i++) {                                                                                                                                                                                           
+ +    // floor to ensure positivity in log                                                                                                                                                                                  
+ +    Type N_obs = smooth_max(N_dat(i), min_pred, k_smax);                                                                                                                                                                  
+ +    Type P_obs = smooth_max(P_dat(i), min_pred, k_smax);                                                                                                                                                                  
+ +    Type Z_obs = smooth_max(Z_dat(i), min_pred, k_smax);                                                                                                                                                                  
+ +                                                                                                                                                                                                                          
+ +    nll -= dnorm(log(N_obs), log(N_pred(i)), sigmaN, true);                                                                                                                                                               
+ +    nll -= dnorm(log(P_obs), log(P_pred(i)), sigmaP, true);                                                                                                                                                               
+ +    nll -= dnorm(log(Z_obs), log(Z_pred(i)), sigmaZ, true);                                                                                                                                                               
+ +  }                                                                                                                                                                                                                       
+ +                                                                                                                                                                                                                          
+ +  // Soft penalties for plausible ranges (example for m2_Z as documented)                                                                                                                                                 
+ +  nll += bounds_penalty(m2_Z, Type(0.0), Type(5.0), pen_wt, pen_alpha);                                                                                                                                                   
+ +                                                                                                                                                                                                                          
+ +  // Reports                                                                                                                                                                                                              
+ +  ADREPORT(mu_max);                                                                                                                                                                                                       
+ +  ADREPORT(K_N);                                                                                                                                                                                                          
+ +  ADREPORT(g_max);                                                                                                                                                                                                        
+ +  ADREPORT(K_P);                                                                                                                                                                                                          
+ +  ADREPORT(h);                                                                                                                                                                                                            
+ +  ADREPORT(P_star);                                                                                                                                                                                                       
+ +  ADREPORT(k_thr);                                                                                                                                                                                                        
+ +  ADREPORT(m_P);                                                                                                                                                                                                          
+ +  ADREPORT(m_Z);                                                                                                                                                                                                          
+ +  ADREPORT(m2_Z);                                                                                                                                                                                                         
+ +  REPORT(N_pred);                                                                                                                                                                                                         
+ +  REPORT(P_pred);                                                                                                                                                                                                         
+ +  REPORT(Z_pred);                                                                                                                                                                                                         
+ +                                                                                                                                                                                                                          
+ +  return nll;                                                                                                                                                                                                             
+ +}                                                                                                                                                                                                                         
+                                                                                                                                                                                                                            
+
+Tokens: 12k sent, 2.5k received. Cost: $0.04 message, $0.10 session.
+Committing POPULATIONS/POPULATION_0015/INDIVIDUAL_6P3TOQP0/model.cpp before applying edits.
+Unable to add /home/spi085/Documents/_Projects/EMs-with-LLMs/POPULATIONS/POPULATION_0015/INDIVIDUAL_6P3TOQP0/model.cpp: Cmd('git') failed due to: exit code(1)
+  cmdline: git add /home/spi085/Documents/_Projects/EMs-with-LLMs/POPULATIONS/POPULATION_0015/INDIVIDUAL_6P3TOQP0/model.cpp
+  stderr: 'The following paths are ignored by one of your .gitignore files:
+POPULATIONS
+hint: Use -f if you really want to add them.
+hint: Turn this message off by running
+hint: "git config advice.addIgnoredFile false"'
+Unable to commit: Cmd('git') failed due to: exit code(1)
+  cmdline: git commit -m feat: add POPULATION_0015/INDIVIDUAL_6P3TOQP0 model.cpp --no-verify -- /home/spi085/Documents/_Projects/EMs-with-LLMs/POPULATIONS/POPULATION_0015/INDIVIDUAL_6P3TOQP0/model.cpp
+  stderr: 'error: pathspec '/home/spi085/Documents/_Projects/EMs-with-LLMs/POPULATIONS/POPULATION_0015/INDIVIDUAL_6P3TOQP0/model.cpp' did not match any file(s) known to git'
+Applied edit to POPULATIONS/POPULATION_0015/INDIVIDUAL_6P3TOQP0/model.cpp
+Improved existing model in individual: POPULATIONS/POPULATION_0015/INDIVIDUAL_6P3TOQP0
+Validating model for data leakage...
+Opening file: POPULATIONS/POPULATION_0015/INDIVIDUAL_6P3TOQP0/model.cpp
+File read successfully
+TMB convention check: {'uses_tmb_header': True, 'uses_data_macros': True, 'uses_vector_type': True, 'uses_standard_report': True, 'uses_objective_function': True, 'uses_std_vector': False, 'uses_string_report': False}
+Extracting vectors...
+Found data vectors: {'Z_dat', 'N_dat', 'Time', 'P_dat'}
+Found prediction vectors: {'N_pred', 'Z_pred', 'P_pred'}
+Found reported vectors: {'P_star', 'm_P', 'g_max', 'mu_max', 'h', 'm_Z', 'P_pred', 'K_N', 'N_pred', 'k_thr', 'm2_Z', 'Z_pred', 'K_P'}
+Finding initial conditions...
+Found 3 initial conditions
+Finding time-stepping loop...
+Found loop from line 117 to 157
+Looking for metadata file at: /home/spi085/Documents/_Projects/EMs-with-LLMs/POPULATIONS/POPULATION_0015/population_metadata.json
+Attempting to read CSV file: /home/spi085/Documents/_Projects/EMs-with-LLMs/Data/NPZ_example/npz_model_response.csv
+Successfully read CSV file with 4 columns
+Found response variables from /home/spi085/Documents/_Projects/EMs-with-LLMs/Data/NPZ_example/npz_model_response.csv: {'Z_dat', 'N_dat', 'P_dat'}
+[93m[PID 1127697] Running model for individual...[0m
+[0m[PID 1127697] Individual directory: POPULATIONS/POPULATION_0015/INDIVIDUAL_6P3TOQP0[0m
+[96m[PID 1127697] Launching Rscript... (timeout=none)[0m
+[93m[PID 1127697] R script stdout BEGIN >>>[0m
+[0mg++ -std=gnu++17 -I"/usr/share/R/include" -DNDEBUG -I"/home/spi085/R/x86_64-pc-linux-gnu-library/4.4/TMB/include" -I"/home/spi085/R/x86_64-pc-linux-gnu-library/4.4/RcppEigen/include"   -DTMB_EIGEN_DISABLE_WARNINGS   -DTMB_LIB_INIT=R_init_model  -DCPPAD_FRAMEWORK      -fpic  -O2  -c POPULATIONS/POPULATION_0015/INDIVIDUAL_6P3TOQP0/model.cpp -o POPULATIONS/POPULATION_0015/INDIVIDUAL_6P3TOQP0/model.o
+g++ -std=gnu++17 -shared -L/usr/lib/R/lib -Wl,-Bsymbolic-functions -flto=auto -ffat-lto-objects -Wl,-z,relro -o POPULATIONS/POPULATION_0015/INDIVIDUAL_6P3TOQP0/model.so POPULATIONS/POPULATION_0015/INDIVIDUAL_6P3TOQP0/model.o -L/usr/lib/R/lib -lR
+
+NA counts per required column:
+ Time N_dat P_dat Z_dat 
+    0     0     0     0 
+
+NA counts per required column:
+ Time N_dat P_dat Z_dat 
+    0     0     0     0 
+
+PARAMETER starts (first few):
+     log_mu_max         log_K_N log_alpha_shade       log_g_max         log_K_P 
+     -0.3566749       0.0500000       0.0000000      -0.6931472      -2.3025851 
+   log_h_minus1      log_P_star       log_k_thr         log_m_P         log_m_Z 
+      0.0000000      -3.9120230       3.9120230      -2.9957323      -2.9957323 
+       log_m2_Z logit_epsilon_P 
+     -4.6051702       0.4054651 
+Starting model phases
+Number of phases: 4 
+Phase 1 
+Initial parameter values for phase 1 :
+ log_mu_max   log_g_max log_sigma_N log_sigma_P log_sigma_Z 
+ -0.3566749  -0.6931472  -1.6094379  -1.6094379  -1.3862944 
+Clamping starts up to lower bounds for:
+ log_mu_max, log_g_max 
+Final parameter values for phase 1 :
+ log_mu_max   log_g_max log_sigma_N log_sigma_P log_sigma_Z 
+  2.1201533   0.0100000  -0.1000000  -0.9854561   0.2000000 
+Convergence message: relative convergence (4) 
+Number of iterations: 19 
+Objective function value: 1109.923 
+Gradient at solution for phase 1 :
+              [,1]     [,2]      [,3]         [,4]      [,5]
+[1,] -0.0003770623 531.7641 -445.9831 3.334229e-06 -425.3175
+Phase 2 
+Initial parameter values for phase 2 :
+        log_K_N         log_K_P         log_m_P         log_m_Z        log_m2_Z 
+      0.0500000      -2.3025851      -2.9957323      -2.9957323      -4.6051702 
+logit_epsilon_P       logit_e_Z 
+      0.4054651      -0.8472979 
+Clamping starts up to lower bounds for:
+ log_K_P, log_m_P, log_m_Z, log_m2_Z, logit_e_Z 
+Final parameter values for phase 2 :
+        log_K_N         log_K_P         log_m_P         log_m_Z        log_m2_Z 
+          0.080           0.005           0.500           0.001           0.000 
+logit_epsilon_P       logit_e_Z 
+          0.200           0.800 
+Convergence message: both X-convergence and relative convergence (5) 
+Number of iterations: 3 
+Objective function value: 6181.586 
+Gradient at solution for phase 2 :
+          [,1]     [,2]      [,3]     [,4]     [,5]     [,6]      [,7]
+[1,] -1190.647 451.3386 -3659.288 1555.015 81.99874 1715.682 -109.1581
+Phase 3 
+Initial parameter values for phase 3 :
+log_alpha_shade    log_h_minus1      log_P_star       log_k_thr   a_season_grow 
+       0.000000        0.000000       -3.912023        3.912023        0.200000 
+ a_season_graze 
+       0.100000 
+Clamping starts up to lower bounds for:
+ log_h_minus1, log_P_star 
+Final parameter values for phase 3 :
+log_alpha_shade    log_h_minus1      log_P_star       log_k_thr   a_season_grow 
+       1.206402        3.000000        0.000000        5.168560       -1.000000 
+ a_season_graze 
+       1.000000 
+Convergence message: relative convergence (4) 
+Number of iterations: 7 
+Objective function value: 1528.636 
+Gradient at solution for phase 3 :
+             [,1]        [,2]         [,3]         [,4]     [,5]          [,6]
+[1,] 2.453467e-08 1.52855e-86 5.814189e-86 5.227951e-86 140.7347 -1.294254e-88
+Phase 4 
+Initial parameter values for phase 4 :
+ phi_grow phi_graze  T_season 
+        0         0       365 
+Final parameter values for phase 4 :
+    phi_grow    phi_graze     T_season 
+0.000000e+00 6.974273e-86 3.124516e+02 
+Convergence message: relative convergence (4) 
+Number of iterations: 9 
+Objective function value: 1522.315 
+Gradient at solution for phase 4 :
+         [,1]         [,2]         [,3]
+[1,] 202.8212 3.719498e-89 2.031367e-10
+Final Phase
+Initial parameter values for final phase:
+     log_mu_max         log_K_N log_alpha_shade       log_g_max         log_K_P 
+   2.120153e+00    8.000000e-02    1.206402e+00    1.000000e-02    5.000000e-03 
+   log_h_minus1      log_P_star       log_k_thr         log_m_P         log_m_Z 
+   3.000000e+00    0.000000e+00    5.168560e+00    5.000000e-01    1.000000e-03 
+       log_m2_Z logit_epsilon_P       logit_e_Z   a_season_grow        phi_grow 
+   0.000000e+00    2.000000e-01    8.000000e-01   -1.000000e+00    0.000000e+00 
+ a_season_graze       phi_graze        T_season     log_sigma_N     log_sigma_P 
+   1.000000e+00    6.974273e-86    3.124516e+02   -1.000000e-01   -9.854561e-01 
+    log_sigma_Z 
+   2.000000e-01 
+Final parameter values for final phase:
+     log_mu_max         log_K_N log_alpha_shade       log_g_max         log_K_P 
+   2.519954e+00    2.000000e-02    1.548895e+00    3.087319e-02    5.000000e-03 
+   log_h_minus1      log_P_star       log_k_thr         log_m_P         log_m_Z 
+   2.999370e+00    0.000000e+00    5.168522e+00    5.000000e-01    1.000000e-03 
+       log_m2_Z logit_epsilon_P       logit_e_Z   a_season_grow        phi_grow 
+   0.000000e+00    4.093913e-01    8.000000e-01   -1.000000e+00    0.000000e+00 
+ a_season_graze       phi_graze        T_season     log_sigma_N     log_sigma_P 
+   1.000000e+00    3.429659e-04    3.248680e+02   -1.000000e-01   -1.489332e-01 
+    log_sigma_Z 
+  -4.053654e-01 
+Convergence message: relative convergence (4) 
+Number of iterations: 27 
+Objective function value: 1396.637 
+Gradient at solution for final phase:
+              [,1]     [,2]         [,3]         [,4]         [,5]         [,6]
+[1,] -0.0001931574 39.89351 6.332981e-05 -1.82363e-77 3.842914e-76 6.356866e-76
+             [,7]         [,8]      [,9]   [,10]    [,11]       [,12]
+[1,] 3.203298e-75 2.636254e-75 -3.973814 354.599 16.73188 -7.7081e-05
+             [,13]    [,14]    [,15]         [,16]         [,17]         [,18]
+[1,] -5.185014e-78 75.65518 74.86811 -6.386916e-78 -1.704341e-77 -6.590479e-07
+         [,19]        [,20]         [,21]
+[1,] -1352.268 0.0001801943 -4.098996e-05
+All phases completed
+Successfully updated parameters_metadata.json with optimized values
+[1] "Train test split:"
+[1] 1
+
+Running model validation...
+No test data available (train_test_split >= 1.0)
+NULL
+
+DEBUG: Report contents:
+List of 3
+ $ N_pred: num [1:200] 0.4 0.448 0.482 0.51 0.537 ...
+ $ Z_pred: num [1:200] 0.0657 0.0522 0.0484 0.0474 0.0471 ...
+ $ P_pred: num [1:200] 0.106 0.1 0.102 0.105 0.109 ...
+NULL
+
+DEBUG: Available variables in report:
+[1] "N_pred" "Z_pred" "P_pred"
+
+Checking predictions and calculating objective function...
+
+DEBUG: Processing N_pred 
+DEBUG: First few predictions: 0.4000168 0.4484554 0.4818146 0.5104117 0.536951 0.5625523 
+DEBUG: Summary statistics:
+   Min. 1st Qu.  Median    Mean 3rd Qu.    Max. 
+  0.400   1.702   3.125   3.195   4.666   6.171 
+DEBUG: All zeros? FALSE 
+DEBUG: Any infinities? FALSE 
+
+DEBUG: Processing P_pred 
+DEBUG: First few predictions: 0.1063464 0.1003592 0.101601 0.1050957 0.1094404 0.1140744 
+DEBUG: Summary statistics:
+   Min. 1st Qu.  Median    Mean 3rd Qu.    Max. 
+ 0.1004  0.1082  0.1207  0.1316  0.1560  0.1786 
+DEBUG: All zeros? FALSE 
+DEBUG: Any infinities? FALSE 
+
+DEBUG: Processing Z_pred 
+DEBUG: First few predictions: 0.06566308 0.05215424 0.04844354 0.04738971 0.04713124 0.04703015 
+DEBUG: Summary statistics:
+   Min. 1st Qu.  Median    Mean 3rd Qu.    Max. 
+0.04699 0.04700 0.04702 0.04714 0.04702 0.06566 
+DEBUG: All zeros? FALSE 
+DEBUG: Any infinities? FALSE 
+
+DEBUG: Using the following variables for objective function:
+N_dat -> N_pred
+P_dat -> P_pred
+Z_dat -> Z_pred
+
+DEBUG: Calculating MSE for prediction variables only:
+
+DEBUG: N_pred 
+Observed: 0.4 0.375 0.346 0.314 0.278 0.239 ...
+Predicted: 0.4000168 0.4484554 0.4818146 0.5104117 0.536951 0.5625523 ...
+MSE (normalized): 1616.726 
+
+DEBUG: P_pred 
+Observed: 0.1 0.117 0.138 0.161 0.187 0.215 ...
+Predicted: 0.1063464 0.1003592 0.101601 0.1050957 0.1094404 0.1140744 ...
+MSE (normalized): 1.957827 
+
+DEBUG: Z_pred 
+Observed: 0.05 0.052 0.053 0.055 0.057 0.059 ...
+Predicted: 0.06566308 0.05215424 0.04844354 0.04738971 0.04713124 0.04703015 ...
+MSE (normalized): 5.259985 
+
+DEBUG: MSE values:
+      N_dat       P_dat       Z_dat 
+1616.726138    1.957827    5.259985 
+
+DEBUG: Final objective value (mean of MSEs): 541.3146 
+
+Final objective function value: 541.3146 
+
+JSON_REPORT_START
+{
+  "status": "SUCCESS",
+  "objective_value": 541.3146,
+  "model_summary": ["            Length Class  Mode     ", "par         21     -none- numeric  ", "objective    1     -none- numeric  ", "convergence  1     -none- numeric  ", "iterations   1     -none- numeric  ", "evaluations  2     -none- numeric  ", "message      1     -none- character"],
+  "model_report": {
+    "N_pred": [0.4, 0.4485, 0.4818, 0.5104, 0.537, 0.5626, 0.5875, 0.6121, 0.6364, 0.6606, 0.6847, 0.7088, 0.7328, 0.7569, 0.781, 0.8052, 0.8294, 0.8537, 0.8781, 0.9027, 0.9272, 0.952, 0.9767, 1.0017, 1.0267, 1.0518, 1.077, 1.1024, 1.1277, 1.1533, 1.1789, 1.2046, 1.2304, 1.2563, 1.2823, 1.3084, 1.3345, 1.3608, 1.3871, 1.4135, 1.44, 1.4666, 1.4932, 1.5199, 1.5467, 1.5736, 1.6005, 1.6275, 1.6546, 1.6816, 1.7089, 1.7361, 1.7634, 1.7907, 1.8182, 1.8456, 1.8732, 1.9008, 1.9285, 1.9562, 1.984, 2.0118, 2.0397, 2.0676, 2.0956, 2.1236, 2.1517, 2.1799, 2.2081, 2.2363, 2.2647, 2.293, 2.3215, 2.3499, 2.3785, 2.4071, 2.4357, 2.4644, 2.4932, 2.522, 2.5509, 2.5798, 2.6088, 2.6378, 2.6669, 2.6961, 2.7252, 2.7545, 2.7838, 2.8132, 2.8426, 2.8721, 2.9017, 2.9313, 2.9609, 2.9907, 3.0204, 3.0502, 3.0801, 3.11, 3.14, 3.1701, 3.2001, 3.2303, 3.2605, 3.2908, 3.321, 3.3514, 3.3818, 3.4123, 3.4427, 3.4733, 3.5039, 3.5346, 3.5652, 3.596, 3.6267, 3.6576, 3.6884, 3.7193, 3.7503, 3.7812, 3.8123, 3.8433, 3.8744, 3.9055, 3.9366, 3.9678, 3.999, 4.0302, 4.0615, 4.0927, 4.124, 4.1553, 4.1867, 4.218, 4.2494, 4.2807, 4.3122, 4.3435, 4.375, 4.4063, 4.4378, 4.4692, 4.5007, 4.532, 4.5635, 4.5949, 4.6263, 4.6577, 4.6891, 4.7205, 4.7519, 4.7832, 4.8145, 4.8458, 4.8771, 4.9084, 4.9396, 4.9708, 5.002, 5.0332, 5.0643, 5.0954, 5.1264, 5.1574, 5.1883, 5.2192, 5.2501, 5.2809, 5.3116, 5.3424, 5.373, 5.4036, 5.4341, 5.4646, 5.4949, 5.5253, 5.5555, 5.5857, 5.6158, 5.6459, 5.6758, 5.7057, 5.7355, 5.7652, 5.7948, 5.8244, 5.8538, 5.8832, 5.9124, 5.9416, 5.9706, 5.9996, 6.0284, 6.0572, 6.0858, 6.1144, 6.1428, 6.1711],
+    "Z_pred": [0.0657, 0.0522, 0.0484, 0.0474, 0.0471, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047],
+    "P_pred": [0.1063, 0.1004, 0.1016, 0.1051, 0.1094, 0.1141, 0.1188, 0.1234, 0.1278, 0.1321, 0.1361, 0.14, 0.1436, 0.147, 0.1502, 0.1532, 0.156, 0.1585, 0.1609, 0.1631, 0.1652, 0.167, 0.1687, 0.1702, 0.1716, 0.1729, 0.174, 0.175, 0.1758, 0.1765, 0.1771, 0.1776, 0.178, 0.1783, 0.1785, 0.1786, 0.1786, 0.1786, 0.1784, 0.1782, 0.1779, 0.1776, 0.1772, 0.1767, 0.1762, 0.1756, 0.175, 0.1743, 0.1736, 0.1728, 0.172, 0.1712, 0.1703, 0.1694, 0.1685, 0.1676, 0.1666, 0.1656, 0.1646, 0.1636, 0.1626, 0.1615, 0.1604, 0.1594, 0.1583, 0.1572, 0.1561, 0.155, 0.1539, 0.1528, 0.1517, 0.1507, 0.1496, 0.1485, 0.1474, 0.1463, 0.1452, 0.1442, 0.1431, 0.1421, 0.141, 0.14, 0.139, 0.138, 0.137, 0.136, 0.135, 0.1341, 0.1331, 0.1322, 0.1313, 0.1304, 0.1295, 0.1286, 0.1278, 0.1269, 0.1261, 0.1253, 0.1245, 0.1237, 0.123, 0.1222, 0.1215, 0.1208, 0.1201, 0.1194, 0.1188, 0.1181, 0.1175, 0.1169, 0.1163, 0.1157, 0.1151, 0.1146, 0.114, 0.1135, 0.113, 0.1125, 0.112, 0.1116, 0.1111, 0.1107, 0.1103, 0.1099, 0.1095, 0.1091, 0.1088, 0.1084, 0.1081, 0.1078, 0.1075, 0.1072, 0.1069, 0.1067, 0.1064, 0.1062, 0.106, 0.1058, 0.1056, 0.1055, 0.1053, 0.1051, 0.105, 0.1049, 0.1048, 0.1047, 0.1046, 0.1046, 0.1045, 0.1045, 0.1044, 0.1044, 0.1044, 0.1045, 0.1045, 0.1045, 0.1046, 0.1047, 0.1048, 0.1049, 0.105, 0.1051, 0.1052, 0.1054, 0.1056, 0.1058, 0.106, 0.1062, 0.1064, 0.1067, 0.107, 0.1072, 0.1075, 0.1079, 0.1082, 0.1086, 0.1089, 0.1093, 0.1097, 0.1101, 0.1106, 0.1111, 0.1115, 0.112, 0.1126, 0.1131, 0.1137, 0.1143, 0.1149, 0.1155, 0.1162, 0.1168, 0.1175, 0.1183, 0.119, 0.1198, 0.1206, 0.1214, 0.1223, 0.1232]
+  },
+  "plot_data": {
+    "N_pred": {
+      "Time": [0, 0.503, 1.005, 1.508, 2.01, 2.513, 3.015, 3.518, 4.02, 4.523, 5.025, 5.528, 6.03, 6.533, 7.035, 7.538, 8.04, 8.543, 9.045, 9.548, 10.05, 10.553, 11.055, 11.558, 12.06, 12.563, 13.065, 13.568, 14.07, 14.573, 15.075, 15.578, 16.08, 16.583, 17.085, 17.588, 18.09, 18.593, 19.095, 19.598, 20.101, 20.603, 21.106, 21.608, 22.111, 22.613, 23.116, 23.618, 24.121, 24.623, 25.126, 25.628, 26.131, 26.633, 27.136, 27.638, 28.141, 28.643, 29.146, 29.648, 30.151, 30.653, 31.156, 31.658, 32.161, 32.663, 33.166, 33.668, 34.171, 34.673, 35.176, 35.678, 36.181, 36.683, 37.186, 37.688, 38.191, 38.693, 39.196, 39.698, 40.201, 40.704, 41.206, 41.709, 42.211, 42.714, 43.216, 43.719, 44.221, 44.724, 45.226, 45.729, 46.231, 46.734, 47.236, 47.739, 48.241, 48.744, 49.246, 49.749, 50.251, 50.754, 51.256, 51.759, 52.261, 52.764, 53.266, 53.769, 54.271, 54.774, 55.276, 55.779, 56.281, 56.784, 57.286, 57.789, 58.291, 58.794, 59.296, 59.799, 60.302, 60.804, 61.307, 61.809, 62.312, 62.814, 63.317, 63.819, 64.322, 64.824, 65.327, 65.829, 66.332, 66.834, 67.337, 67.839, 68.342, 68.844, 69.347, 69.849, 70.352, 70.854, 71.357, 71.859, 72.362, 72.864, 73.367, 73.869, 74.372, 74.874, 75.377, 75.879, 76.382, 76.884, 77.387, 77.889, 78.392, 78.894, 79.397, 79.899, 80.402, 80.905, 81.407, 81.91, 82.412, 82.915, 83.417, 83.92, 84.422, 84.925, 85.427, 85.93, 86.432, 86.935, 87.437, 87.94, 88.442, 88.945, 89.447, 89.95, 90.452, 90.955, 91.457, 91.96, 92.462, 92.965, 93.467, 93.97, 94.472, 94.975, 95.477, 95.98, 96.482, 96.985, 97.487, 97.99, 98.492, 98.995, 99.497, 100],
+      "Modeled": [0.4, 0.4485, 0.4818, 0.5104, 0.537, 0.5626, 0.5875, 0.6121, 0.6364, 0.6606, 0.6847, 0.7088, 0.7328, 0.7569, 0.781, 0.8052, 0.8294, 0.8537, 0.8781, 0.9027, 0.9272, 0.952, 0.9767, 1.0017, 1.0267, 1.0518, 1.077, 1.1024, 1.1277, 1.1533, 1.1789, 1.2046, 1.2304, 1.2563, 1.2823, 1.3084, 1.3345, 1.3608, 1.3871, 1.4135, 1.44, 1.4666, 1.4932, 1.5199, 1.5467, 1.5736, 1.6005, 1.6275, 1.6546, 1.6816, 1.7089, 1.7361, 1.7634, 1.7907, 1.8182, 1.8456, 1.8732, 1.9008, 1.9285, 1.9562, 1.984, 2.0118, 2.0397, 2.0676, 2.0956, 2.1236, 2.1517, 2.1799, 2.2081, 2.2363, 2.2647, 2.293, 2.3215, 2.3499, 2.3785, 2.4071, 2.4357, 2.4644, 2.4932, 2.522, 2.5509, 2.5798, 2.6088, 2.6378, 2.6669, 2.6961, 2.7252, 2.7545, 2.7838, 2.8132, 2.8426, 2.8721, 2.9017, 2.9313, 2.9609, 2.9907, 3.0204, 3.0502, 3.0801, 3.11, 3.14, 3.1701, 3.2001, 3.2303, 3.2605, 3.2908, 3.321, 3.3514, 3.3818, 3.4123, 3.4427, 3.4733, 3.5039, 3.5346, 3.5652, 3.596, 3.6267, 3.6576, 3.6884, 3.7193, 3.7503, 3.7812, 3.8123, 3.8433, 3.8744, 3.9055, 3.9366, 3.9678, 3.999, 4.0302, 4.0615, 4.0927, 4.124, 4.1553, 4.1867, 4.218, 4.2494, 4.2807, 4.3122, 4.3435, 4.375, 4.4063, 4.4378, 4.4692, 4.5007, 4.532, 4.5635, 4.5949, 4.6263, 4.6577, 4.6891, 4.7205, 4.7519, 4.7832, 4.8145, 4.8458, 4.8771, 4.9084, 4.9396, 4.9708, 5.002, 5.0332, 5.0643, 5.0954, 5.1264, 5.1574, 5.1883, 5.2192, 5.2501, 5.2809, 5.3116, 5.3424, 5.373, 5.4036, 5.4341, 5.4646, 5.4949, 5.5253, 5.5555, 5.5857, 5.6158, 5.6459, 5.6758, 5.7057, 5.7355, 5.7652, 5.7948, 5.8244, 5.8538, 5.8832, 5.9124, 5.9416, 5.9706, 5.9996, 6.0284, 6.0572, 6.0858, 6.1144, 6.1428, 6.1711],
+      "Observed": [0.4, 0.375, 0.346, 0.314, 0.278, 0.239, 0.197, 0.155, 0.114, 0.076, 0.048, 0.031, 0.023, 0.021, 0.021, 0.021, 0.022, 0.023, 0.024, 0.025, 0.026, 0.028, 0.03, 0.032, 0.035, 0.038, 0.043, 0.048, 0.055, 0.064, 0.075, 0.086, 0.098, 0.11, 0.122, 0.133, 0.144, 0.154, 0.165, 0.174, 0.184, 0.193, 0.201, 0.21, 0.217, 0.225, 0.232, 0.238, 0.245, 0.251, 0.256, 0.261, 0.266, 0.27, 0.274, 0.278, 0.281, 0.284, 0.287, 0.289, 0.291, 0.293, 0.295, 0.296, 0.296, 0.297, 0.297, 0.297, 0.297, 0.296, 0.295, 0.294, 0.293, 0.292, 0.29, 0.288, 0.286, 0.284, 0.282, 0.279, 0.277, 0.275, 0.272, 0.27, 0.268, 0.266, 0.264, 0.262, 0.261, 0.26, 0.259, 0.258, 0.258, 0.258, 0.259, 0.259, 0.26, 0.261, 0.263, 0.265, 0.266, 0.268, 0.27, 0.272, 0.274, 0.276, 0.278, 0.28, 0.282, 0.284, 0.285, 0.287, 0.288, 0.289, 0.29, 0.291, 0.292, 0.293, 0.293, 0.294, 0.294, 0.294, 0.294, 0.294, 0.293, 0.293, 0.292, 0.292, 0.291, 0.29, 0.289, 0.288, 0.287, 0.286, 0.285, 0.284, 0.283, 0.282, 0.281, 0.281, 0.28, 0.279, 0.278, 0.278, 0.278, 0.277, 0.277, 0.277, 0.277, 0.277, 0.277, 0.278, 0.278, 0.279, 0.279, 0.28, 0.281, 0.281, 0.282, 0.283, 0.284, 0.285, 0.285, 0.286, 0.287, 0.288, 0.289, 0.289, 0.29, 0.29, 0.291, 0.291, 0.291, 0.291, 0.291, 0.291, 0.291, 0.291, 0.291, 0.291, 0.29, 0.29, 0.29, 0.289, 0.289, 0.288, 0.288, 0.287, 0.287, 0.286, 0.286, 0.285, 0.285, 0.284, 0.284, 0.284, 0.283, 0.283, 0.283, 0.283]
+    },
+    "P_pred": {
+      "Time": [0, 0.503, 1.005, 1.508, 2.01, 2.513, 3.015, 3.518, 4.02, 4.523, 5.025, 5.528, 6.03, 6.533, 7.035, 7.538, 8.04, 8.543, 9.045, 9.548, 10.05, 10.553, 11.055, 11.558, 12.06, 12.563, 13.065, 13.568, 14.07, 14.573, 15.075, 15.578, 16.08, 16.583, 17.085, 17.588, 18.09, 18.593, 19.095, 19.598, 20.101, 20.603, 21.106, 21.608, 22.111, 22.613, 23.116, 23.618, 24.121, 24.623, 25.126, 25.628, 26.131, 26.633, 27.136, 27.638, 28.141, 28.643, 29.146, 29.648, 30.151, 30.653, 31.156, 31.658, 32.161, 32.663, 33.166, 33.668, 34.171, 34.673, 35.176, 35.678, 36.181, 36.683, 37.186, 37.688, 38.191, 38.693, 39.196, 39.698, 40.201, 40.704, 41.206, 41.709, 42.211, 42.714, 43.216, 43.719, 44.221, 44.724, 45.226, 45.729, 46.231, 46.734, 47.236, 47.739, 48.241, 48.744, 49.246, 49.749, 50.251, 50.754, 51.256, 51.759, 52.261, 52.764, 53.266, 53.769, 54.271, 54.774, 55.276, 55.779, 56.281, 56.784, 57.286, 57.789, 58.291, 58.794, 59.296, 59.799, 60.302, 60.804, 61.307, 61.809, 62.312, 62.814, 63.317, 63.819, 64.322, 64.824, 65.327, 65.829, 66.332, 66.834, 67.337, 67.839, 68.342, 68.844, 69.347, 69.849, 70.352, 70.854, 71.357, 71.859, 72.362, 72.864, 73.367, 73.869, 74.372, 74.874, 75.377, 75.879, 76.382, 76.884, 77.387, 77.889, 78.392, 78.894, 79.397, 79.899, 80.402, 80.905, 81.407, 81.91, 82.412, 82.915, 83.417, 83.92, 84.422, 84.925, 85.427, 85.93, 86.432, 86.935, 87.437, 87.94, 88.442, 88.945, 89.447, 89.95, 90.452, 90.955, 91.457, 91.96, 92.462, 92.965, 93.467, 93.97, 94.472, 94.975, 95.477, 95.98, 96.482, 96.985, 97.487, 97.99, 98.492, 98.995, 99.497, 100],
+      "Modeled": [0.1063, 0.1004, 0.1016, 0.1051, 0.1094, 0.1141, 0.1188, 0.1234, 0.1278, 0.1321, 0.1361, 0.14, 0.1436, 0.147, 0.1502, 0.1532, 0.156, 0.1585, 0.1609, 0.1631, 0.1652, 0.167, 0.1687, 0.1702, 0.1716, 0.1729, 0.174, 0.175, 0.1758, 0.1765, 0.1771, 0.1776, 0.178, 0.1783, 0.1785, 0.1786, 0.1786, 0.1786, 0.1784, 0.1782, 0.1779, 0.1776, 0.1772, 0.1767, 0.1762, 0.1756, 0.175, 0.1743, 0.1736, 0.1728, 0.172, 0.1712, 0.1703, 0.1694, 0.1685, 0.1676, 0.1666, 0.1656, 0.1646, 0.1636, 0.1626, 0.1615, 0.1604, 0.1594, 0.1583, 0.1572, 0.1561, 0.155, 0.1539, 0.1528, 0.1517, 0.1507, 0.1496, 0.1485, 0.1474, 0.1463, 0.1452, 0.1442, 0.1431, 0.1421, 0.141, 0.14, 0.139, 0.138, 0.137, 0.136, 0.135, 0.1341, 0.1331, 0.1322, 0.1313, 0.1304, 0.1295, 0.1286, 0.1278, 0.1269, 0.1261, 0.1253, 0.1245, 0.1237, 0.123, 0.1222, 0.1215, 0.1208, 0.1201, 0.1194, 0.1188, 0.1181, 0.1175, 0.1169, 0.1163, 0.1157, 0.1151, 0.1146, 0.114, 0.1135, 0.113, 0.1125, 0.112, 0.1116, 0.1111, 0.1107, 0.1103, 0.1099, 0.1095, 0.1091, 0.1088, 0.1084, 0.1081, 0.1078, 0.1075, 0.1072, 0.1069, 0.1067, 0.1064, 0.1062, 0.106, 0.1058, 0.1056, 0.1055, 0.1053, 0.1051, 0.105, 0.1049, 0.1048, 0.1047, 0.1046, 0.1046, 0.1045, 0.1045, 0.1044, 0.1044, 0.1044, 0.1045, 0.1045, 0.1045, 0.1046, 0.1047, 0.1048, 0.1049, 0.105, 0.1051, 0.1052, 0.1054, 0.1056, 0.1058, 0.106, 0.1062, 0.1064, 0.1067, 0.107, 0.1072, 0.1075, 0.1079, 0.1082, 0.1086, 0.1089, 0.1093, 0.1097, 0.1101, 0.1106, 0.1111, 0.1115, 0.112, 0.1126, 0.1131, 0.1137, 0.1143, 0.1149, 0.1155, 0.1162, 0.1168, 0.1175, 0.1183, 0.119, 0.1198, 0.1206, 0.1214, 0.1223, 0.1232],
+      "Observed": [0.1, 0.117, 0.138, 0.161, 0.187, 0.215, 0.245, 0.275, 0.303, 0.327, 0.341, 0.344, 0.336, 0.324, 0.31, 0.295, 0.28, 0.266, 0.251, 0.236, 0.22, 0.205, 0.19, 0.174, 0.157, 0.141, 0.123, 0.106, 0.087, 0.068, 0.05, 0.036, 0.025, 0.02, 0.016, 0.014, 0.013, 0.013, 0.013, 0.013, 0.013, 0.013, 0.013, 0.014, 0.014, 0.014, 0.015, 0.016, 0.016, 0.017, 0.017, 0.018, 0.019, 0.02, 0.02, 0.021, 0.022, 0.023, 0.024, 0.025, 0.026, 0.027, 0.027, 0.029, 0.03, 0.031, 0.032, 0.033, 0.034, 0.035, 0.036, 0.037, 0.038, 0.039, 0.04, 0.041, 0.042, 0.043, 0.044, 0.044, 0.045, 0.045, 0.046, 0.046, 0.046, 0.046, 0.046, 0.045, 0.045, 0.044, 0.043, 0.042, 0.041, 0.04, 0.038, 0.037, 0.036, 0.035, 0.033, 0.032, 0.031, 0.031, 0.03, 0.029, 0.029, 0.029, 0.029, 0.029, 0.029, 0.029, 0.029, 0.029, 0.029, 0.03, 0.03, 0.03, 0.031, 0.031, 0.032, 0.032, 0.033, 0.033, 0.034, 0.034, 0.035, 0.035, 0.036, 0.036, 0.037, 0.037, 0.038, 0.038, 0.038, 0.039, 0.039, 0.039, 0.039, 0.039, 0.039, 0.039, 0.039, 0.039, 0.039, 0.038, 0.038, 0.038, 0.037, 0.037, 0.036, 0.036, 0.036, 0.035, 0.035, 0.034, 0.034, 0.034, 0.033, 0.033, 0.033, 0.032, 0.032, 0.032, 0.032, 0.032, 0.032, 0.032, 0.032, 0.032, 0.032, 0.033, 0.033, 0.033, 0.033, 0.034, 0.034, 0.034, 0.034, 0.035, 0.035, 0.035, 0.035, 0.036, 0.036, 0.036, 0.036, 0.037, 0.037, 0.037, 0.037, 0.037, 0.037, 0.037, 0.037, 0.037, 0.037, 0.037, 0.037, 0.037, 0.036, 0.036]
+    },
+    "Z_pred": {
+      "Time": [0, 0.503, 1.005, 1.508, 2.01, 2.513, 3.015, 3.518, 4.02, 4.523, 5.025, 5.528, 6.03, 6.533, 7.035, 7.538, 8.04, 8.543, 9.045, 9.548, 10.05, 10.553, 11.055, 11.558, 12.06, 12.563, 13.065, 13.568, 14.07, 14.573, 15.075, 15.578, 16.08, 16.583, 17.085, 17.588, 18.09, 18.593, 19.095, 19.598, 20.101, 20.603, 21.106, 21.608, 22.111, 22.613, 23.116, 23.618, 24.121, 24.623, 25.126, 25.628, 26.131, 26.633, 27.136, 27.638, 28.141, 28.643, 29.146, 29.648, 30.151, 30.653, 31.156, 31.658, 32.161, 32.663, 33.166, 33.668, 34.171, 34.673, 35.176, 35.678, 36.181, 36.683, 37.186, 37.688, 38.191, 38.693, 39.196, 39.698, 40.201, 40.704, 41.206, 41.709, 42.211, 42.714, 43.216, 43.719, 44.221, 44.724, 45.226, 45.729, 46.231, 46.734, 47.236, 47.739, 48.241, 48.744, 49.246, 49.749, 50.251, 50.754, 51.256, 51.759, 52.261, 52.764, 53.266, 53.769, 54.271, 54.774, 55.276, 55.779, 56.281, 56.784, 57.286, 57.789, 58.291, 58.794, 59.296, 59.799, 60.302, 60.804, 61.307, 61.809, 62.312, 62.814, 63.317, 63.819, 64.322, 64.824, 65.327, 65.829, 66.332, 66.834, 67.337, 67.839, 68.342, 68.844, 69.347, 69.849, 70.352, 70.854, 71.357, 71.859, 72.362, 72.864, 73.367, 73.869, 74.372, 74.874, 75.377, 75.879, 76.382, 76.884, 77.387, 77.889, 78.392, 78.894, 79.397, 79.899, 80.402, 80.905, 81.407, 81.91, 82.412, 82.915, 83.417, 83.92, 84.422, 84.925, 85.427, 85.93, 86.432, 86.935, 87.437, 87.94, 88.442, 88.945, 89.447, 89.95, 90.452, 90.955, 91.457, 91.96, 92.462, 92.965, 93.467, 93.97, 94.472, 94.975, 95.477, 95.98, 96.482, 96.985, 97.487, 97.99, 98.492, 98.995, 99.497, 100],
+      "Modeled": [0.0657, 0.0522, 0.0484, 0.0474, 0.0471, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047],
+      "Observed": [0.05, 0.052, 0.053, 0.055, 0.057, 0.059, 0.061, 0.064, 0.066, 0.068, 0.071, 0.074, 0.076, 0.079, 0.082, 0.085, 0.088, 0.092, 0.095, 0.099, 0.102, 0.106, 0.11, 0.114, 0.118, 0.122, 0.126, 0.13, 0.134, 0.137, 0.139, 0.14, 0.14, 0.137, 0.134, 0.131, 0.127, 0.124, 0.12, 0.117, 0.113, 0.11, 0.107, 0.104, 0.101, 0.099, 0.096, 0.094, 0.091, 0.089, 0.087, 0.085, 0.083, 0.082, 0.08, 0.079, 0.078, 0.076, 0.075, 0.074, 0.073, 0.073, 0.072, 0.071, 0.071, 0.07, 0.07, 0.07, 0.07, 0.07, 0.07, 0.07, 0.07, 0.07, 0.071, 0.071, 0.071, 0.072, 0.072, 0.073, 0.074, 0.074, 0.075, 0.076, 0.077, 0.077, 0.078, 0.079, 0.08, 0.08, 0.081, 0.082, 0.082, 0.083, 0.083, 0.083, 0.083, 0.083, 0.083, 0.083, 0.083, 0.082, 0.082, 0.082, 0.081, 0.08, 0.08, 0.079, 0.079, 0.078, 0.078, 0.077, 0.076, 0.076, 0.076, 0.075, 0.075, 0.074, 0.074, 0.074, 0.074, 0.074, 0.073, 0.073, 0.073, 0.073, 0.073, 0.073, 0.074, 0.074, 0.074, 0.074, 0.074, 0.075, 0.075, 0.075, 0.076, 0.076, 0.076, 0.077, 0.077, 0.077, 0.077, 0.078, 0.078, 0.078, 0.078, 0.079, 0.079, 0.079, 0.079, 0.079, 0.079, 0.079, 0.079, 0.079, 0.079, 0.079, 0.078, 0.078, 0.078, 0.078, 0.078, 0.077, 0.077, 0.077, 0.076, 0.076, 0.076, 0.076, 0.076, 0.075, 0.075, 0.075, 0.075, 0.075, 0.075, 0.075, 0.075, 0.075, 0.075, 0.075, 0.075, 0.075, 0.075, 0.075, 0.075, 0.076, 0.076, 0.076, 0.076, 0.076, 0.076, 0.077, 0.077, 0.077, 0.077, 0.077, 0.077, 0.077]
+    }
+  }
+}
+JSON_REPORT_END[0m
+[93m[PID 1127697] R script stdout END <<<[0m
+[93m[PID 1127697] R script stderr BEGIN >>>[0m
+[0mLoading required package: TMB
+Loading required package: jsonlite
+using C++ compiler: ‘g++ (Ubuntu 13.3.0-6ubuntu2~24.04) 13.3.0’
+Warning message:
+`aes_string()` was deprecated in ggplot2 3.0.0.
+ℹ Please use tidy evaluation idioms with `aes()`.
+ℹ See also `vignette("ggplot2-in-packages")` for more information.[0m
+[93m[PID 1127697] R script stderr END <<<[0m
+[96m[PID 1127697] JSON detected, parsing...[0m
+[96m[PID 1127697] Writing model report...[0m
+[94m[PID 1127697] Objective value: 541.3146[0m
+[96m[PID 1127697] Generating plots...[0m
+[94m[PID 1127697] Objective Value: 541.3146[0m
+[92m[PID 1127697] Successful model run[0m
+[0m----------------------------------------------[0m
+MODEL RUN FINISHED
+Model run successful. Objective value: 541.3146
+Model ran successful and returned meaningful objective value... enhancing parameter descriptions.
+Enhancing parameter descriptions...
+Parameter descriptions enhanced successfully.
+Running parameter processing...
+DEBUG: get_params() called with directory_path: POPULATIONS/POPULATION_0015/INDIVIDUAL_6P3TOQP0
+DEBUG: population_dir: POPULATIONS/POPULATION_0015
+DEBUG: meta_file path: POPULATIONS/POPULATION_0015/population_metadata.json
+DEBUG: Checking if meta_file exists...
+DEBUG: meta_file exists, attempting to read...
+DEBUG: Successfully read meta_file
+DEBUG: rag_choice: gpt-4.1-mini, doc_store_dir: doc_store
+DEBUG: About to resolve model name...
+[get_params] Using model from rag_choice: 'gpt-4.1-mini' -> 'gpt-4.1-mini'
+[get_params] Using doc_store_dir: 'doc_store'
+Processing literature parameter: log_mu_max
+Searching for log_mu_max with query: Log max phytoplankton specific uptake rate (day^-1)
+Engine order for log_mu_max: ['rag', 'semantic_scholar']
+Loading llama_index.core.storage.kvstore.simple_kvstore from /home/spi085/Documents/_Projects/EMs-with-LLMs/storage_chroma_doc_store/docstore.json.
+Loading llama_index.core.storage.kvstore.simple_kvstore from /home/spi085/Documents/_Projects/EMs-with-LLMs/storage_chroma_doc_store/index_store.json.
+Search results found for log_mu_max (engine=rag, attempt=1)
+S2 Response Status Code: 200
+S2 Query: Log max phytoplankton specific uptake rate (day^-1)
+S2 Total results: 44
+Search results found for log_mu_max (engine=semantic_scholar, attempt=1)
+DEBUG: Aggregated 6 total source chunks for log_mu_max:
+ Source [1]: Oca et al. - 2019 - Culture of the seaweed Ulva ohnoi integrated in a .pdf
+ Source [2]: s10811-014-0370-y.pdf
+ Source [3]: C:\Users\spi085\OneDrive - CSIRO\Documents\_Projects\SCCP-QuantModelling\doc_store\Pratchett-2017-Thirty years of research on cro.pdf
+ Source [4]: https://www.semanticscholar.org/paper/df1406f0b0a1eb0b26914777921f90cc60fd54e9
+ Source [5]: https://www.semanticscholar.org/paper/1c81751811fbc055e97187c7559db7ae9ef5db60
+ Source [6]: https://www.semanticscholar.org/paper/9825b7b284a888b732ef3c003498450a8bd71b14
+Asking gpt-4.1-mini
+DEBUG: LLM response for log_mu_max: No relevant values found
+Processing literature parameter: log_K_N
+Searching for log_K_N with query: Log half-saturation constant for nutrient uptake (g C m^-3)
+Engine order for log_K_N: ['semantic_scholar', 'rag']
+S2 Response Status Code: 200
+S2 Query: Log half-saturation constant for nutrient uptake (g C m^-3)
+S2 Total results: 20
+Search results found for log_K_N (engine=semantic_scholar, attempt=1)
+Search results found for log_K_N (engine=rag, attempt=1)
+DEBUG: Aggregated 3 total source chunks for log_K_N:
+ Source [1]: https://www.semanticscholar.org/paper/855ba3a7edaf50f532386a4d8d5c0d0408fcb7cb
+ Source [2]: s10811-014-0370-y.pdf
+ Source [3]: Oca et al. - 2019 - Culture of the seaweed Ulva ohnoi integrated in a .pdf
+Asking gpt-4.1-mini
+DEBUG: LLM response for log_K_N: No relevant values found
+Processing literature parameter: log_g_max
+Searching for log_g_max with query: Log max zooplankton ingestion rate per biomass (day^-1)
+Engine order for log_g_max: ['semantic_scholar', 'rag']
+S2 Response Status Code: 200
+S2 Query: Log max zooplankton ingestion rate per biomass (day^-1)
+S2 Total results: 18
+Search results found for log_g_max (engine=semantic_scholar, attempt=1)
+Search results found for log_g_max (engine=rag, attempt=1)
+DEBUG: Aggregated 5 total source chunks for log_g_max:
+ Source [1]: https://www.semanticscholar.org/paper/bd5c37cd670b621eb4072c6df022122dd1756e26
+ Source [2]: https://www.semanticscholar.org/paper/f1a7ce73e3a5662eeb2a65800c836f3677677023
+ Source [3]: Oca et al. - 2019 - Culture of the seaweed Ulva ohnoi integrated in a .pdf
+ Source [4]: C:\Users\spi085\OneDrive - CSIRO\Documents\_Projects\SCCP-QuantModelling\doc_store\Blamey et al (2014) - Overfishing lobsters and regime shifts.pdf
+ Source [5]: C:\Users\spi085\OneDrive - CSIRO\Documents\_Projects\SCCP-QuantModelling\doc_store\Plaganyi (2007) - Ecosystemmodellingfullversion.pdf
+Asking gpt-4.1-mini
+DEBUG: LLM response for log_g_max: No relevant values found
+Processing literature parameter: log_K_P
+Searching for log_K_P with query: Log phytoplankton half-saturation for grazing (g C m^-3)
+Engine order for log_K_P: ['rag', 'semantic_scholar']
+Search results found for log_K_P (engine=rag, attempt=1)
+S2 Response Status Code: 200
+S2 Query: Log phytoplankton half-saturation for grazing (g C m^-3)
+S2 Total results: 0
+No papers found.
+No search results for log_K_P (engine=semantic_scholar, attempt=1)
+S2 Response Status Code: 200
+S2 Query: Log phytoplankton half-saturation for grazing (g C m^-3)
+S2 Total results: 0
+No papers found.
+No search results for log_K_P (engine=semantic_scholar, attempt=2)
+S2 Response Status Code: 200
+S2 Query: Log phytoplankton half-saturation for grazing (g C m^-3)
+S2 Total results: 0
+No papers found.
+No search results for log_K_P (engine=semantic_scholar, attempt=3)
+DEBUG: Aggregated 3 total source chunks for log_K_P:
+ Source [1]: C:\Users\spi085\OneDrive - CSIRO\Documents\_Projects\SCCP-QuantModelling\doc_store\Pratchett-2017-Thirty years of research on cro.pdf
+ Source [2]: C:\Users\spi085\OneDrive - CSIRO\Documents\_Projects\SCCP-QuantModelling\doc_store\Gamble & Link (2009) - Multispecies fisheries production models.pdf
+ Source [3]: s10811-014-0370-y.pdf
+Asking gpt-4.1-mini
+DEBUG: LLM response for log_K_P: No relevant values found
+Processing literature parameter: log_m_P
+Searching for log_m_P with query: Log phytoplankton linear mortality rate (day^-1)
+Engine order for log_m_P: ['semantic_scholar', 'rag']
+S2 Response Status Code: 200
+S2 Query: Log phytoplankton linear mortality rate (day^-1)
+S2 Total results: 425
+Search results found for log_m_P (engine=semantic_scholar, attempt=1)
+Search results found for log_m_P (engine=rag, attempt=1)
+DEBUG: Aggregated 8 total source chunks for log_m_P:
+ Source [1]: https://www.semanticscholar.org/paper/e3ac998d87ecac036135b5a5d330568fa853fa6f
+ Source [2]: https://www.semanticscholar.org/paper/20a2d18b354f97a192e1f8b57ab2db5178fb86c5
+ Source [3]: https://www.semanticscholar.org/paper/359914dc1de33c6f1d0e99e6561947a76e5fae9e
+ Source [4]: https://www.semanticscholar.org/paper/3e3ad1fd283379f0a601ac7bc3040803b27f4e60
+ Source [5]: https://www.semanticscholar.org/paper/dfb732c290cd1da59fc2c2d8b7a9b9db2ba68a8d
+ Source [6]: C:\Users\spi085\OneDrive - CSIRO\Documents\_Projects\SCCP-QuantModelling\doc_store\Plaganyi (2007) - Ecosystemmodellingfullversion.pdf
+ Source [7]: Oca et al. - 2019 - Culture of the seaweed Ulva ohnoi integrated in a .pdf
+ Source [8]: C:\Users\spi085\OneDrive - CSIRO\Documents\_Projects\SCCP-QuantModelling\doc_store\Pratchett-2017-Thirty years of research on cro.pdf
+Asking gpt-4.1-mini
+DEBUG: LLM response for log_m_P: No relevant values found
+Processing literature parameter: log_m_Z
+Searching for log_m_Z with query: Log zooplankton linear mortality rate (day^-1)
+Engine order for log_m_Z: ['semantic_scholar', 'rag']
+S2 Response Status Code: 200
+S2 Query: Log zooplankton linear mortality rate (day^-1)
+S2 Total results: 415
+Search results found for log_m_Z (engine=semantic_scholar, attempt=1)
+Search results found for log_m_Z (engine=rag, attempt=1)
+DEBUG: Aggregated 8 total source chunks for log_m_Z:
+ Source [1]: https://www.semanticscholar.org/paper/359914dc1de33c6f1d0e99e6561947a76e5fae9e
+ Source [2]: https://www.semanticscholar.org/paper/3e3ad1fd283379f0a601ac7bc3040803b27f4e60
+ Source [3]: https://www.semanticscholar.org/paper/14ab444500dda17d3be704737f88613e25834b98
+ Source [4]: https://www.semanticscholar.org/paper/dfb732c290cd1da59fc2c2d8b7a9b9db2ba68a8d
+ Source [5]: https://www.semanticscholar.org/paper/020340d1723e388f6effe9e4537fb9c55ee11cc5
+ Source [6]: https://www.semanticscholar.org/paper/a8453d97e0da87b8be305242475b1fbdbbcab33b
+ Source [7]: C:\Users\spi085\OneDrive - CSIRO\Documents\_Projects\SCCP-QuantModelling\doc_store\Plaganyi (2007) - Ecosystemmodellingfullversion.pdf
+ Source [8]: C:\Users\spi085\OneDrive - CSIRO\Documents\_Projects\SCCP-QuantModelling\doc_store\Plagányi-2014-Ecosystem modelling provides clu.pdf
+Asking gpt-4.1-mini
+DEBUG: LLM response for log_m_Z: No relevant values found
+Processing literature parameter: log_m2_Z
+Searching for log_m2_Z with query: Log quadratic zooplankton mortality coefficient (m^3 gC^-1 day^-1)
+Engine order for log_m2_Z: ['rag', 'semantic_scholar']
+Search results found for log_m2_Z (engine=rag, attempt=1)
+S2 Response Status Code: 200
+S2 Query: Log quadratic zooplankton mortality coefficient (m^3 gC^-1 day^-1)
+S2 Total results: 3
+No search results for log_m2_Z (engine=semantic_scholar, attempt=1)
+S2 Response Status Code: 200
+S2 Query: Log quadratic zooplankton mortality coefficient (m^3 gC^-1 day^-1)
+S2 Total results: 3
+No search results for log_m2_Z (engine=semantic_scholar, attempt=2)
+S2 Response Status Code: 200
+S2 Query: Log quadratic zooplankton mortality coefficient (m^3 gC^-1 day^-1)
+S2 Total results: 3
+No search results for log_m2_Z (engine=semantic_scholar, attempt=3)
+DEBUG: Aggregated 4 total source chunks for log_m2_Z:
+ Source [1]: C:\Users\spi085\OneDrive - CSIRO\Documents\_Projects\SCCP-QuantModelling\doc_store\Morello-2014-Model to manage and reduce crown-.pdf
+ Source [2]: C:\Users\spi085\OneDrive - CSIRO\Documents\_Projects\SCCP-QuantModelling\doc_store\Plaganyi (2007) - Ecosystemmodellingfullversion.pdf
+ Source [3]: Oca et al. - 2019 - Culture of the seaweed Ulva ohnoi integrated in a .pdf
+ Source [4]: C:\Users\spi085\OneDrive - CSIRO\Documents\_Projects\SCCP-QuantModelling\doc_store\Plagányi-2014-Ecosystem modelling provides clu.pdf
+Asking gpt-4.1-mini
+DEBUG: LLM response for log_m2_Z: No relevant values found
+Processing literature parameter: logit_epsilon_P
+Searching for logit_epsilon_P with query: Logit phytoplankton carbon-use efficiency (fraction 0–1)
+Engine order for logit_epsilon_P: ['semantic_scholar', 'rag']
+S2 Response Status Code: 200
+S2 Query: Logit phytoplankton carbon-use efficiency (fraction 0–1)
+S2 Total results: 46
+Search results found for logit_epsilon_P (engine=semantic_scholar, attempt=1)
+Search results found for logit_epsilon_P (engine=rag, attempt=1)
+DEBUG: Aggregated 8 total source chunks for logit_epsilon_P:
+ Source [1]: https://www.semanticscholar.org/paper/22831fb8b843f6e0144b23f0a9b5504db02f1660
+ Source [2]: https://www.semanticscholar.org/paper/9fa8d2a0907190e5bc3af04b4514c8d9c02bec24
+ Source [3]: https://www.semanticscholar.org/paper/1ceba2746f6bec49ff56f71e60cc4b3e68525f2a
+ Source [4]: https://www.semanticscholar.org/paper/1ba83a2b29c66b7eeecb94c01de1d5363135f9ed
+ Source [5]: https://www.semanticscholar.org/paper/b385f917960e425275edb4c70277d3e29c039238
+ Source [6]: https://www.semanticscholar.org/paper/17da985d6f3ea4917e9845452c795cb8522a8b37
+ Source [7]: C:\Users\spi085\OneDrive - CSIRO\Documents\_Projects\SCCP-QuantModelling\doc_store\Pratchett-2017-Thirty years of research on cro.pdf
+ Source [8]: Oca et al. - 2019 - Culture of the seaweed Ulva ohnoi integrated in a .pdf
+Asking gpt-4.1-mini
+DEBUG: LLM response for logit_epsilon_P: No relevant values found
+Processing literature parameter: logit_e_Z
+Searching for logit_e_Z with query: Logit zooplankton assimilation efficiency (fraction 0–1)
+Engine order for logit_e_Z: ['rag', 'semantic_scholar']
+Search results found for logit_e_Z (engine=rag, attempt=1)
+S2 Response Status Code: 200
+S2 Query: Logit zooplankton assimilation efficiency (fraction 0–1)
+S2 Total results: 20
+Search results found for logit_e_Z (engine=semantic_scholar, attempt=1)
+DEBUG: Aggregated 3 total source chunks for logit_e_Z:
+ Source [1]: C:\Users\spi085\OneDrive - CSIRO\Documents\_Projects\SCCP-QuantModelling\doc_store\Plaganyi (2007) - Ecosystemmodellingfullversion.pdf
+ Source [2]: Oca et al. - 2019 - Culture of the seaweed Ulva ohnoi integrated in a .pdf
+ Source [3]: https://www.semanticscholar.org/paper/db4359416f3626ac00898bda3727ff22dc9e444f
+Asking gpt-4.1-mini
+DEBUG: LLM response for logit_e_Z: No relevant values found
+Processing literature parameter: T_season
+Searching for T_season with query: Period of seasonal modulation (days)
+Engine order for T_season: ['semantic_scholar', 'rag']
+S2 Response Status Code: 200
+S2 Query: Period of seasonal modulation (days)
+S2 Total results: 15
+Search results found for T_season (engine=semantic_scholar, attempt=1)
+Search results found for T_season (engine=rag, attempt=1)
+DEBUG: Aggregated 3 total source chunks for T_season:
+ Source [1]: https://www.semanticscholar.org/paper/3a57192673f07482ff85cb53cdd80d5e81a02796
+ Source [2]: s10811-014-0370-y.pdf
+ Source [3]: C:\Users\spi085\OneDrive - CSIRO\Documents\_Projects\SCCP-QuantModelling\doc_store\Rogers-2022-Culling corallivores improves shor.pdf
+Asking gpt-4.1-mini
+DEBUG: LLM response for T_season: No relevant values found
+Parameter processing completed successfully.
+Re-running model after parameter processing...
+[93m[PID 1127697] Running model for individual...[0m
+[0m[PID 1127697] Individual directory: POPULATIONS/POPULATION_0015/INDIVIDUAL_6P3TOQP0[0m
+[93m[PID 1127697] Removed old compilation: model.o[0m
+[96m[PID 1127697] Launching Rscript... (timeout=none)[0m
+[93m[PID 1127697] R script stdout BEGIN >>>[0m
+[0mg++ -std=gnu++17 -I"/usr/share/R/include" -DNDEBUG -I"/home/spi085/R/x86_64-pc-linux-gnu-library/4.4/TMB/include" -I"/home/spi085/R/x86_64-pc-linux-gnu-library/4.4/RcppEigen/include"   -DTMB_EIGEN_DISABLE_WARNINGS   -DTMB_LIB_INIT=R_init_model  -DCPPAD_FRAMEWORK      -fpic  -O2  -c POPULATIONS/POPULATION_0015/INDIVIDUAL_6P3TOQP0/model.cpp -o POPULATIONS/POPULATION_0015/INDIVIDUAL_6P3TOQP0/model.o
+g++ -std=gnu++17 -shared -L/usr/lib/R/lib -Wl,-Bsymbolic-functions -flto=auto -ffat-lto-objects -Wl,-z,relro -o POPULATIONS/POPULATION_0015/INDIVIDUAL_6P3TOQP0/model.so POPULATIONS/POPULATION_0015/INDIVIDUAL_6P3TOQP0/model.o -L/usr/lib/R/lib -lR
+
+NA counts per required column:
+ Time N_dat P_dat Z_dat 
+    0     0     0     0 
+
+NA counts per required column:
+ Time N_dat P_dat Z_dat 
+    0     0     0     0 
+
+PARAMETER starts (first few):
+     log_mu_max         log_K_N log_alpha_shade       log_g_max         log_K_P 
+     -0.3566749       0.0500000       0.0000000      -0.6931472      -2.3025851 
+   log_h_minus1      log_P_star       log_k_thr         log_m_P         log_m_Z 
+      0.0000000      -3.9120230       3.9120230      -2.9957323      -2.9957323 
+       log_m2_Z logit_epsilon_P 
+     -4.6051702       0.4054651 
+Starting model phases
+Number of phases: 4 
+Phase 1 
+Initial parameter values for phase 1 :
+ log_mu_max   log_g_max log_sigma_N log_sigma_P log_sigma_Z 
+ -0.3566749  -0.6931472  -1.6094379  -1.6094379  -1.3862944 
+Clamping starts up to lower bounds for:
+ log_mu_max, log_g_max 
+Final parameter values for phase 1 :
+ log_mu_max   log_g_max log_sigma_N log_sigma_P log_sigma_Z 
+  2.1201533   0.0100000  -0.1000000  -0.9854561   0.2000000 
+Convergence message: relative convergence (4) 
+Number of iterations: 19 
+Objective function value: 1109.923 
+Gradient at solution for phase 1 :
+              [,1]     [,2]      [,3]         [,4]      [,5]
+[1,] -0.0003770623 531.7641 -445.9831 3.334229e-06 -425.3175
+Phase 2 
+Initial parameter values for phase 2 :
+        log_K_N         log_K_P         log_m_P         log_m_Z        log_m2_Z 
+      0.0500000      -2.3025851      -2.9957323      -2.9957323      -4.6051702 
+logit_epsilon_P       logit_e_Z 
+      0.4054651      -0.8472979 
+Clamping starts up to lower bounds for:
+ log_K_P, log_m_P, log_m_Z, log_m2_Z, logit_e_Z 
+Final parameter values for phase 2 :
+        log_K_N         log_K_P         log_m_P         log_m_Z        log_m2_Z 
+          0.080           0.005           0.500           0.001           0.000 
+logit_epsilon_P       logit_e_Z 
+          0.200           0.800 
+Convergence message: both X-convergence and relative convergence (5) 
+Number of iterations: 3 
+Objective function value: 6181.586 
+Gradient at solution for phase 2 :
+          [,1]     [,2]      [,3]     [,4]     [,5]     [,6]      [,7]
+[1,] -1190.647 451.3386 -3659.288 1555.015 81.99874 1715.682 -109.1581
+Phase 3 
+Initial parameter values for phase 3 :
+log_alpha_shade    log_h_minus1      log_P_star       log_k_thr   a_season_grow 
+       0.000000        0.000000       -3.912023        3.912023        0.200000 
+ a_season_graze 
+       0.100000 
+Clamping starts up to lower bounds for:
+ log_h_minus1, log_P_star 
+Final parameter values for phase 3 :
+log_alpha_shade    log_h_minus1      log_P_star       log_k_thr   a_season_grow 
+       1.206402        3.000000        0.000000        5.168560       -1.000000 
+ a_season_graze 
+       1.000000 
+Convergence message: relative convergence (4) 
+Number of iterations: 7 
+Objective function value: 1528.636 
+Gradient at solution for phase 3 :
+             [,1]        [,2]         [,3]         [,4]     [,5]          [,6]
+[1,] 2.453467e-08 1.52855e-86 5.814189e-86 5.227951e-86 140.7347 -1.294254e-88
+Phase 4 
+Initial parameter values for phase 4 :
+ phi_grow phi_graze  T_season 
+        0         0       365 
+Final parameter values for phase 4 :
+    phi_grow    phi_graze     T_season 
+0.000000e+00 6.974273e-86 3.124516e+02 
+Convergence message: relative convergence (4) 
+Number of iterations: 9 
+Objective function value: 1522.315 
+Gradient at solution for phase 4 :
+         [,1]         [,2]         [,3]
+[1,] 202.8212 3.719498e-89 2.031367e-10
+Final Phase
+Initial parameter values for final phase:
+     log_mu_max         log_K_N log_alpha_shade       log_g_max         log_K_P 
+   2.120153e+00    8.000000e-02    1.206402e+00    1.000000e-02    5.000000e-03 
+   log_h_minus1      log_P_star       log_k_thr         log_m_P         log_m_Z 
+   3.000000e+00    0.000000e+00    5.168560e+00    5.000000e-01    1.000000e-03 
+       log_m2_Z logit_epsilon_P       logit_e_Z   a_season_grow        phi_grow 
+   0.000000e+00    2.000000e-01    8.000000e-01   -1.000000e+00    0.000000e+00 
+ a_season_graze       phi_graze        T_season     log_sigma_N     log_sigma_P 
+   1.000000e+00    6.974273e-86    3.124516e+02   -1.000000e-01   -9.854561e-01 
+    log_sigma_Z 
+   2.000000e-01 
+Final parameter values for final phase:
+     log_mu_max         log_K_N log_alpha_shade       log_g_max         log_K_P 
+   2.519954e+00    2.000000e-02    1.548895e+00    3.087319e-02    5.000000e-03 
+   log_h_minus1      log_P_star       log_k_thr         log_m_P         log_m_Z 
+   2.999370e+00    0.000000e+00    5.168522e+00    5.000000e-01    1.000000e-03 
+       log_m2_Z logit_epsilon_P       logit_e_Z   a_season_grow        phi_grow 
+   0.000000e+00    4.093913e-01    8.000000e-01   -1.000000e+00    0.000000e+00 
+ a_season_graze       phi_graze        T_season     log_sigma_N     log_sigma_P 
+   1.000000e+00    3.429659e-04    3.248680e+02   -1.000000e-01   -1.489332e-01 
+    log_sigma_Z 
+  -4.053654e-01 
+Convergence message: relative convergence (4) 
+Number of iterations: 27 
+Objective function value: 1396.637 
+Gradient at solution for final phase:
+              [,1]     [,2]         [,3]         [,4]         [,5]         [,6]
+[1,] -0.0001931574 39.89351 6.332981e-05 -1.82363e-77 3.842914e-76 6.356866e-76
+             [,7]         [,8]      [,9]   [,10]    [,11]       [,12]
+[1,] 3.203298e-75 2.636254e-75 -3.973814 354.599 16.73188 -7.7081e-05
+             [,13]    [,14]    [,15]         [,16]         [,17]         [,18]
+[1,] -5.185014e-78 75.65518 74.86811 -6.386916e-78 -1.704341e-77 -6.590479e-07
+         [,19]        [,20]         [,21]
+[1,] -1352.268 0.0001801943 -4.098996e-05
+All phases completed
+Successfully updated parameters_metadata.json with optimized values
+[1] "Train test split:"
+[1] 1
+
+Running model validation...
+No test data available (train_test_split >= 1.0)
+NULL
+
+DEBUG: Report contents:
+List of 3
+ $ N_pred: num [1:200] 0.4 0.448 0.482 0.51 0.537 ...
+ $ Z_pred: num [1:200] 0.0657 0.0522 0.0484 0.0474 0.0471 ...
+ $ P_pred: num [1:200] 0.106 0.1 0.102 0.105 0.109 ...
+NULL
+
+DEBUG: Available variables in report:
+[1] "N_pred" "Z_pred" "P_pred"
+
+Checking predictions and calculating objective function...
+
+DEBUG: Processing N_pred 
+DEBUG: First few predictions: 0.4000168 0.4484554 0.4818146 0.5104117 0.536951 0.5625523 
+DEBUG: Summary statistics:
+   Min. 1st Qu.  Median    Mean 3rd Qu.    Max. 
+  0.400   1.702   3.125   3.195   4.666   6.171 
+DEBUG: All zeros? FALSE 
+DEBUG: Any infinities? FALSE 
+
+DEBUG: Processing P_pred 
+DEBUG: First few predictions: 0.1063464 0.1003592 0.101601 0.1050957 0.1094404 0.1140744 
+DEBUG: Summary statistics:
+   Min. 1st Qu.  Median    Mean 3rd Qu.    Max. 
+ 0.1004  0.1082  0.1207  0.1316  0.1560  0.1786 
+DEBUG: All zeros? FALSE 
+DEBUG: Any infinities? FALSE 
+
+DEBUG: Processing Z_pred 
+DEBUG: First few predictions: 0.06566308 0.05215424 0.04844354 0.04738971 0.04713124 0.04703015 
+DEBUG: Summary statistics:
+   Min. 1st Qu.  Median    Mean 3rd Qu.    Max. 
+0.04699 0.04700 0.04702 0.04714 0.04702 0.06566 
+DEBUG: All zeros? FALSE 
+DEBUG: Any infinities? FALSE 
+
+DEBUG: Using the following variables for objective function:
+N_dat -> N_pred
+P_dat -> P_pred
+Z_dat -> Z_pred
+
+DEBUG: Calculating MSE for prediction variables only:
+
+DEBUG: N_pred 
+Observed: 0.4 0.375 0.346 0.314 0.278 0.239 ...
+Predicted: 0.4000168 0.4484554 0.4818146 0.5104117 0.536951 0.5625523 ...
+MSE (normalized): 1616.726 
+
+DEBUG: P_pred 
+Observed: 0.1 0.117 0.138 0.161 0.187 0.215 ...
+Predicted: 0.1063464 0.1003592 0.101601 0.1050957 0.1094404 0.1140744 ...
+MSE (normalized): 1.957827 
+
+DEBUG: Z_pred 
+Observed: 0.05 0.052 0.053 0.055 0.057 0.059 ...
+Predicted: 0.06566308 0.05215424 0.04844354 0.04738971 0.04713124 0.04703015 ...
+MSE (normalized): 5.259985 
+
+DEBUG: MSE values:
+      N_dat       P_dat       Z_dat 
+1616.726138    1.957827    5.259985 
+
+DEBUG: Final objective value (mean of MSEs): 541.3146 
+
+Final objective function value: 541.3146 
+
+JSON_REPORT_START
+{
+  "status": "SUCCESS",
+  "objective_value": 541.3146,
+  "model_summary": ["            Length Class  Mode     ", "par         21     -none- numeric  ", "objective    1     -none- numeric  ", "convergence  1     -none- numeric  ", "iterations   1     -none- numeric  ", "evaluations  2     -none- numeric  ", "message      1     -none- character"],
+  "model_report": {
+    "N_pred": [0.4, 0.4485, 0.4818, 0.5104, 0.537, 0.5626, 0.5875, 0.6121, 0.6364, 0.6606, 0.6847, 0.7088, 0.7328, 0.7569, 0.781, 0.8052, 0.8294, 0.8537, 0.8781, 0.9027, 0.9272, 0.952, 0.9767, 1.0017, 1.0267, 1.0518, 1.077, 1.1024, 1.1277, 1.1533, 1.1789, 1.2046, 1.2304, 1.2563, 1.2823, 1.3084, 1.3345, 1.3608, 1.3871, 1.4135, 1.44, 1.4666, 1.4932, 1.5199, 1.5467, 1.5736, 1.6005, 1.6275, 1.6546, 1.6816, 1.7089, 1.7361, 1.7634, 1.7907, 1.8182, 1.8456, 1.8732, 1.9008, 1.9285, 1.9562, 1.984, 2.0118, 2.0397, 2.0676, 2.0956, 2.1236, 2.1517, 2.1799, 2.2081, 2.2363, 2.2647, 2.293, 2.3215, 2.3499, 2.3785, 2.4071, 2.4357, 2.4644, 2.4932, 2.522, 2.5509, 2.5798, 2.6088, 2.6378, 2.6669, 2.6961, 2.7252, 2.7545, 2.7838, 2.8132, 2.8426, 2.8721, 2.9017, 2.9313, 2.9609, 2.9907, 3.0204, 3.0502, 3.0801, 3.11, 3.14, 3.1701, 3.2001, 3.2303, 3.2605, 3.2908, 3.321, 3.3514, 3.3818, 3.4123, 3.4427, 3.4733, 3.5039, 3.5346, 3.5652, 3.596, 3.6267, 3.6576, 3.6884, 3.7193, 3.7503, 3.7812, 3.8123, 3.8433, 3.8744, 3.9055, 3.9366, 3.9678, 3.999, 4.0302, 4.0615, 4.0927, 4.124, 4.1553, 4.1867, 4.218, 4.2494, 4.2807, 4.3122, 4.3435, 4.375, 4.4063, 4.4378, 4.4692, 4.5007, 4.532, 4.5635, 4.5949, 4.6263, 4.6577, 4.6891, 4.7205, 4.7519, 4.7832, 4.8145, 4.8458, 4.8771, 4.9084, 4.9396, 4.9708, 5.002, 5.0332, 5.0643, 5.0954, 5.1264, 5.1574, 5.1883, 5.2192, 5.2501, 5.2809, 5.3116, 5.3424, 5.373, 5.4036, 5.4341, 5.4646, 5.4949, 5.5253, 5.5555, 5.5857, 5.6158, 5.6459, 5.6758, 5.7057, 5.7355, 5.7652, 5.7948, 5.8244, 5.8538, 5.8832, 5.9124, 5.9416, 5.9706, 5.9996, 6.0284, 6.0572, 6.0858, 6.1144, 6.1428, 6.1711],
+    "Z_pred": [0.0657, 0.0522, 0.0484, 0.0474, 0.0471, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047],
+    "P_pred": [0.1063, 0.1004, 0.1016, 0.1051, 0.1094, 0.1141, 0.1188, 0.1234, 0.1278, 0.1321, 0.1361, 0.14, 0.1436, 0.147, 0.1502, 0.1532, 0.156, 0.1585, 0.1609, 0.1631, 0.1652, 0.167, 0.1687, 0.1702, 0.1716, 0.1729, 0.174, 0.175, 0.1758, 0.1765, 0.1771, 0.1776, 0.178, 0.1783, 0.1785, 0.1786, 0.1786, 0.1786, 0.1784, 0.1782, 0.1779, 0.1776, 0.1772, 0.1767, 0.1762, 0.1756, 0.175, 0.1743, 0.1736, 0.1728, 0.172, 0.1712, 0.1703, 0.1694, 0.1685, 0.1676, 0.1666, 0.1656, 0.1646, 0.1636, 0.1626, 0.1615, 0.1604, 0.1594, 0.1583, 0.1572, 0.1561, 0.155, 0.1539, 0.1528, 0.1517, 0.1507, 0.1496, 0.1485, 0.1474, 0.1463, 0.1452, 0.1442, 0.1431, 0.1421, 0.141, 0.14, 0.139, 0.138, 0.137, 0.136, 0.135, 0.1341, 0.1331, 0.1322, 0.1313, 0.1304, 0.1295, 0.1286, 0.1278, 0.1269, 0.1261, 0.1253, 0.1245, 0.1237, 0.123, 0.1222, 0.1215, 0.1208, 0.1201, 0.1194, 0.1188, 0.1181, 0.1175, 0.1169, 0.1163, 0.1157, 0.1151, 0.1146, 0.114, 0.1135, 0.113, 0.1125, 0.112, 0.1116, 0.1111, 0.1107, 0.1103, 0.1099, 0.1095, 0.1091, 0.1088, 0.1084, 0.1081, 0.1078, 0.1075, 0.1072, 0.1069, 0.1067, 0.1064, 0.1062, 0.106, 0.1058, 0.1056, 0.1055, 0.1053, 0.1051, 0.105, 0.1049, 0.1048, 0.1047, 0.1046, 0.1046, 0.1045, 0.1045, 0.1044, 0.1044, 0.1044, 0.1045, 0.1045, 0.1045, 0.1046, 0.1047, 0.1048, 0.1049, 0.105, 0.1051, 0.1052, 0.1054, 0.1056, 0.1058, 0.106, 0.1062, 0.1064, 0.1067, 0.107, 0.1072, 0.1075, 0.1079, 0.1082, 0.1086, 0.1089, 0.1093, 0.1097, 0.1101, 0.1106, 0.1111, 0.1115, 0.112, 0.1126, 0.1131, 0.1137, 0.1143, 0.1149, 0.1155, 0.1162, 0.1168, 0.1175, 0.1183, 0.119, 0.1198, 0.1206, 0.1214, 0.1223, 0.1232]
+  },
+  "plot_data": {
+    "N_pred": {
+      "Time": [0, 0.503, 1.005, 1.508, 2.01, 2.513, 3.015, 3.518, 4.02, 4.523, 5.025, 5.528, 6.03, 6.533, 7.035, 7.538, 8.04, 8.543, 9.045, 9.548, 10.05, 10.553, 11.055, 11.558, 12.06, 12.563, 13.065, 13.568, 14.07, 14.573, 15.075, 15.578, 16.08, 16.583, 17.085, 17.588, 18.09, 18.593, 19.095, 19.598, 20.101, 20.603, 21.106, 21.608, 22.111, 22.613, 23.116, 23.618, 24.121, 24.623, 25.126, 25.628, 26.131, 26.633, 27.136, 27.638, 28.141, 28.643, 29.146, 29.648, 30.151, 30.653, 31.156, 31.658, 32.161, 32.663, 33.166, 33.668, 34.171, 34.673, 35.176, 35.678, 36.181, 36.683, 37.186, 37.688, 38.191, 38.693, 39.196, 39.698, 40.201, 40.704, 41.206, 41.709, 42.211, 42.714, 43.216, 43.719, 44.221, 44.724, 45.226, 45.729, 46.231, 46.734, 47.236, 47.739, 48.241, 48.744, 49.246, 49.749, 50.251, 50.754, 51.256, 51.759, 52.261, 52.764, 53.266, 53.769, 54.271, 54.774, 55.276, 55.779, 56.281, 56.784, 57.286, 57.789, 58.291, 58.794, 59.296, 59.799, 60.302, 60.804, 61.307, 61.809, 62.312, 62.814, 63.317, 63.819, 64.322, 64.824, 65.327, 65.829, 66.332, 66.834, 67.337, 67.839, 68.342, 68.844, 69.347, 69.849, 70.352, 70.854, 71.357, 71.859, 72.362, 72.864, 73.367, 73.869, 74.372, 74.874, 75.377, 75.879, 76.382, 76.884, 77.387, 77.889, 78.392, 78.894, 79.397, 79.899, 80.402, 80.905, 81.407, 81.91, 82.412, 82.915, 83.417, 83.92, 84.422, 84.925, 85.427, 85.93, 86.432, 86.935, 87.437, 87.94, 88.442, 88.945, 89.447, 89.95, 90.452, 90.955, 91.457, 91.96, 92.462, 92.965, 93.467, 93.97, 94.472, 94.975, 95.477, 95.98, 96.482, 96.985, 97.487, 97.99, 98.492, 98.995, 99.497, 100],
+      "Modeled": [0.4, 0.4485, 0.4818, 0.5104, 0.537, 0.5626, 0.5875, 0.6121, 0.6364, 0.6606, 0.6847, 0.7088, 0.7328, 0.7569, 0.781, 0.8052, 0.8294, 0.8537, 0.8781, 0.9027, 0.9272, 0.952, 0.9767, 1.0017, 1.0267, 1.0518, 1.077, 1.1024, 1.1277, 1.1533, 1.1789, 1.2046, 1.2304, 1.2563, 1.2823, 1.3084, 1.3345, 1.3608, 1.3871, 1.4135, 1.44, 1.4666, 1.4932, 1.5199, 1.5467, 1.5736, 1.6005, 1.6275, 1.6546, 1.6816, 1.7089, 1.7361, 1.7634, 1.7907, 1.8182, 1.8456, 1.8732, 1.9008, 1.9285, 1.9562, 1.984, 2.0118, 2.0397, 2.0676, 2.0956, 2.1236, 2.1517, 2.1799, 2.2081, 2.2363, 2.2647, 2.293, 2.3215, 2.3499, 2.3785, 2.4071, 2.4357, 2.4644, 2.4932, 2.522, 2.5509, 2.5798, 2.6088, 2.6378, 2.6669, 2.6961, 2.7252, 2.7545, 2.7838, 2.8132, 2.8426, 2.8721, 2.9017, 2.9313, 2.9609, 2.9907, 3.0204, 3.0502, 3.0801, 3.11, 3.14, 3.1701, 3.2001, 3.2303, 3.2605, 3.2908, 3.321, 3.3514, 3.3818, 3.4123, 3.4427, 3.4733, 3.5039, 3.5346, 3.5652, 3.596, 3.6267, 3.6576, 3.6884, 3.7193, 3.7503, 3.7812, 3.8123, 3.8433, 3.8744, 3.9055, 3.9366, 3.9678, 3.999, 4.0302, 4.0615, 4.0927, 4.124, 4.1553, 4.1867, 4.218, 4.2494, 4.2807, 4.3122, 4.3435, 4.375, 4.4063, 4.4378, 4.4692, 4.5007, 4.532, 4.5635, 4.5949, 4.6263, 4.6577, 4.6891, 4.7205, 4.7519, 4.7832, 4.8145, 4.8458, 4.8771, 4.9084, 4.9396, 4.9708, 5.002, 5.0332, 5.0643, 5.0954, 5.1264, 5.1574, 5.1883, 5.2192, 5.2501, 5.2809, 5.3116, 5.3424, 5.373, 5.4036, 5.4341, 5.4646, 5.4949, 5.5253, 5.5555, 5.5857, 5.6158, 5.6459, 5.6758, 5.7057, 5.7355, 5.7652, 5.7948, 5.8244, 5.8538, 5.8832, 5.9124, 5.9416, 5.9706, 5.9996, 6.0284, 6.0572, 6.0858, 6.1144, 6.1428, 6.1711],
+      "Observed": [0.4, 0.375, 0.346, 0.314, 0.278, 0.239, 0.197, 0.155, 0.114, 0.076, 0.048, 0.031, 0.023, 0.021, 0.021, 0.021, 0.022, 0.023, 0.024, 0.025, 0.026, 0.028, 0.03, 0.032, 0.035, 0.038, 0.043, 0.048, 0.055, 0.064, 0.075, 0.086, 0.098, 0.11, 0.122, 0.133, 0.144, 0.154, 0.165, 0.174, 0.184, 0.193, 0.201, 0.21, 0.217, 0.225, 0.232, 0.238, 0.245, 0.251, 0.256, 0.261, 0.266, 0.27, 0.274, 0.278, 0.281, 0.284, 0.287, 0.289, 0.291, 0.293, 0.295, 0.296, 0.296, 0.297, 0.297, 0.297, 0.297, 0.296, 0.295, 0.294, 0.293, 0.292, 0.29, 0.288, 0.286, 0.284, 0.282, 0.279, 0.277, 0.275, 0.272, 0.27, 0.268, 0.266, 0.264, 0.262, 0.261, 0.26, 0.259, 0.258, 0.258, 0.258, 0.259, 0.259, 0.26, 0.261, 0.263, 0.265, 0.266, 0.268, 0.27, 0.272, 0.274, 0.276, 0.278, 0.28, 0.282, 0.284, 0.285, 0.287, 0.288, 0.289, 0.29, 0.291, 0.292, 0.293, 0.293, 0.294, 0.294, 0.294, 0.294, 0.294, 0.293, 0.293, 0.292, 0.292, 0.291, 0.29, 0.289, 0.288, 0.287, 0.286, 0.285, 0.284, 0.283, 0.282, 0.281, 0.281, 0.28, 0.279, 0.278, 0.278, 0.278, 0.277, 0.277, 0.277, 0.277, 0.277, 0.277, 0.278, 0.278, 0.279, 0.279, 0.28, 0.281, 0.281, 0.282, 0.283, 0.284, 0.285, 0.285, 0.286, 0.287, 0.288, 0.289, 0.289, 0.29, 0.29, 0.291, 0.291, 0.291, 0.291, 0.291, 0.291, 0.291, 0.291, 0.291, 0.291, 0.29, 0.29, 0.29, 0.289, 0.289, 0.288, 0.288, 0.287, 0.287, 0.286, 0.286, 0.285, 0.285, 0.284, 0.284, 0.284, 0.283, 0.283, 0.283, 0.283]
+    },
+    "P_pred": {
+      "Time": [0, 0.503, 1.005, 1.508, 2.01, 2.513, 3.015, 3.518, 4.02, 4.523, 5.025, 5.528, 6.03, 6.533, 7.035, 7.538, 8.04, 8.543, 9.045, 9.548, 10.05, 10.553, 11.055, 11.558, 12.06, 12.563, 13.065, 13.568, 14.07, 14.573, 15.075, 15.578, 16.08, 16.583, 17.085, 17.588, 18.09, 18.593, 19.095, 19.598, 20.101, 20.603, 21.106, 21.608, 22.111, 22.613, 23.116, 23.618, 24.121, 24.623, 25.126, 25.628, 26.131, 26.633, 27.136, 27.638, 28.141, 28.643, 29.146, 29.648, 30.151, 30.653, 31.156, 31.658, 32.161, 32.663, 33.166, 33.668, 34.171, 34.673, 35.176, 35.678, 36.181, 36.683, 37.186, 37.688, 38.191, 38.693, 39.196, 39.698, 40.201, 40.704, 41.206, 41.709, 42.211, 42.714, 43.216, 43.719, 44.221, 44.724, 45.226, 45.729, 46.231, 46.734, 47.236, 47.739, 48.241, 48.744, 49.246, 49.749, 50.251, 50.754, 51.256, 51.759, 52.261, 52.764, 53.266, 53.769, 54.271, 54.774, 55.276, 55.779, 56.281, 56.784, 57.286, 57.789, 58.291, 58.794, 59.296, 59.799, 60.302, 60.804, 61.307, 61.809, 62.312, 62.814, 63.317, 63.819, 64.322, 64.824, 65.327, 65.829, 66.332, 66.834, 67.337, 67.839, 68.342, 68.844, 69.347, 69.849, 70.352, 70.854, 71.357, 71.859, 72.362, 72.864, 73.367, 73.869, 74.372, 74.874, 75.377, 75.879, 76.382, 76.884, 77.387, 77.889, 78.392, 78.894, 79.397, 79.899, 80.402, 80.905, 81.407, 81.91, 82.412, 82.915, 83.417, 83.92, 84.422, 84.925, 85.427, 85.93, 86.432, 86.935, 87.437, 87.94, 88.442, 88.945, 89.447, 89.95, 90.452, 90.955, 91.457, 91.96, 92.462, 92.965, 93.467, 93.97, 94.472, 94.975, 95.477, 95.98, 96.482, 96.985, 97.487, 97.99, 98.492, 98.995, 99.497, 100],
+      "Modeled": [0.1063, 0.1004, 0.1016, 0.1051, 0.1094, 0.1141, 0.1188, 0.1234, 0.1278, 0.1321, 0.1361, 0.14, 0.1436, 0.147, 0.1502, 0.1532, 0.156, 0.1585, 0.1609, 0.1631, 0.1652, 0.167, 0.1687, 0.1702, 0.1716, 0.1729, 0.174, 0.175, 0.1758, 0.1765, 0.1771, 0.1776, 0.178, 0.1783, 0.1785, 0.1786, 0.1786, 0.1786, 0.1784, 0.1782, 0.1779, 0.1776, 0.1772, 0.1767, 0.1762, 0.1756, 0.175, 0.1743, 0.1736, 0.1728, 0.172, 0.1712, 0.1703, 0.1694, 0.1685, 0.1676, 0.1666, 0.1656, 0.1646, 0.1636, 0.1626, 0.1615, 0.1604, 0.1594, 0.1583, 0.1572, 0.1561, 0.155, 0.1539, 0.1528, 0.1517, 0.1507, 0.1496, 0.1485, 0.1474, 0.1463, 0.1452, 0.1442, 0.1431, 0.1421, 0.141, 0.14, 0.139, 0.138, 0.137, 0.136, 0.135, 0.1341, 0.1331, 0.1322, 0.1313, 0.1304, 0.1295, 0.1286, 0.1278, 0.1269, 0.1261, 0.1253, 0.1245, 0.1237, 0.123, 0.1222, 0.1215, 0.1208, 0.1201, 0.1194, 0.1188, 0.1181, 0.1175, 0.1169, 0.1163, 0.1157, 0.1151, 0.1146, 0.114, 0.1135, 0.113, 0.1125, 0.112, 0.1116, 0.1111, 0.1107, 0.1103, 0.1099, 0.1095, 0.1091, 0.1088, 0.1084, 0.1081, 0.1078, 0.1075, 0.1072, 0.1069, 0.1067, 0.1064, 0.1062, 0.106, 0.1058, 0.1056, 0.1055, 0.1053, 0.1051, 0.105, 0.1049, 0.1048, 0.1047, 0.1046, 0.1046, 0.1045, 0.1045, 0.1044, 0.1044, 0.1044, 0.1045, 0.1045, 0.1045, 0.1046, 0.1047, 0.1048, 0.1049, 0.105, 0.1051, 0.1052, 0.1054, 0.1056, 0.1058, 0.106, 0.1062, 0.1064, 0.1067, 0.107, 0.1072, 0.1075, 0.1079, 0.1082, 0.1086, 0.1089, 0.1093, 0.1097, 0.1101, 0.1106, 0.1111, 0.1115, 0.112, 0.1126, 0.1131, 0.1137, 0.1143, 0.1149, 0.1155, 0.1162, 0.1168, 0.1175, 0.1183, 0.119, 0.1198, 0.1206, 0.1214, 0.1223, 0.1232],
+      "Observed": [0.1, 0.117, 0.138, 0.161, 0.187, 0.215, 0.245, 0.275, 0.303, 0.327, 0.341, 0.344, 0.336, 0.324, 0.31, 0.295, 0.28, 0.266, 0.251, 0.236, 0.22, 0.205, 0.19, 0.174, 0.157, 0.141, 0.123, 0.106, 0.087, 0.068, 0.05, 0.036, 0.025, 0.02, 0.016, 0.014, 0.013, 0.013, 0.013, 0.013, 0.013, 0.013, 0.013, 0.014, 0.014, 0.014, 0.015, 0.016, 0.016, 0.017, 0.017, 0.018, 0.019, 0.02, 0.02, 0.021, 0.022, 0.023, 0.024, 0.025, 0.026, 0.027, 0.027, 0.029, 0.03, 0.031, 0.032, 0.033, 0.034, 0.035, 0.036, 0.037, 0.038, 0.039, 0.04, 0.041, 0.042, 0.043, 0.044, 0.044, 0.045, 0.045, 0.046, 0.046, 0.046, 0.046, 0.046, 0.045, 0.045, 0.044, 0.043, 0.042, 0.041, 0.04, 0.038, 0.037, 0.036, 0.035, 0.033, 0.032, 0.031, 0.031, 0.03, 0.029, 0.029, 0.029, 0.029, 0.029, 0.029, 0.029, 0.029, 0.029, 0.029, 0.03, 0.03, 0.03, 0.031, 0.031, 0.032, 0.032, 0.033, 0.033, 0.034, 0.034, 0.035, 0.035, 0.036, 0.036, 0.037, 0.037, 0.038, 0.038, 0.038, 0.039, 0.039, 0.039, 0.039, 0.039, 0.039, 0.039, 0.039, 0.039, 0.039, 0.038, 0.038, 0.038, 0.037, 0.037, 0.036, 0.036, 0.036, 0.035, 0.035, 0.034, 0.034, 0.034, 0.033, 0.033, 0.033, 0.032, 0.032, 0.032, 0.032, 0.032, 0.032, 0.032, 0.032, 0.032, 0.032, 0.033, 0.033, 0.033, 0.033, 0.034, 0.034, 0.034, 0.034, 0.035, 0.035, 0.035, 0.035, 0.036, 0.036, 0.036, 0.036, 0.037, 0.037, 0.037, 0.037, 0.037, 0.037, 0.037, 0.037, 0.037, 0.037, 0.037, 0.037, 0.037, 0.036, 0.036]
+    },
+    "Z_pred": {
+      "Time": [0, 0.503, 1.005, 1.508, 2.01, 2.513, 3.015, 3.518, 4.02, 4.523, 5.025, 5.528, 6.03, 6.533, 7.035, 7.538, 8.04, 8.543, 9.045, 9.548, 10.05, 10.553, 11.055, 11.558, 12.06, 12.563, 13.065, 13.568, 14.07, 14.573, 15.075, 15.578, 16.08, 16.583, 17.085, 17.588, 18.09, 18.593, 19.095, 19.598, 20.101, 20.603, 21.106, 21.608, 22.111, 22.613, 23.116, 23.618, 24.121, 24.623, 25.126, 25.628, 26.131, 26.633, 27.136, 27.638, 28.141, 28.643, 29.146, 29.648, 30.151, 30.653, 31.156, 31.658, 32.161, 32.663, 33.166, 33.668, 34.171, 34.673, 35.176, 35.678, 36.181, 36.683, 37.186, 37.688, 38.191, 38.693, 39.196, 39.698, 40.201, 40.704, 41.206, 41.709, 42.211, 42.714, 43.216, 43.719, 44.221, 44.724, 45.226, 45.729, 46.231, 46.734, 47.236, 47.739, 48.241, 48.744, 49.246, 49.749, 50.251, 50.754, 51.256, 51.759, 52.261, 52.764, 53.266, 53.769, 54.271, 54.774, 55.276, 55.779, 56.281, 56.784, 57.286, 57.789, 58.291, 58.794, 59.296, 59.799, 60.302, 60.804, 61.307, 61.809, 62.312, 62.814, 63.317, 63.819, 64.322, 64.824, 65.327, 65.829, 66.332, 66.834, 67.337, 67.839, 68.342, 68.844, 69.347, 69.849, 70.352, 70.854, 71.357, 71.859, 72.362, 72.864, 73.367, 73.869, 74.372, 74.874, 75.377, 75.879, 76.382, 76.884, 77.387, 77.889, 78.392, 78.894, 79.397, 79.899, 80.402, 80.905, 81.407, 81.91, 82.412, 82.915, 83.417, 83.92, 84.422, 84.925, 85.427, 85.93, 86.432, 86.935, 87.437, 87.94, 88.442, 88.945, 89.447, 89.95, 90.452, 90.955, 91.457, 91.96, 92.462, 92.965, 93.467, 93.97, 94.472, 94.975, 95.477, 95.98, 96.482, 96.985, 97.487, 97.99, 98.492, 98.995, 99.497, 100],
+      "Modeled": [0.0657, 0.0522, 0.0484, 0.0474, 0.0471, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047, 0.047],
+      "Observed": [0.05, 0.052, 0.053, 0.055, 0.057, 0.059, 0.061, 0.064, 0.066, 0.068, 0.071, 0.074, 0.076, 0.079, 0.082, 0.085, 0.088, 0.092, 0.095, 0.099, 0.102, 0.106, 0.11, 0.114, 0.118, 0.122, 0.126, 0.13, 0.134, 0.137, 0.139, 0.14, 0.14, 0.137, 0.134, 0.131, 0.127, 0.124, 0.12, 0.117, 0.113, 0.11, 0.107, 0.104, 0.101, 0.099, 0.096, 0.094, 0.091, 0.089, 0.087, 0.085, 0.083, 0.082, 0.08, 0.079, 0.078, 0.076, 0.075, 0.074, 0.073, 0.073, 0.072, 0.071, 0.071, 0.07, 0.07, 0.07, 0.07, 0.07, 0.07, 0.07, 0.07, 0.07, 0.071, 0.071, 0.071, 0.072, 0.072, 0.073, 0.074, 0.074, 0.075, 0.076, 0.077, 0.077, 0.078, 0.079, 0.08, 0.08, 0.081, 0.082, 0.082, 0.083, 0.083, 0.083, 0.083, 0.083, 0.083, 0.083, 0.083, 0.082, 0.082, 0.082, 0.081, 0.08, 0.08, 0.079, 0.079, 0.078, 0.078, 0.077, 0.076, 0.076, 0.076, 0.075, 0.075, 0.074, 0.074, 0.074, 0.074, 0.074, 0.073, 0.073, 0.073, 0.073, 0.073, 0.073, 0.074, 0.074, 0.074, 0.074, 0.074, 0.075, 0.075, 0.075, 0.076, 0.076, 0.076, 0.077, 0.077, 0.077, 0.077, 0.078, 0.078, 0.078, 0.078, 0.079, 0.079, 0.079, 0.079, 0.079, 0.079, 0.079, 0.079, 0.079, 0.079, 0.079, 0.078, 0.078, 0.078, 0.078, 0.078, 0.077, 0.077, 0.077, 0.076, 0.076, 0.076, 0.076, 0.076, 0.075, 0.075, 0.075, 0.075, 0.075, 0.075, 0.075, 0.075, 0.075, 0.075, 0.075, 0.075, 0.075, 0.075, 0.075, 0.075, 0.076, 0.076, 0.076, 0.076, 0.076, 0.076, 0.077, 0.077, 0.077, 0.077, 0.077, 0.077, 0.077]
+    }
+  }
+}
+JSON_REPORT_END[0m
+[93m[PID 1127697] R script stdout END <<<[0m
+[93m[PID 1127697] R script stderr BEGIN >>>[0m
+[0mLoading required package: TMB
+Loading required package: jsonlite
+using C++ compiler: ‘g++ (Ubuntu 13.3.0-6ubuntu2~24.04) 13.3.0’
+Warning message:
+`aes_string()` was deprecated in ggplot2 3.0.0.
+ℹ Please use tidy evaluation idioms with `aes()`.
+ℹ See also `vignette("ggplot2-in-packages")` for more information.[0m
+[93m[PID 1127697] R script stderr END <<<[0m
+[96m[PID 1127697] JSON detected, parsing...[0m
+[96m[PID 1127697] Writing model report...[0m
+[94m[PID 1127697] Objective value: 541.3146[0m
+[96m[PID 1127697] Generating plots...[0m
+[94m[PID 1127697] Objective Value: 541.3146[0m
+[92m[PID 1127697] Successful model run[0m
+[0m----------------------------------------------[0m
+FINAL MODEL RUN FINISHED
+Final model run successful. Objective value: 541.3146

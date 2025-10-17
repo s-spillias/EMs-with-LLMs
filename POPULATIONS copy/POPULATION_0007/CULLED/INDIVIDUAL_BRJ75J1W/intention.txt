@@ -1,0 +1,123 @@
+Assessment summary
+
+- Model-to-context mismatch:
+  The current code implements a coral–crown-of-thorns starfish (COTS)–temperature model with coral cover (%), adult/juvenile COTS densities, bleaching, and a multi-prey functional response. The PROJECT CONTEXT, however, is an NPZ (nutrient–phytoplankton–zooplankton) mixed-layer model. As-is, the model structure and parameters are not aligned with NPZ dynamics and cannot directly address the stated goals.
+
+- Residuals not available:
+  The request instructs us to refer to a residuals file to evaluate fit, but no residuals were provided here. Without residuals, we cannot quantitatively evaluate the current model fit to data. Qualitatively, the state and observation variables (COTS, fast/slow coral cover) are incompatible with NPZ targets (N, P, Z), so fit assessment for NPZ is not applicable.
+
+1) How well the model fits the data
+
+- With no residuals provided, we cannot compute or summarize standard diagnostics (bias, heteroskedasticity, temporal autocorrelation) for the current implementation.
+- If residuals exist for COTS/coral variables, they are not relevant to NPZ assessment.
+- Action needed: Please provide the referenced residuals file and clarify the target observables (e.g., P_dat, Z_dat, N_dat) if the goal is to evaluate an NPZ model.
+
+2) Does the model address the PROJECT CONTEXT (NPZ mixed-layer model)?
+
+- No. The current state variables are:
+  - C (adult COTS), J (juveniles)
+  - F (fast coral %), S (slow coral %)
+  - External drivers: SST, COTS larval immigration
+- NPZ requires:
+  - N (dissolved inorganic nutrient), P (phytoplankton biomass), Z (zooplankton biomass)
+  - Mixed-layer processes (uptake, grazing, remineralization, excretion, mortality, mixing/input)
+  - Optional environmental modulation (temperature/light)
+- Conclusion: The present model does not represent NPZ dynamics and should be restructured if NPZ is the project objective.
+
+3) Missing or oversimplified ecological processes relative to NPZ
+
+- Nutrient limitation of phytoplankton growth (e.g., saturating uptake N/(K_N+N)) is absent.
+- Zooplankton grazing on phytoplankton with a saturating/threshold functional response (Holling II/III) is absent in the NPZ sense (current functional response targets coral).
+- Assimilation efficiency and partitioning of grazed P into Z growth vs. unassimilated waste returning to N are absent.
+- Mortality terms and remineralization pathways that close the nutrient cycle are absent.
+- External nutrient inputs and mixed-layer exchange (e.g., vertical mixing, advection, seasonal inputs) are absent.
+- Temperature or light effects on phytoplankton growth and grazing are not implemented for NPZ (SST currently modulates COTS recruitment and coral bleaching instead).
+
+Review of current parameter values
+
+- Many parameters are specific to coral/COTS (e.g., bleaching parameters, coral growth rates rF, rS, COTS mortality muC, gammaC, functional response on corals aF, aS, qF, qS, etc.). These do not translate to NPZ and would be removed or replaced in an NPZ model.
+- Some parameters are grounded in literature values but for the wrong system (coral bleaching thresholds, handling times for coral predation). Carrying these forward would not be ecologically meaningful for NPZ.
+- No evidence here of updated NPZ-relevant parameter values from literature searches. If such updates exist (e.g., typical ranges for mu_max, K_N, g_max, assimilation efficiency), they should drive the choice of NPZ equations and priors/ranges.
+
+Proposed single meaningful ecological improvement (aligned to the NPZ context)
+
+- Chosen approach: Resource limitation mechanisms with environmental modifiers (core NPZ structure).
+- Rationale: The central dynamical feature of a mixed-layer NPZ model is nutrient-limited phytoplankton growth with zooplankton grazing, closed by nutrient recycling. This captures the first-order controls on P and Z dynamics and their feedback on N. It is both parsimonious and ecologically necessary. Temperature can modulate rates.
+
+Recommended NPZ discrete-time structure (yearly or sub-annual steps; shown generically using previous-step states to avoid leakage)
+
+State variables:
+- N_t: dissolved inorganic nutrient concentration
+- P_t: phytoplankton biomass
+- Z_t: zooplankton biomass
+- Forcing: SST_t (optional temperature modifier)
+
+Core process functions:
+- Nutrient limitation: f_N(N) = N / (K_N + N)
+- Temperature modifier on primary production: f_T(SST) = exp(-beta_T * (SST - T_opt)^2) or a Q10-type factor
+
+Fluxes (all evaluated at t-1):
+- Phytoplankton net growth: G_P = mu_max * f_N(N) * f_T(SST) * P
+- Grazing (Holling III recommended): Graz = g_max * P^eta / (K_G^eta + P^eta) * Z
+- Zooplankton production: Prod_Z = epsi * Graz
+- Losses and recycling:
+  - P mortality: m_P * P
+  - Z mortality: m_Z * Z^2 (quadratic) + mu_Z * Z (linear)
+  - Unassimilated grazing back to N: (1 - epsi) * Graz
+  - Remineralization from mortality: r_minP * m_P * P + r_minZ * (m_Z * Z^2 + mu_Z * Z)
+- External nutrient input/mixing: I_N - k_mix * (N - N_bkg) (optional but recommended for mixed layers)
+
+Discrete-time updates (using t-1 states):
+- P_t = P + G_P - Graz - m_P * P
+- Z_t = Z + Prod_Z - (m_Z * Z^2 + mu_Z * Z)
+- N_t = N - (alpha_N * G_P) + (1 - epsi) * Graz + r_minP * m_P * P + r_minZ * (m_Z * Z^2 + mu_Z * Z) + I_N - k_mix * (N - N_bkg)
+
+Notes:
+- alpha_N converts primary production to nutrient uptake units.
+- Bounds: enforce non-negativity with smooth functions (e.g., pospart) as in the current code.
+- Observation model: needs data vectors for P_dat, Z_dat, and optionally N_dat. Typical choices are log-normal or normal in log-space, possibly with temperature/seasonal observation variance.
+
+Why no code changes in this commit
+
+- The present code and parameters are for a different ecological system. Implementing NPZ would require:
+  - Renaming/adding data inputs (N_dat, P_dat, Z_dat, possibly SST_dat retained)
+  - Replacing state equations and parameter set
+  - Revising the likelihood to match NPZ observables
+- Without the residuals and target NPZ data schema, changing the code now risks misalignment with your data pipeline.
+- Action requested:
+  - Please confirm we should pivot this model to NPZ and share the residuals and data variable names for N, P, Z (and any environmental drivers to retain).
+  - If you want a draft NPZ implementation immediately, confirm the desired time step (annual vs. sub-annual) and observation error forms.
+
+Suggested NPZ parameter list and indicative bounds (for future update)
+
+- mu_max (max phytoplankton specific growth, time^-1): [0, 3]
+- K_N (half-sat for nutrients, conc units): [1e-6, 10] (context-specific)
+- g_max (max grazing rate, time^-1): [0, 5]
+- K_G (half-sat for grazing, biomass units): [1e-6, 10]
+- eta (grazing shape exponent): [1, 3]
+- epsi (assimilation efficiency): [0, 1]
+- m_P (phytoplankton mortality, time^-1): [0, 2]
+- m_Z (quadratic zooplankton mortality, (biomass^-1 time^-1)): [0, 10]
+- mu_Z (linear zooplankton mortality, time^-1): [0, 2]
+- alpha_N (nutrient uptake stoichiometry factor): [0, 10]
+- r_minP, r_minZ (remineralization fractions): [0, 1]
+- I_N (external nutrient input, conc time^-1): [0, 10]
+- k_mix (exchange rate, time^-1): [0, 5]
+- N_bkg (background nutrient concentration): [0, inf)
+- Temperature terms (optional):
+  - T_opt (°C): [0, 40]
+  - beta_T (°C^-2): [0, 2] or Q10 in [1, 4]
+
+Next steps
+
+- Provide the residuals file referenced in the task and clarify the observation variables for NPZ.
+- Confirm replacement of the coral/COTS model with the NPZ structure described above.
+- Once confirmed, we will:
+  - Replace model.cpp with an NPZ implementation using previous-step states only (no data leakage).
+  - Update parameters.json with NPZ parameters and documented bounds.
+  - Keep smooth penalties and numerical stabilizers similar to the current code for robust estimation.
+
+Decision for this commit
+
+- No code changes now (to avoid breaking interfaces without data and residuals).
+- This file records the assessment, the mismatch with the PROJECT CONTEXT, and the proposed NPZ structure chosen as the single meaningful ecological improvement path (resource limitation with environmental modifiers), to be implemented upon confirmation and receipt of residuals/data specifications.

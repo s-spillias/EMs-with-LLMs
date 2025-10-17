@@ -1,0 +1,1600 @@
+Warning: Input is not a terminal (fd=4).
+Skipping POPULATIONS/POPULATION_0008/INDIVIDUAL_CZ49HWHH/model.cpp that matches gitignore spec.
+Skipping POPULATIONS/POPULATION_0008/INDIVIDUAL_CZ49HWHH/parameters.json that matches gitignore spec.
+Skipping POPULATIONS/POPULATION_0008/INDIVIDUAL_CZ49HWHH/intention.txt that matches gitignore spec.
+Creating empty file POPULATIONS/POPULATION_0008/INDIVIDUAL_CZ49HWHH/intention.txt
+I understand the request.                                                                                                                                                                                                       
+
+ 1 Do we need code changes?                                                                                                                                                                                                     
+
+Yes. To better capture episodic COTS outbreaks’ timing consistent with GBR evidence, I propose adding a two-year recruitment lag mixture (softmax-weighted current, 1-year, and 2-year signals) to replace the current single   
+1-year lag parameter. This adds ecologically realistic delayed density dependence in reproduction without data leakage.                                                                                                         
+
+ 2 What changes are needed?                                                                                                                                                                                                     
+
+ • Model: Replace lag_recruit with two unconstrained log-weights (lag1_logw, lag2_logw) that are transformed via softmax to weights w0, w1, w2 summing to 1, applied to the food-temperature recruitment driver across current, 
+   1-year, and 2-year lags. Maintain buffers I_sat and T_perf over two prior years.                                                                                                                                             
+ • Parameters: Remove lag_recruit. Add lag1_logw (init ln(4) ≈ 1.386) to keep strong 1-year signal and lag2_logw (init ln(0.1) ≈ -2.303) for a small 2-year contribution. Bounds not applicable (unconstrained, normalized      
+   in-model).                                                                                                                                                                                                                   
+ • Documentation: Provide assessment, rationale, and implications in intention.txt.                                                                                                                                             
+
+ 3 Updated files are below.                                                                                                                                                                                                     
+
+POPULATIONS/POPULATION_0008/INDIVIDUAL_CZ49HWHH/model.cpp                                                                                                                                                                       
+
+                                                                                                                                                                                                                                
+ @@ -1,4 +1,5 @@                                                                                                                                                                                                                
+                                                                                                                                                                                                                                
+    PARAMETER(A50);         // ind m^-2; Allee-effect half-saturation density (mate limitation)                                                                                                                                 
+    PARAMETER(Topt);        // deg C; optimum SST for COTS reproductive performance                                                                                                                                             
+    PARAMETER(sigma_T);     // deg C; breadth (SD) of thermal performance curve                                                                                                                                                 
+    PARAMETER(gamma_imm);   // dimensionless; scaling on external larval immigration (cotsimm_dat)                                                                                                                              
+ -  PARAMETER(lag_recruit); // dimensionless (0-1); weight on 1-year lag in recruitment driver                                                                                                                                  
+                                                                                                                                                                                                                                
+ -  // Observation model standard deviations (stability enforced with minimum SD)                                                                                                                                               
+ -  PARAMETER(sd_lncots);      // SD of log-observation errors for COTS (lognormal)                                                                                                                                             
+ -  PARAMETER(sd_logit_fast);  // SD of logit-observation errors for fast coral (logit-normal on proportion)                                                                                                                    
+ -  PARAMETER(sd_logit_slow);  // SD of logit-observation errors for slow coral (logit-normal on proportion)                                                                                                                    
+    // Observation model standard deviations (stability enforced with minimum SD)                                                                                                                                               
+    PARAMETER(sd_lncots);      // SD of log-observation errors for COTS (lognormal)                                                                                                                                             
+    PARAMETER(sd_logit_fast);  // SD of logit-observation errors for fast coral (logit-normal on proportion)                                                                                                                    
+    PARAMETER(sd_logit_slow);  // SD of logit-observation errors for slow coral (logit-normal on proportion)                                                                                                                    
+                                                                                                                                                                                                                                
+    // Penalty weight for keeping parameters in biologically meaningful ranges                                                                                                                                                  
+    nll += bound_penalty(A50,          Type(0.01),  Type(5.0),   w_pen);   // Allee half density                                                                                                                                
+    nll += bound_penalty(Topt,         Type(24.0),  Type(31.0),  w_pen);   // optimal SST for COTS                                                                                                                              
+    nll += bound_penalty(sigma_T,      Type(0.5),   Type(5.0),   w_pen);   // thermal breadth                                                                                                                                   
+    nll += bound_penalty(gamma_imm,    Type(0.0),   Type(10.0),  w_pen);   // immigration scaler                                                                                                                                
+ -  nll += bound_penalty(lag_recruit,  Type(0.0),   Type(1.0),   w_pen);   // lag weight                                                                                                                                        
+ +  // Removed: lag_recruit bound penalty (now replaced by softmax weights)                                                                                                                                                     
+                                                                                                                                                                                                                                
+    nll += bound_penalty(sd_lncots,    Type(0.01),  Type(2.0),   w_pen);   // obs SD (log COTS)                                                                                                                                 
+    nll += bound_penalty(sd_logit_fast,Type(0.01),  Type(2.0),   w_pen);   // obs SD (logit fast)                                                                                                                               
+    nll += bound_penalty(sd_logit_slow,Type(0.01),  Type(2.0),   w_pen);   // obs SD (logit slow)                                                                                                                               
+    nll += bound_penalty(w_pen,        Type(0.001), Type(100.0), w_pen);   // penalty weight itself                                                                                                                             
+                                                                                                                                                                                                                                
+    // --------------------------                                                                                                                                                                                               
+    // (5) Coral growth (space-limited BH-like): G_i = (r_i * P_i_survive) / (1 + beta_space * (P_F_survive + P_S_survive))                                                                                                     
+    // (6) Heat suppression of growth: G_i_eff = G_i * (1 - heat_sens_i * B_t)                                                                                                                                                  
+    // (7) Coral update: P_i(t) = P_i_survive + G_i_eff, where P_i_survive = P_i - R_i, then apply non-predation mortality via exp decay                                                                                        
+    // (8) COTS intake per predator: I = per_pred_F + per_pred_S                                                                                                                                                                
+ -  // (9) COTS per-capita growth modifier (with 1-year lag blend):                                                                                                                                                             
+ -  //     rC = rC_max * epsilon_food * [(1-lag)*I_sat_t*T_perf_t + lag*I_sat_{t-1}*T_perf_{t-1}] * (C/(A50 + C))                                                                                                               
+ +  // (9) COTS per-capita growth modifier with multi-year lag mixture:                                                                                                                                                         
+ +  //     food_temp_mix = w0*(I_sat_t*T_perf_t) + w1*(I_sat_{t-1}*T_perf_{t-1}) + w2*(I_sat_{t-2}*T_perf_{t-2})                                                                                                                
+ +  //     rC = rC_max * epsilon_food * food_temp_mix * (C/(A50 + C))                                                                                                                                                           
+    // (10) COTS density regulation: deltaC = rC * C * (1 - C / Kc), Kc = Kc0 + kCF*P_F + kCS*P_S                                                                                                                               
+    // (11) COTS update: C_t = C_{t-1} + deltaC - mC_base * C_{t-1} + gamma_imm * immigration_t                                                                                                                                 
+    // --------------------------                                                                                                                                                                                               
+                                                                                                                                                                                                                                
+ +  // Precompute softmax weights for lag mixture (w0 + w1 + w2 = 1)                                                                                                                                                            
+ +  Type a1 = exp(lag1_logw);                                                                                                                                                                                                   
+ -  Type S0 = S_state(0);                                                                                                                                                                                                       
+ -  Type Fq0 = pow(CppAD::CondExpLt(F0, eps, eps, F0), q_func);                                                                                                                                                                 
+ -  Type Sq0 = pow(CppAD::CondExpLt(S0, eps, eps, S0), q_func);                                                                                                                                                                 
+ -  Type denom0 = Type(1.0) + aF * hF * Fq0 + aS * hS * Sq0;                                                                                                                                                                    
+ -  Type per_pred_F0 = aF * Fq0 / (denom0 + eps);                                                                                                                                                                               
+ -  Type per_pred_S0 = aS * Sq0 / (denom0 + eps);                                                                                                                                                                               
+ -  Type I_per_pred0 = per_pred_F0 + per_pred_S0;                                                                                                                                                                               
+ -  Type I_sat_prev = I_per_pred0 / (K_food + I_per_pred0 + eps);                                                                                                                                                               
+ -  Type T_perf_prev = exp(-Type(0.5) * sq((sst_dat(0) - Topt) / (sigma_T + eps)));                                                                                                                                             
+ -                                                                                                                                                                                                                              
+ +  // Precompute softmax weights for lag mixture (w0 + w1 + w2 = 1)                                                                                                                                                            
+ +  Type a1 = exp(lag1_logw);                                                                                                                                                                                                   
+ +  Type a2 = exp(lag2_logw);                                                                                                                                                                                                   
+ +  Type sumw = Type(1.0) + a1 + a2;                                                                                                                                                                                            
+    Type T_perf_prev = exp(-Type(0.5) * sq((sst_dat(0) - Topt) / (sigma_T + eps)));                                                                                                                                             
+                                                                                                                                                                                                                                
+ -  for (int t = 1; t < N; t++) {                                                                                                                                                                                               
+ -    // Previous states (predictions only; no data leakage)                                                                                                                                                                    
+ -    Type C_prev = cots_pred(t-1); // COTS density at t-1 (ind m^-2)                                                                                                                                                           
+ -    Type F_prev = F_state(t-1);   // Fast coral proportion at t-1                                                                                                                                                             
+ -    Type S_prev = S_state(t-1);   // Slow coral proportion at t-1                                                                                                                                                             
+ -                                                                                                                                                                                                                              
+ -    // Forcing at time t                                                                                                                                                                                                      
+ -    Type SST_t = sst_dat(t);                // Sea surface temperature at t (deg C)                                                                                                                                           
+ -    Type IMM_t = cotsimm_dat(t);            // Immigration at t (ind m^-2 yr^-1)                                                                                                                                              
+ -                                                                                                                                                                                                                              
+ -    // (1) Bleaching index (0-1) increasing with SST                                                                                                                                                                          
+ -    Type B_t = invlogit_stable(bleach_slope * (SST_t - T_bleach)); // Bleaching risk index                                                                                                                                    
+ -                                                                                                                                                                                                                              
+ -    // (2) Multi-prey functional response (Holling disc with exponent q)                                                                                                                                                      
+ -    Type Fq = pow(CppAD::CondExpLt(F_prev, eps, eps, F_prev), q_func); // F^q, safe at 0                                                                                                                                      
+ -    Type Sq = pow(CppAD::CondExpLt(S_prev, eps, eps, S_prev), q_func); // S^q, safe at 0                                                                                                                                      
+ -    Type denom = Type(1.0) + aF * hF * Fq + aS * hS * Sq;              // Handling-limited denominator                                                                                                                        
+ -    Type per_pred_F = aF * Fq / (denom + eps);                          // per-predator annual attack on fast coral                                                                                                           
+ -    Type per_pred_S = aS * Sq / (denom + eps);                          // per-predator annual attack on slow coral                                                                                                           
+ -                                                                                                                                                                                                                              
+ -    // (3) Hazard-based removal (prevents overconsumption beyond available coral)                                                                                                                                             
+ -    Type cons_F_total = C_prev * per_pred_F;                            // total fast coral consumption (proportion units per area)                                                                                           
+ -    Type cons_S_total = C_prev * per_pred_S;                            // total slow coral consumption                                                                                                                       
+ -    Type haz_F = cons_F_total / (F_prev + eps);                         // hazard of removal for fast coral                                                                                                                   
+ -    Type haz_S = cons_S_total / (S_prev + eps);                         // hazard of removal for slow coral                                                                                                                   
+ -    Type remF_frac = Type(1) - exp(-haz_F);                             // fraction removed from fast coral                                                                                                                   
+ -    Type remS_frac = Type(1) - exp(-haz_S);                             // fraction removed from slow coral                                                                                                                   
+ -    Type R_F = remF_frac * F_prev;                                      // amount of fast coral removed                                                                                                                       
+ -    Type R_S = remS_frac * S_prev;                                      // amount of slow coral removed                                                                                                                       
+ -                                                                                                                                                                                                                              
+ -    // Survivors after predation (non-negative)                                                                                                                                                                               
+ -    Type F_survive = CppAD::CondExpLt(F_prev - R_F, eps, eps, F_prev - R_F);                                                                                                                                                  
+ -    Type S_survive = CppAD::CondExpLt(S_prev - R_S, eps, eps, S_prev - R_S);                                                                                                                                                  
+ -                                                                                                                                                                                                                              
+ -    // (4) Non-predation mortality (background + bleaching) via exponential decay                                                                                                                                             
+ -    Type mBleach = m_bleach_max * B_t;                                  // extra mortality due to heat                                                                                                                        
+ -    Type F_after_mort = F_survive * exp(-(dF_base + mBleach));          // fast coral after mortality                                                                                                                         
+ -    Type S_after_mort = S_survive * exp(-(dS_base + mBleach));          // slow coral after mortality                                                                                                                         
+ -                                                                                                                                                                                                                              
+ -    // (5) Space-limited growth (Beverton–Holt-like)                                                                                                                                                                          
+ -    Type denom_space = Type(1) + beta_space * (F_survive + S_survive);  // crowding term                                                                                                                                      
+ -    Type G_F = rF * F_after_mort / (denom_space + eps);                 // raw growth fast coral                                                                                                                              
+ -    Type G_S = rS * S_after_mort / (denom_space + eps);                 // raw growth slow coral                                                                                                                              
+ -                                                                                                                                                                                                                              
+ -    // (6) Heat suppression of coral growth (0..1 multiplier)                                                                                                                                                                 
+ -    Type g_mult_F = Type(1) - heat_sens_F * B_t;                        // growth multiplier fast coral                                                                                                                       
+ -    Type g_mult_S = Type(1) - heat_sens_S * B_t;                        // growth multiplier slow coral                                                                                                                       
+ -    g_mult_F = CppAD::CondExpLt(g_mult_F, eps, eps, g_mult_F);          // keep non-negative smoothly                                                                                                                         
+ -    g_mult_S = CppAD::CondExpLt(g_mult_S, eps, eps, g_mult_S);                                                                                                                                                                
+ -                                                                                                                                                                                                                              
+ -    // (7) Coral updates and soft cap at K_space                                                                                                                                                                              
+ -    Type F_next = F_after_mort + g_mult_F * G_F;                        // next fast coral proportion                                                                                                                         
+ -    Type S_next = S_after_mort + g_mult_S * G_S;                        // next slow coral proportion                                                                                                                         
+ -    // keep within [eps, K_space] softly (via conditional clamps)                                                                                                                                                             
+ -    F_next = CppAD::CondExpLt(F_next, eps, eps, F_next);                                                                                                                                                                      
+ -    S_next = CppAD::CondExpLt(S_next, eps, eps, S_next);                                                                                                                                                                      
+ -    F_next = CppAD::CondExpGt(F_next, K_space, K_space, F_next);                                                                                                                                                              
+ -    S_next = CppAD::CondExpGt(S_next, K_space, K_space, S_next);                                                                                                                                                              
+ -                                                                                                                                                                                                                              
+ -    // (8) Per-predator intake (sum across prey)                                                                                                                                                                              
+ -    Type I_per_pred = per_pred_F + per_pred_S;                          // total intake per predator (proportion/yr)                                                                                                          
+ -    Type I_sat_curr = I_per_pred / (K_food + I_per_pred + eps);         // saturating food index (0..1)                                                                                                                       
+ -                                                                                                                                                                                                                              
+ -    // (9) Per-capita COTS growth modulated by food, temperature, and Allee effect with 1-year lag blend                                                                                                                      
+ -    Type T_perf_curr = exp(-Type(0.5) * sq((SST_t - Topt) / (sigma_T + eps))); // Gaussian thermal performance (0..1)                                                                                                         
+ -    Type food_temp_curr = I_sat_curr * T_perf_curr;                                                                                                                                                                           
+ -    Type food_temp_lag  = I_sat_prev * T_perf_prev;                     // seeded from t-1 (or t=0 at first step)                                                                                                             
+ -    Type food_temp_mix  = (Type(1) - lag_recruit) * food_temp_curr + lag_recruit * food_temp_lag;                                                                                                                             
+ -                                                                                                                                                                                                                              
+ -    Type Allee_m = C_prev / (A50 + C_prev + eps);                       // Allee factor (0..1)                                                                                                                                
+ -    Type rC = rC_max * epsilon_food * food_temp_mix * Allee_m;          // effective per-capita growth rate                                                                                                                   
+ -                                                                                                                                                                                                                              
+ -    // (10) Density regulation via carrying capacity linked to coral                                                                                                                                                          
+ -    Type Kc = Kc0 + kCF * F_prev + kCS * S_prev;                        // carrying capacity (ind m^-2)                                                                                                                       
+ -    Kc = CppAD::CondExpLt(Kc, eps, eps, Kc);                            // ensure positive                                                                                                                                    
+ -    Type deltaC = rC * C_prev * (Type(1) - C_prev / (Kc + eps));        // logistic-type growth increment                                                                                                                     
+ -                                                                                                                                                                                                                              
+ -    // (11) Update COTS with mortality and immigration; enforce positivity smoothly                                                                                                                                           
+ -    Type C_next_raw = C_prev + deltaC - mC_base * C_prev + gamma_imm * IMM_t; // raw next COTS density                                                                                                                        
+ -    Type C_next = softplus(C_next_raw, Type(5));                         // smooth positivity                                                                                                                                 
+ -                                                                                                                                                                                                                              
+ -    // Assign states and predictions (convert coral to %)                                                                                                                                                                     
+ -    cots_pred(t) = C_next;                     // COTS prediction at t                                                                                                                                                        
+ -    F_state(t)   = F_next;                     // fast coral proportion at t                                                                                                                                                  
+ -    S_state(t)   = S_next;                     // slow coral proportion at t                                                                                                                                                  
+ -    fast_pred(t) = Type(100) * F_state(t);     // fast coral % cover prediction                                                                                                                                               
+ -    slow_pred(t) = Type(100) * S_state(t);     // slow coral % cover prediction                                                                                                                                               
+ -                                                                                                                                                                                                                              
+ -    // Update lag buffers for next iteration                                                                                                                                                                                  
+ -    I_sat_prev  = I_sat_curr;                                                                                                                                                                                                 
+ -    T_perf_prev = T_perf_curr;                                                                                                                                                                                                
+ -  }                                                                                                                                                                                                                           
+ -                                                                                                                                                                                                                              
+ +  // Initialize t-2 buffers equal to t-1 for the first step                                                                                                                                                                   
+ +  Type I_sat_prev2 = I_sat_prev;                                                                                                                                                                                              
+ +  Type T_perf_prev2 = T_perf_prev;                                                                                                                                                                                            
+ +                                                                                                                                                                                                                              
+ + 304 / 343 lines [██████████████████████████░░░░]  89%                                                                                                                                                                        
+                                                                                                                                                                                                                                
+Tokens: 12k sent, 9.9k received. Cost: $0.11 message, $0.11 session.
+Committing POPULATIONS/POPULATION_0008/INDIVIDUAL_CZ49HWHH/model.cpp before applying edits.
+Committing POPULATIONS/POPULATION_0008/INDIVIDUAL_CZ49HWHH/parameters.json before applying edits.
+Unable to add /home/spi085/Documents/_Projects/EMs-with-LLMs/POPULATIONS/POPULATION_0008/INDIVIDUAL_CZ49HWHH/model.cpp: Cmd('git') failed due to: exit code(1)
+  cmdline: git add /home/spi085/Documents/_Projects/EMs-with-LLMs/POPULATIONS/POPULATION_0008/INDIVIDUAL_CZ49HWHH/model.cpp
+  stderr: 'The following paths are ignored by one of your .gitignore files:
+POPULATIONS
+hint: Use -f if you really want to add them.
+hint: Turn this message off by running
+hint: "git config advice.addIgnoredFile false"'
+Unable to add /home/spi085/Documents/_Projects/EMs-with-LLMs/POPULATIONS/POPULATION_0008/INDIVIDUAL_CZ49HWHH/parameters.json: Cmd('git') failed due to: exit code(1)
+  cmdline: git add /home/spi085/Documents/_Projects/EMs-with-LLMs/POPULATIONS/POPULATION_0008/INDIVIDUAL_CZ49HWHH/parameters.json
+  stderr: 'The following paths are ignored by one of your .gitignore files:
+POPULATIONS
+hint: Use -f if you really want to add them.
+hint: Turn this message off by running
+hint: "git config advice.addIgnoredFile false"'
+Unable to commit: Cmd('git') failed due to: exit code(1)
+  cmdline: git commit -m feat: add population 0008 individual CZ49HWHH model and params --no-verify -- /home/spi085/Documents/_Projects/EMs-with-LLMs/POPULATIONS/POPULATION_0008/INDIVIDUAL_CZ49HWHH/model.cpp 
+/home/spi085/Documents/_Projects/EMs-with-LLMs/POPULATIONS/POPULATION_0008/INDIVIDUAL_CZ49HWHH/parameters.json
+  stderr: 'error: pathspec '/home/spi085/Documents/_Projects/EMs-with-LLMs/POPULATIONS/POPULATION_0008/INDIVIDUAL_CZ49HWHH/model.cpp' did not match any file(s) known to git
+error: pathspec '/home/spi085/Documents/_Projects/EMs-with-LLMs/POPULATIONS/POPULATION_0008/INDIVIDUAL_CZ49HWHH/parameters.json' did not match any file(s) known to git'
+Applied edit to POPULATIONS/POPULATION_0008/INDIVIDUAL_CZ49HWHH/model.cpp
+Applied edit to POPULATIONS/POPULATION_0008/INDIVIDUAL_CZ49HWHH/parameters.json
+
+# Fix any errors below, if possible.
+
+
+## See relevant line below marked with █.
+
+POPULATIONS/POPULATION_0008/INDIVIDUAL_CZ49HWHH/parameters.json:
+...⋮...
+  2│    "parameters": [
+  3│        {
+  4│            "parameter": "rF",
+  5│            "value": 0.6,
+  6│            "units": "year^-1",
+  7│            "description": "Intrinsic growth rate of fast-growing coral (Acropora).",
+  8│            "source": "literature",
+  9│            "import_type": "PARAMETER",
+ 10│            "priority": 1,
+ 11│            "lower_bound": 0.0,
+...⋮...
+ 325│        {
+ 326│            "parameter": "A50",
+ 327│            "value": 0.3,
+ 328│            "units": "ind m^-2",
+ 329█            "description": "Half-saturation of Allee effect (mate limitation) on C
+
+
+We need code changes: Yes, parameters.json is truncated and invalid JSON. Also, it’s missing entries for parameters used in model.cpp (e.g., Topt, sigma_T, gamma_imm, lag1_logw, lag2_logw, observation SDs, w_pen). I fixed   
+the truncation at A50, completed the file, and added the missing parameters with bounds aligned to model.cpp comments. No changes to model.cpp are required.                                                                    
+
+POPULATIONS/POPULATION_0008/INDIVIDUAL_CZ49HWHH/parameters.json                                                                                                                                                                 
+
+                                                                                                                                                                                                                                
+ @@ -1,4 +1,5 @@                                                                                                                                                                                                                
+  {                                                                                                                                                                                                                             
+              "import_type": "PARAMETER",                                                                                                                                                                                       
+              "priority": 2,                                                                                                                                                                                                    
+              "lower_bound": 29.0,                                                                                                                                                                                              
+              "upper_bound": 34.5,                                                                                                                                                                                              
+ -            "enhanced_semantic_description": "Sea surface temperature threshold for coral bleaching onset (\u00b0C)",                                                                                                         
+ +            "enhanced_semantic_description": "Sea surface temperature threshold for coral bleaching onset (deg C)",                                                                                                           
+              "updated_from_literature": false,                                                                                                                                                                                 
+              "updated_fields_from_literature": []                                                                                                                                                                              
+          },                                                                                                                                                                                                                    
+          {                                                                                                                                                                                                                     
+              "parameter": "bleach_slope",                                                                                                                                                                                      
+              "value": 0.8,                                                                                                                                                                                                     
+              "units": "(deg C)^-1",                                                                                                                                                                                            
+              "import_type": "PARAMETER",                                                                                                                                                                                       
+              "priority": 3,                                                                                                                                                                                                    
+              "lower_bound": 0.0,                                                                                                                                                                                               
+              "upper_bound": 2.0,                                                                                                                                                                                               
+ -            "enhanced_semantic_description": "Baseline COTS carrying capacity without coral presence (ind/m\u00b2)",                                                                                                          
+ -            "updated_from_literature": false,                                                                                                                                                                                 
+ -            "updated_fields_from_literature": []                                                                                                                                                                              
+ -        },                                                                                                                                                                                                                    
+          },                                                                                                                                                                                                                    
+          {                                                                                                                                                                                                                     
+              "parameter": "kCF",                                                                                                                                                                                               
+              "value": 8.0,                                                                                                                                                                                                     
+              "units": "ind m^-2 per proportion",                                                                                                                                                                               
+          {                                                                                                                                                                                                                     
+              "parameter": "A50",                                                                                                                                                                                               
+              "value": 0.3,                                                                                                                                                                                                     
+              "units": "ind m^-2",                                                                                                                                                                                              
+ +            "description": "Half-saturation of Allee effect (mate limitation) on COTS reproduction.",                                                                                                                         
+ +            "source": "literature",                                                                                                                                                                                           
+ +            "import_type": "PARAMETER",                                                                                                                                                                                       
+ +            "priority": 2,                                                                                                                                                                                                    
+ +            "lower_bound": 0.01,                                                                                                                                                                                              
+ +            "upper_bound": 5.0,                                                                                                                                                                                               
+ +            "enhanced_semantic_description": "Density at which Allee effect reaches half strength for COTS mating success",                                                                                                   
+ +            "updated_from_literature": false,                                                                                                                                                                                 
+ +            "updated_fields_from_literature": []                                                                                                                                                                              
+ +        },                                                                                                                                                                                                                    
+ +        {                                                                                                                                                                                                                     
+ +            "parameter": "Topt",                                                                                                                                                                                              
+ +            "value": 28.5,                                                                                                                                                                                                    
+ +            "units": "deg C",                                                                                                                                                                                                 
+ +            "description": "Optimum SST for COTS reproductive performance.",                                                                                                                                                  
+ +            "source": "literature",                                                                                                                                                                                           
+ +            "import_type": "PARAMETER",                                                                                                                                                                                       
+ +            "priority": 2,                                                                                                                                                                                                    
+ +            "lower_bound": 24.0,                                                                                                                                                                                              
+ +            "upper_bound": 31.0,                                                                                                                                                                                              
+ +            "enhanced_semantic_description": "Thermal optimum for COTS larval survival and recruitment (deg C)",                                                                                                              
+ +            "updated_from_literature": true,                                                                                                                                                                                  
+ +            "updated_fields_from_literature": [                                                                                                                                                                               
+ +                "value"                                                                                                                                                                                                       
+ +            ]                                                                                                                                                                                                                 
+ +        },                                                                                                                                                                                                                    
+ +        {                                                                                                                                                                                                                     
+ +            "parameter": "sigma_T",                                                                                                                                                                                           
+ +            "value": 2.0,                                                                                                                                                                                                     
+ +            "units": "deg C",                                                                                                                                                                                                 
+ +            "description": "Breadth (standard deviation) of Gaussian thermal performance curve.",                                                                                                                             
+ +            "source": "literature",                                                                                                                                                                                           
+ +            "import_type": "PARAMETER",                                                                                                                                                                                       
+ +            "priority": 2,                                                                                                                                                                                                    
+ +            "lower_bound": 0.5,                                                                                                                                                                                               
+ +            "upper_bound": 5.0,                                                                                                                                                                                               
+ +            "enhanced_semantic_description": "Thermal tolerance breadth (SD) for COTS reproductive performance (deg C)",                                                                                                      
+ +            "updated_from_literature": true,                                                                                                                                                                                  
+ +            "updated_fields_from_literature": [                                                                                                                                                                               
+ +                "value"                                                                                                                                                                                                       
+ +            ]                                                                                                                                                                                                                 
+ +        },                                                                                                                                                                                                                    
+ +        {                                                                                                                                                                                                                     
+ +            "parameter": "gamma_imm",                                                                                                                                                                                         
+ +            "value": 1.0,                                                                                                                                                                                                     
+ +            "units": "dimensionless",                                                                                                                                                                                         
+ +            "description": "Scaling factor on external larval immigration (cotsimm_dat).",                                                                                                                                    
+ +            "source": "initial estimate",                                                                                                                                                                                     
+ +            "import_type": "PARAMETER",                                                                                                                                                                                       
+ +            "priority": 3,                                                                                                                                                                                                    
+ +            "lower_bound": 0.0,                                                                                                                                                                                               
+ +            "upper_bound": 10.0,                                                                                                                                                                                              
+ +            "enhanced_semantic_description": "Multiplier scaling external larval immigration into the local COTS population",                                                                                                 
+ +            "updated_from_literature": false,                                                                                                                                                                                 
+ +            "updated_fields_from_literature": []                                                                                                                                                                              
+ +        },                                                                                                                                                                                                                    
+ +        {                                                                                                                                                                                                                     
+ +            "parameter": "lag1_logw",                                                                                                                                                                                         
+ +            "value": 1.3862943611,                                                                                                                                                                                            
+ +            "units": "log-weight",                                                                                                                                                                                            
+ +            "description": "Log-weight for 1-year recruitment lag (softmax-normalized in model).",                                                                                                                            
+ +            "source": "initial estimate",                                                                                                                                                                                     
+ +            "import_type": "PARAMETER",                                                                                                                                                                                       
+ +            "priority": 3,                                                                                                                                                                                                    
+ +            "lower_bound": null,                                                                                                                                                                                              
+ +            "upper_bound": null,                                                                                                                                                                                              
+ +            "enhanced_semantic_description": "Unconstrained log-weight that determines the softmax weight on the 1-year lag in recruitment driver",                                                                           
+ +            "updated_from_literature": false,                                                                                                                                                                                 
+ +            "updated_fields_from_literature": []                                                                                                                                                                              
+ +        },                                                                                                                                                                                                                    
+ +        {                                                                                                                                                                                                                     
+ +            "parameter": "lag2_logw",                                                                                                                                                                                         
+ +            "value": -2.3025850930,                                                                                                                                                                                           
+ +            "units": "log-weight",                                                                                                                                                                                            
+ +            "description": "Log-weight for 2-year recruitment lag (softmax-normalized in model).",                                                                                                                            
+ +            "source": "initial estimate",                                                                                                                                                                                     
+ +            "import_type": "PARAMETER",                                                                                                                                                                                       
+ +            "priority": 3,                                                                                                                                                                                                    
+ +            "lower_bound": null,                                                                                                                                                                                              
+ +            "upper_bound": null,                                                                                                                                                                                              
+ +            "enhanced_semantic_description": "Unconstrained log-weight that determines the softmax weight on the 2-year lag in recruitment driver",                                                                           
+ +            "updated_from_literature": false,                                                                                                                                                                                 
+ +            "updated_fields_from_literature": []                                                                                                                                                                              
+ +        },                                                                                                                                                                                                                    
+ +        {                                                                                                                                                                                                                     
+ +            "parameter": "sd_lncots",                                                                                                                                                                                         
+ +            "value": 0.4,                                                                                                                                                                                                     
+ +            "units": "SD (log scale)",                                                                                                                                                                                        
+ +            "description": "Observation error SD for COTS density on log scale (lognormal observation model).",                                                                                                               
+ +            "source": "initial estimate",                                                                                                                                                                                     
+ +            "import_type": "PARAMETER",                                                                                                                                                                                       
+ +            "priority": 2,                                                                                                                                                                                                    
+ +            "lower_bound": 0.01,                                                                                                                                                                                              
+ +            "upper_bound": 2.0,                                                                                                                                                                                               
+ +            "enhanced_semantic_description": "Standard deviation of log-observation errors for COTS density",                                                                                                                 
+ +            "updated_from_literature": false,                                                                                                                                                                                 
+ +            "updated_fields_from_literature": []                                                                                                                                                                              
+ +        },                                                                                                                                                                                                                    
+ +        {                                                                                                                                                                                                                     
+ +            "parameter": "sd_logit_fast",                                                                                                                                                                                     
+ +            "value": 0.2,                                                                                                                                                                                                     
+ +            "units": "SD (logit scale)",                                                                                                                                                                                      
+ +            "description": "Observation error SD for fast coral cover on logit scale (logit-normal observation model).",                                                                                                      
+ +            "source": "initial estimate",                                                                                                                                                                                     
+ +            "import_type": "PARAMETER",                                                                                                                                                                                       
+ +            "priority": 2,                                                                                                                                                                                                    
+ +            "lower_bound": 0.01,                                                                                                                                                                                              
+ +            "upper_bound": 2.0,                                                                                                                                                                                               
+ +            "enhanced_semantic_description": "Standard deviation of logit-observation errors for fast coral proportion cover",                                                                                                
+ +            "updated_from_literature": false,                                                                                                                                                                                 
+ +            "updated_fields_from_literature": []                                                                                                                                                                              
+ +        },                                                                                                                                                                                                                    
+ +        {                                                                                                                                                                                                                     
+ +            "parameter": "sd_logit_slow",                                                                                                                                                                                     
+ +            "value": 0.2,                                                                                                                                                                                                     
+ +            "units": "SD (logit scale)",                                                                                                                                                                                      
+ +            "description": "Observation error SD for slow coral cover on logit scale (logit-normal observation model).",                                                                                                      
+ +            "source": "initial estimate",                                                                                                                                                                                     
+ +            "import_type": "PARAMETER",                                                                                                                                                                                       
+ +            "priority": 2,                                                                                                                                                                                                    
+ +            "lower_bound": 0.01,                                                                                                                                                                                              
+ +            "upper_bound": 2.0,                                                                                                                                                                                               
+ +            "enhanced_semantic_description": "Standard deviation of logit-observation errors for slow coral proportion cover",                                                                                                
+ +            "updated_from_literature": false,                                                                                                                                                                                 
+ +            "updated_fields_from_literature": []                                                                                                                                                                              
+ +        },                                                                                                                                                                                                                    
+ +        {                                                                                                                                                                                                                     
+ +            "parameter": "w_pen",                                                                                                                                                                                             
+ +            "value": 1.0,                                                                                                                                                                                                     
+ +            "units": "dimensionless",                                                                                                                                                                                         
+ +            "description": "Overall weight on smooth bound penalties to keep parameters in plausible ranges.",                                                                                                                
+ +            "source": "initial estimate",                                                                                                                                                                                     
+ +            "import_type": "PARAMETER",                                                                                                                                                                                       
+ +            "priority": 3,                                                                                                                                                                                                    
+ +            "lower_bound": 0.001,                                                                                                                                                                                             
+ +            "upper_bound": 100.0,                                                                                                                                                                                             
+ +            "enhanced_semantic_description": "Penalty weight controlling strength of soft constraints on parameters",                                                                                                         
+ +            "updated_from_literature": false,                                                                                                                                                                                 
+ +            "updated_fields_from_literature": []                                                                                                                                                                              
+ +        }                                                                                                                                                                                                                     
+ +    ]                                                                                                                                                                                                                         
+ +}                                                                                                                                                                                                                             
+                                                                                                                                                                                                                                
+
+Tokens: 21k sent, 4.6k received. Cost: $0.07 message, $0.19 session.
+Committing POPULATIONS/POPULATION_0008/INDIVIDUAL_CZ49HWHH/parameters.json before applying edits.
+Unable to add /home/spi085/Documents/_Projects/EMs-with-LLMs/POPULATIONS/POPULATION_0008/INDIVIDUAL_CZ49HWHH/parameters.json: Cmd('git') failed due to: exit code(1)
+  cmdline: git add /home/spi085/Documents/_Projects/EMs-with-LLMs/POPULATIONS/POPULATION_0008/INDIVIDUAL_CZ49HWHH/parameters.json
+  stderr: 'The following paths are ignored by one of your .gitignore files:
+POPULATIONS
+hint: Use -f if you really want to add them.
+hint: Turn this message off by running
+hint: "git config advice.addIgnoredFile false"'
+Unable to commit: Cmd('git') failed due to: exit code(1)
+  cmdline: git commit -m feat: Add parameters.json for INDIVIDUAL_CZ49HWHH in POPULATION_0008 --no-verify -- /home/spi085/Documents/_Projects/EMs-with-LLMs/POPULATIONS/POPULATION_0008/INDIVIDUAL_CZ49HWHH/parameters.json
+  stderr: 'error: pathspec '/home/spi085/Documents/_Projects/EMs-with-LLMs/POPULATIONS/POPULATION_0008/INDIVIDUAL_CZ49HWHH/parameters.json' did not match any file(s) known to git'
+Applied edit to POPULATIONS/POPULATION_0008/INDIVIDUAL_CZ49HWHH/parameters.json
+Improved existing model in individual: POPULATIONS/POPULATION_0008/INDIVIDUAL_CZ49HWHH
+Validating model for data leakage...
+Opening file: POPULATIONS/POPULATION_0008/INDIVIDUAL_CZ49HWHH/model.cpp
+File read successfully
+TMB convention check: {'uses_tmb_header': True, 'uses_data_macros': True, 'uses_vector_type': True, 'uses_standard_report': True, 'uses_objective_function': True, 'uses_std_vector': False, 'uses_string_report': False}
+Extracting vectors...
+Found data vectors: {'cots_dat', 'fast_dat', 'Year', 'cotsimm_dat', 'slow_dat', 'sst_dat'}
+Found prediction vectors: {'cots_pred', 'S_state', 'slow_pred', 'w_lag', 'fast_pred', 'F_state'}
+Found reported vectors: {'cots_pred', 'S_state', 'slow_pred', 'w_lag', 'fast_pred', 'F_state'}
+Finding initial conditions...
+Found 9 initial conditions
+Finding time-stepping loop...
+Found loop from line 228 to 322
+Looking for metadata file at: /home/spi085/Documents/_Projects/EMs-with-LLMs/POPULATIONS/POPULATION_0008/population_metadata.json
+Attempting to read CSV file: /home/spi085/Documents/_Projects/EMs-with-LLMs/Data/timeseries_data_COTS_response.csv
+Successfully read CSV file with 4 columns
+Found response variables from /home/spi085/Documents/_Projects/EMs-with-LLMs/Data/timeseries_data_COTS_response.csv: {'slow_dat', 'cots_dat', 'fast_dat'}
+[93m[PID 2701627] Running model for individual...[0m
+[0m[PID 2701627] Individual directory: POPULATIONS/POPULATION_0008/INDIVIDUAL_CZ49HWHH[0m
+[96m[PID 2701627] Launching Rscript... (timeout=none)[0m
+[93m[PID 2701627] R script stdout BEGIN >>>[0m
+[0mg++ -std=gnu++17 -I"/usr/share/R/include" -DNDEBUG -I"/home/spi085/R/x86_64-pc-linux-gnu-library/4.4/TMB/include" -I"/home/spi085/R/x86_64-pc-linux-gnu-library/4.4/RcppEigen/include"   -DTMB_EIGEN_DISABLE_WARNINGS   -DTMB_LIB_INIT=R_init_model  -DCPPAD_FRAMEWORK      -fpic  -O2  -c POPULATIONS/POPULATION_0008/INDIVIDUAL_CZ49HWHH/model.cpp -o POPULATIONS/POPULATION_0008/INDIVIDUAL_CZ49HWHH/model.o
+g++ -std=gnu++17 -shared -L/usr/lib/R/lib -Wl,-Bsymbolic-functions -flto=auto -ffat-lto-objects -Wl,-z,relro -o POPULATIONS/POPULATION_0008/INDIVIDUAL_CZ49HWHH/model.so POPULATIONS/POPULATION_0008/INDIVIDUAL_CZ49HWHH/model.o -L/usr/lib/R/lib -lR
+
+NA counts per required column:
+       Year    cots_dat    fast_dat    slow_dat     sst_dat cotsimm_dat 
+          0           0           0           0           0           0 
+
+Out-of-range checks:
+Any cots_dat < 0?  FALSE 
+Any fast_dat outside [0,100]?  FALSE 
+Any slow_dat outside [0,100]?  FALSE 
+
+PARAMETER starts (first few):
+          rF           rS   beta_space      K_space      dF_base      dS_base 
+        0.60         0.25         3.00         0.90         0.15         0.10 
+ heat_sens_F  heat_sens_S     T_bleach bleach_slope m_bleach_max           aF 
+        0.70         0.40        31.75         0.80         0.40         6.00 
+Starting model phases
+Number of phases: 3 
+Phase 1 
+Initial parameter values for phase 1 :
+     rF      rS      aF      aS  rC_max mC_base     kCF     kCS 
+0.60000 0.25000 6.00000 3.00000 3.00000 1.28065 8.00000 4.00000 
+Final parameter values for phase 1 :
+        rF         rS         aF         aS     rC_max    mC_base        kCF 
+0.65473429 0.17719388 0.48260255 0.09439349 2.66144559 0.14264345 7.88006156 
+       kCS 
+3.94219213 
+Convergence message: iteration limit reached without convergence (10) 
+Number of iterations: 150 
+Objective function value: 186.9449 
+Gradient at solution for phase 1 :
+          [,1]     [,2]      [,3]      [,4]     [,5]      [,6]       [,7]
+[1,] -16.73769 19.07954 -7.324588 -43.62688 2.418931 -3.576105 -0.3797446
+          [,8]
+[1,] -0.388295
+Phase 2 
+Initial parameter values for phase 2 :
+      dF_base       dS_base   heat_sens_F   heat_sens_S      T_bleach 
+         0.15          0.10          0.70          0.40         31.75 
+ m_bleach_max            hF            hS        q_func  epsilon_food 
+         0.40          0.20          0.25          1.50          0.40 
+       K_food           A50          Topt       sigma_T     sd_lncots 
+         0.10          0.30         28.50          2.00          0.40 
+sd_logit_fast sd_logit_slow 
+         0.20          0.20 
+Final parameter values for phase 2 :
+      dF_base       dS_base   heat_sens_F   heat_sens_S      T_bleach 
+   0.01967417    0.02606702    1.00000000    0.93491832   31.08423102 
+ m_bleach_max            hF            hS        q_func  epsilon_food 
+   1.00000000    0.84653800    0.33120264    1.23302922    0.76363231 
+       K_food           A50          Topt       sigma_T     sd_lncots 
+   0.02106702    1.89610931   28.10960142    2.52631513    0.52775880 
+sd_logit_fast sd_logit_slow 
+   0.61982771    0.39817159 
+Convergence message: iteration limit reached without convergence (10) 
+Number of iterations: 150 
+Objective function value: 58.14468 
+Gradient at solution for phase 2 :
+         [,1]     [,2]       [,3]        [,4]      [,5]       [,6]       [,7]
+[1,] 1.556033 9.392196 -0.7455499 0.005689885 -1.410026 -0.9022044 -0.3460226
+            [,8]     [,9]      [,10]     [,11]      [,12]     [,13]      [,14]
+[1,] -0.04309561 7.568962 -0.6801394 -1.181083 -0.6321078 0.5463441 -0.3990672
+         [,15]      [,16]      [,17]
+[1,] 0.9959608 -0.6287216 0.08130277
+Phase 3 
+Initial parameter values for phase 3 :
+  beta_space      K_space bleach_slope          Kc0    gamma_imm    lag1_logw 
+    3.000000     0.900000     0.800000     0.200000     1.000000     1.386294 
+   lag2_logw        w_pen 
+   -2.302585     1.000000 
+Final parameter values for phase 3 :
+  beta_space      K_space bleach_slope          Kc0    gamma_imm    lag1_logw 
+   4.8985363    0.3684159    0.9685396    0.0000000    0.3214765  597.7108878 
+   lag2_logw        w_pen 
+ 706.8745170    0.0010000 
+Convergence message: singular convergence (7) 
+Number of iterations: 61 
+Objective function value: 53.73323 
+Gradient at solution for phase 3 :
+             [,1]         [,2]          [,3]     [,4]         [,5]        [,6]
+[1,] 4.171934e-05 -4.20459e-05 -2.565868e-05 4.970695 4.033451e-05 1.18579e-48
+     [,7]      [,8]
+[1,]    0 0.1747191
+Final Phase
+Initial parameter values for final phase:
+           rF            rS    beta_space       K_space       dF_base 
+   0.65473429    0.17719388    4.89853627    0.36841585    0.01967417 
+      dS_base   heat_sens_F   heat_sens_S      T_bleach  bleach_slope 
+   0.02606702    1.00000000    0.93491832   31.08423102    0.96853959 
+ m_bleach_max            aF            aS            hF            hS 
+   1.00000000    0.48260255    0.09439349    0.84653800    0.33120264 
+       q_func        rC_max       mC_base  epsilon_food        K_food 
+   1.23302922    2.66144559    0.14264345    0.76363231    0.02106702 
+          Kc0           kCF           kCS           A50          Topt 
+   0.00000000    7.88006156    3.94219213    1.89610931   28.10960142 
+      sigma_T     gamma_imm     lag1_logw     lag2_logw     sd_lncots 
+   2.52631513    0.32147653  597.71088781  706.87451697    0.52775880 
+sd_logit_fast sd_logit_slow         w_pen 
+   0.61982771    0.39817159    0.00100000 
+Final parameter values for final phase:
+           rF            rS    beta_space       K_space       dF_base 
+   0.64484269    0.11300710    4.83880971    0.33731692    0.00000000 
+      dS_base   heat_sens_F   heat_sens_S      T_bleach  bleach_slope 
+   0.00000000    1.00000000    0.98935634   31.20599504    1.47500286 
+ m_bleach_max            aF            aS            hF            hS 
+   1.00000000    0.41716163    0.11301567    0.87222278    0.33743464 
+       q_func        rC_max       mC_base  epsilon_food        K_food 
+   1.00000000    2.70119747    0.21633955    0.87755064    0.01000000 
+          Kc0           kCF           kCS           A50          Topt 
+   0.01317977    7.85336457    3.90570254    1.84952042   28.11317106 
+      sigma_T     gamma_imm     lag1_logw     lag2_logw     sd_lncots 
+   2.51645304    0.19383278  597.73107318  706.89566045    0.39812470 
+sd_logit_fast sd_logit_slow         w_pen 
+   0.55443071    0.35249403    0.00100000 
+Convergence message: iteration limit reached without convergence (10) 
+Number of iterations: 150 
+Objective function value: 44.84288 
+Gradient at solution for final phase:
+           [,1]      [,2]      [,3]          [,4]    [,5]    [,6]       [,7]
+[1,] -0.8206873 -2.993785 0.8531798 -5.377689e-05 16.2566 19.1503 -0.6678859
+           [,8]       [,9]    [,10]     [,11]     [,12]    [,13]     [,14]
+[1,] 0.03285283 0.03461476 -3.22851 -1.073672 -2.059555 5.297457 -0.321525
+           [,15]  [,16]      [,17]      [,18]       [,19]    [,20]      [,21]
+[1,] -0.07569638 8.4262 -0.0300238 -0.1987933 -0.09235571 6.316513 -0.4740685
+         [,22]     [,23]     [,24]      [,25]     [,26]    [,27]        [,28]
+[1,] 0.2444142 0.1686993 0.1600481 -0.1965937 0.3201474 1.221128 8.664706e-49
+     [,29]      [,30]     [,31]     [,32]     [,33]
+[1,]     0 -0.5685932 0.3339552 0.1792557 0.2116666
+All phases completed
+Successfully updated parameters_metadata.json with optimized values
+[1] "Train test split:"
+[1] 0.7
+
+Running model validation...
+[1] "look here"
+   Year
+1  1980
+2  1981
+3  1982
+4  1983
+5  1984
+6  1985
+7  1986
+8  1987
+9  1988
+10 1989
+11 1990
+12 1991
+13 1992
+14 1993
+15 1994
+16 1995
+17 1996
+18 1997
+19 1998
+20 1999
+21 2000
+22 2001
+23 2002
+24 2003
+25 2004
+26 2005
+   cots_dat..Adult.Class.Crown.of.thorns.starfish.abundance.in.individuals.m2.
+1                                                                    0.2615042
+2                                                                    0.5498196
+3                                                                    0.7268086
+4                                                                    0.5522907
+5                                                                    0.8281210
+6                                                                    0.5470078
+7                                                                    0.7580244
+8                                                                    0.6287678
+9                                                                    0.4761596
+10                                                                   0.6465779
+11                                                                   0.9107070
+12                                                                   2.1519930
+13                                                                   0.6446117
+14                                                                   1.6723480
+15                                                                   0.4765907
+16                                                                   0.8075009
+17                                                                   0.3634731
+18                                                                   0.3727647
+19                                                                   0.6172546
+20                                                                   0.3106559
+21                                                                   0.2560048
+22                                                                   0.2983628
+23                                                                   0.3362447
+24                                                                   0.2878112
+25                                                                   0.3220782
+26                                                                   0.4308113
+   fast_dat..Fast.growing.coral..Acropora.spp...cover.in...
+1                                                 10.069386
+2                                                 17.723573
+3                                                 23.827578
+4                                                 19.418118
+5                                                 15.635417
+6                                                 32.459609
+7                                                 21.556739
+8                                                 34.193850
+9                                                 18.870792
+10                                                27.317593
+11                                                44.330127
+12                                                13.327491
+13                                                11.374120
+14                                                 8.336190
+15                                                15.206950
+16                                                12.443031
+17                                                11.066606
+18                                                10.644162
+19                                                 2.362755
+20                                                 2.760007
+21                                                 3.723647
+22                                                 7.035517
+23                                                10.223949
+24                                                 8.475412
+25                                                 9.081878
+26                                                13.731449
+   slow_dat..Slow.growing.coral..Faviidae.spp..and.Porities.spp...cover.in...
+1                                                                   12.772605
+2                                                                   16.414745
+3                                                                   12.777292
+4                                                                   12.279754
+5                                                                   15.115161
+6                                                                   12.819409
+7                                                                   10.463078
+8                                                                    9.725137
+9                                                                   13.201352
+10                                                                  16.451200
+11                                                                  11.139259
+12                                                                  18.083162
+13                                                                  11.522349
+14                                                                   8.509987
+15                                                                   9.162216
+16                                                                   5.335342
+17                                                                   8.604409
+18                                                                   7.278116
+19                                                                   2.629035
+20                                                                   4.695132
+21                                                                   1.594753
+22                                                                   5.217158
+23                                                                   2.604070
+24                                                                   3.361801
+25                                                                   7.328911
+26                                                                   4.401384
+[1] "time col"
+[1] "Year"
+[1] "look here"
+   Year  cots_dat  fast_dat  slow_dat sst_dat cotsimm_dat
+1  1980 0.2615042 10.069386 12.772605    28.1         0.0
+2  1981 0.5498196 17.723573 16.414745    28.2         0.0
+3  1982 0.7268086 23.827578 12.777292    29.2         0.0
+4  1983 0.5522907 19.418118 12.279754    24.9         0.0
+5  1984 0.8281210 15.635417 15.115161    27.8         0.0
+6  1985 0.5470078 32.459609 12.819409    28.6         0.0
+7  1986 0.7580244 21.556739 10.463078    26.9         0.0
+8  1987 0.6287678 34.193850  9.725137    26.5         0.0
+9  1988 0.4761596 18.870792 13.201352    26.8         0.0
+10 1989 0.6465779 27.317593 16.451200    25.2         1.5
+11 1990 0.9107070 44.330127 11.139259    26.3         0.0
+12 1991 2.1519930 13.327491 18.083162    25.9         1.6
+13 1992 0.6446117 11.374120 11.522349    26.9         0.7
+14 1993 1.6723480  8.336190  8.509987    25.8         0.0
+15 1994 0.4765907 15.206950  9.162216    23.2         0.0
+16 1995 0.8075009 12.443031  5.335342    28.9         0.0
+17 1996 0.3634731 11.066606  8.604409    30.2         0.0
+18 1997 0.3727647 10.644162  7.278116    31.4         0.0
+19 1998 0.6172546  2.362755  2.629035    25.4         0.0
+20 1999 0.3106559  2.760007  4.695132    25.7         0.0
+21 2000 0.2560048  3.723647  1.594753    24.5         0.0
+22 2001 0.2983628  7.035517  5.217158    26.1         0.0
+23 2002 0.3362447 10.223949  2.604070    26.8         0.0
+24 2003 0.2878112  8.475412  3.361801    27.8         0.0
+25 2004 0.3220782  9.081878  7.328911    25.1         0.0
+26 2005 0.4308113 13.731449  4.401384    26.3         0.0
+
+Validation Results Summary:
+
+ cots :
+  RMSE: 0.087 
+  MAE: 0.065 
+  R²: 0.716 
+
+ fast :
+  RMSE: 2.983 
+  MAE: 2.556 
+  R²: 0.862 
+
+ slow :
+  RMSE: 1.601 
+  MAE: 1.374 
+  R²: 0.198 
+
+DEBUG: Report contents:
+List of 6
+ $ S_state  : num [1:26] 0.128 0.129 0.125 0.127 0.127 ...
+ $ cots_pred: num [1:26] 0.262 0.306 0.347 0.387 0.424 ...
+ $ fast_pred: num [1:26] 10.1 11.8 12.8 14.5 16 ...
+ $ F_state  : num [1:26] 0.101 0.118 0.128 0.145 0.16 ...
+ $ slow_pred: num [1:26] 12.8 12.9 12.5 12.7 12.7 ...
+ $ w_lag    : num [1:3] 9.98e-308 3.89e-48 1.00
+NULL
+
+DEBUG: Available variables in report:
+[1] "S_state"   "cots_pred" "fast_pred" "F_state"   "slow_pred" "w_lag"    
+
+Checking predictions and calculating objective function...
+
+DEBUG: Processing cots_pred 
+DEBUG: First few predictions: 0.2615042 0.3056471 0.3467532 0.3872005 0.4241329 0.4139521 
+DEBUG: Summary statistics:
+   Min. 1st Qu.  Median    Mean 3rd Qu.    Max. 
+ 0.2615  0.3501  0.4190  0.5864  0.7352  1.3813 
+DEBUG: All zeros? FALSE 
+DEBUG: Any infinities? FALSE 
+
+DEBUG: Processing fast_pred 
+DEBUG: First few predictions: 10.06939 11.7627 12.79416 14.53369 16.01353 17.01063 
+DEBUG: Summary statistics:
+   Min. 1st Qu.  Median    Mean 3rd Qu.    Max. 
+  3.406   8.400  12.454  12.456  16.805  20.761 
+DEBUG: All zeros? FALSE 
+DEBUG: Any infinities? FALSE 
+
+DEBUG: Processing slow_pred 
+DEBUG: First few predictions: 12.77261 12.94248 12.52739 12.71009 12.73561 12.50922 
+DEBUG: Summary statistics:
+   Min. 1st Qu.  Median    Mean 3rd Qu.    Max. 
+  3.574   4.346   9.639   8.755  12.510  12.942 
+DEBUG: All zeros? FALSE 
+DEBUG: Any infinities? FALSE 
+
+DEBUG: Using the following variables for objective function:
+cots_dat -> cots_pred
+fast_dat -> fast_pred
+slow_dat -> slow_pred
+
+DEBUG: Calculating MSE for prediction variables only:
+
+DEBUG: cots_pred 
+Observed: 0.2615042 0.5498196 0.7268086 0.5522907 0.828121 0.5470078 ...
+Predicted: 0.2615042 0.3056471 0.3467532 0.3872005 0.4241329 0.4139521 ...
+MSE (normalized): 0.5266897 
+
+DEBUG: fast_pred 
+Observed: 10.06939 17.72357 23.82758 19.41812 15.63542 32.45961 ...
+Predicted: 10.06939 11.7627 12.79416 14.53369 16.01353 17.01063 ...
+MSE (normalized): 0.5830538 
+
+DEBUG: slow_pred 
+Observed: 12.77261 16.41474 12.77729 12.27975 15.11516 12.81941 ...
+Predicted: 12.77261 12.94248 12.52739 12.71009 12.73561 12.50922 ...
+MSE (normalized): 0.2585351 
+
+DEBUG: MSE values:
+ cots_dat  fast_dat  slow_dat 
+0.5266897 0.5830538 0.2585351 
+
+DEBUG: Final objective value (mean of MSEs): 0.4560929 
+
+Final objective function value: 0.4560929 
+
+JSON_REPORT_START
+{
+  "status": "SUCCESS",
+  "objective_value": 0.4561,
+  "model_summary": ["            Length Class  Mode     ", "par         33     -none- numeric  ", "objective    1     -none- numeric  ", "convergence  1     -none- numeric  ", "iterations   1     -none- numeric  ", "evaluations  2     -none- numeric  ", "message      1     -none- character"],
+  "model_report": {
+    "S_state": [0.1277, 0.1294, 0.1253, 0.1271, 0.1274, 0.1251, 0.1254, 0.1251, 0.1239, 0.1221, 0.1163, 0.1096, 0.1006, 0.0922, 0.0872, 0.0814, 0.0657, 0.0357, 0.0365, 0.0378, 0.0393, 0.0407, 0.0421, 0.0432, 0.0444, 0.0453],
+    "cots_pred": [0.2615, 0.3056, 0.3468, 0.3872, 0.4241, 0.414, 0.4658, 0.5268, 0.5865, 0.9283, 1.053, 1.3259, 1.3813, 1.102, 0.9073, 0.7711, 0.6273, 0.5638, 0.4085, 0.3635, 0.3425, 0.336, 0.3253, 0.3375, 0.3601, 0.3944],
+    "fast_pred": [10.0694, 11.7627, 12.7942, 14.5337, 16.0135, 17.0106, 18.5217, 19.7129, 20.4447, 20.7611, 18.6701, 16.1872, 12.8137, 10.0848, 8.9277, 8.2241, 6.5985, 3.4064, 4.0471, 5.0741, 6.4053, 8.0396, 9.9566, 12.1133, 14.5694, 17.1017],
+    "F_state": [0.1007, 0.1176, 0.1279, 0.1453, 0.1601, 0.1701, 0.1852, 0.1971, 0.2044, 0.2076, 0.1867, 0.1619, 0.1281, 0.1008, 0.0893, 0.0822, 0.066, 0.0341, 0.0405, 0.0507, 0.0641, 0.0804, 0.0996, 0.1211, 0.1457, 0.171],
+    "slow_pred": [12.7726, 12.9425, 12.5274, 12.7101, 12.7356, 12.5092, 12.5431, 12.5098, 12.3863, 12.2061, 11.627, 10.9602, 10.0592, 9.2179, 8.7183, 8.1433, 6.5688, 3.5735, 3.6484, 3.7804, 3.9267, 4.073, 4.2089, 4.3158, 4.4351, 4.5291],
+    "w_lag": [9.9797e-308, 3.8942e-48, 1]
+  },
+  "plot_data": {
+    "cots_pred": {
+      "Year": [1980, 1981, 1982, 1983, 1984, 1985, 1986, 1987, 1988, 1989, 1990, 1991, 1992, 1993, 1994, 1995, 1996, 1997, 1998, 1999, 2000, 2001, 2002, 2003, 2004, 2005],
+      "Modeled": [0.2615, 0.3056, 0.3468, 0.3872, 0.4241, 0.414, 0.4658, 0.5268, 0.5865, 0.9283, 1.053, 1.3259, 1.3813, 1.102, 0.9073, 0.7711, 0.6273, 0.5638, 0.4085, 0.3635, 0.3425, 0.336, 0.3253, 0.3375, 0.3601, 0.3944],
+      "Observed": [0.2615, 0.5498, 0.7268, 0.5523, 0.8281, 0.547, 0.758, 0.6288, 0.4762, 0.6466, 0.9107, 2.152, 0.6446, 1.6723, 0.4766, 0.8075, 0.3635, 0.3728, 0.6173, 0.3107, 0.256, 0.2984, 0.3362, 0.2878, 0.3221, 0.4308]
+    },
+    "fast_pred": {
+      "Year": [1980, 1981, 1982, 1983, 1984, 1985, 1986, 1987, 1988, 1989, 1990, 1991, 1992, 1993, 1994, 1995, 1996, 1997, 1998, 1999, 2000, 2001, 2002, 2003, 2004, 2005],
+      "Modeled": [10.0694, 11.7627, 12.7942, 14.5337, 16.0135, 17.0106, 18.5217, 19.7129, 20.4447, 20.7611, 18.6701, 16.1872, 12.8137, 10.0848, 8.9277, 8.2241, 6.5985, 3.4064, 4.0471, 5.0741, 6.4053, 8.0396, 9.9566, 12.1133, 14.5694, 17.1017],
+      "Observed": [10.0694, 17.7236, 23.8276, 19.4181, 15.6354, 32.4596, 21.5567, 34.1938, 18.8708, 27.3176, 44.3301, 13.3275, 11.3741, 8.3362, 15.207, 12.443, 11.0666, 10.6442, 2.3628, 2.76, 3.7236, 7.0355, 10.2239, 8.4754, 9.0819, 13.7314]
+    },
+    "slow_pred": {
+      "Year": [1980, 1981, 1982, 1983, 1984, 1985, 1986, 1987, 1988, 1989, 1990, 1991, 1992, 1993, 1994, 1995, 1996, 1997, 1998, 1999, 2000, 2001, 2002, 2003, 2004, 2005],
+      "Modeled": [12.7726, 12.9425, 12.5274, 12.7101, 12.7356, 12.5092, 12.5431, 12.5098, 12.3863, 12.2061, 11.627, 10.9602, 10.0592, 9.2179, 8.7183, 8.1433, 6.5688, 3.5735, 3.6484, 3.7804, 3.9267, 4.073, 4.2089, 4.3158, 4.4351, 4.5291],
+      "Observed": [12.7726, 16.4147, 12.7773, 12.2798, 15.1152, 12.8194, 10.4631, 9.7251, 13.2014, 16.4512, 11.1393, 18.0832, 11.5223, 8.51, 9.1622, 5.3353, 8.6044, 7.2781, 2.629, 4.6951, 1.5948, 5.2172, 2.6041, 3.3618, 7.3289, 4.4014]
+    }
+  }
+}
+JSON_REPORT_END[0m
+[93m[PID 2701627] R script stdout END <<<[0m
+[93m[PID 2701627] R script stderr BEGIN >>>[0m
+[0mLoading required package: TMB
+Loading required package: jsonlite
+using C++ compiler: ‘g++ (Ubuntu 13.3.0-6ubuntu2~24.04) 13.3.0’
+Warning messages:
+1: In nlminb(start = par0, objective = model$fn, gradient = model$gr,  :
+  NA/NaN function evaluation
+2: In nlminb(start = par0, objective = model$fn, gradient = model$gr,  :
+  NA/NaN function evaluation
+3: In nlminb(start = par0, objective = model$fn, gradient = model$gr,  :
+  NA/NaN function evaluation
+4: In nlminb(start = par0, objective = model$fn, gradient = model$gr,  :
+  NA/NaN function evaluation
+5: In nlminb(start = par0, objective = model$fn, gradient = model$gr,  :
+  NA/NaN function evaluation
+6: In nlminb(start = par0, objective = model$fn, gradient = model$gr,  :
+  NA/NaN function evaluation
+7: In nlminb(start = par0, objective = model$fn, gradient = model$gr,  :
+  NA/NaN function evaluation
+Warning message:
+`aes_string()` was deprecated in ggplot2 3.0.0.
+ℹ Please use tidy evaluation idioms with `aes()`.
+ℹ See also `vignette("ggplot2-in-packages")` for more information.[0m
+[93m[PID 2701627] R script stderr END <<<[0m
+[96m[PID 2701627] JSON detected, parsing...[0m
+[96m[PID 2701627] Writing model report...[0m
+[94m[PID 2701627] Objective value: 0.4561[0m
+[96m[PID 2701627] Generating plots...[0m
+[94m[PID 2701627] Objective Value: 0.4561[0m
+[92m[PID 2701627] Successful model run[0m
+[0m----------------------------------------------[0m
+MODEL RUN FINISHED
+Model run successful. Objective value: 0.4561
+Model ran successful and returned meaningful objective value... enhancing parameter descriptions.
+Enhancing parameter descriptions...
+Parameter descriptions enhanced successfully.
+Running parameter processing...
+DEBUG: get_params() called with directory_path: POPULATIONS/POPULATION_0008/INDIVIDUAL_CZ49HWHH
+DEBUG: population_dir: POPULATIONS/POPULATION_0008
+DEBUG: meta_file path: POPULATIONS/POPULATION_0008/population_metadata.json
+DEBUG: Checking if meta_file exists...
+DEBUG: meta_file exists, attempting to read...
+DEBUG: Successfully read meta_file
+DEBUG: rag_choice: gpt-4.1-mini, doc_store_dir: doc_store
+DEBUG: About to resolve model name...
+[get_params] Using model from rag_choice: 'gpt-4.1-mini' -> 'gpt-4.1-mini'
+[get_params] Using doc_store_dir: 'doc_store'
+Processing literature parameter: rF
+Searching for rF with query: Intrinsic annual growth rate of fast-growing Acropora coral
+Engine order for rF: ['rag', 'semantic_scholar']
+Loading llama_index.core.storage.kvstore.simple_kvstore from /home/spi085/Documents/_Projects/EMs-with-LLMs/storage_chroma_doc_store/docstore.json.
+Loading llama_index.core.storage.kvstore.simple_kvstore from /home/spi085/Documents/_Projects/EMs-with-LLMs/storage_chroma_doc_store/index_store.json.
+Search results found for rF (engine=rag, attempt=1)
+S2 Response Status Code: 200
+S2 Query: Intrinsic annual growth rate of fast-growing Acropora coral
+S2 Total results: 6
+Search results found for rF (engine=semantic_scholar, attempt=1)
+DEBUG: Aggregated 5 total source chunks for rF:
+ Source [1]: C:\Users\spi085\OneDrive - CSIRO\Documents\_Projects\SCCP-QuantModelling\doc_store\Pratchett-2017-Thirty years of research on cro.pdf
+ Source [2]: C:\Users\spi085\OneDrive - CSIRO\Documents\_Projects\SCCP-QuantModelling\doc_store\Condie et al (2021) - large scale interventions may delay decline of Great Barrier Reef.pdf
+ Source [3]: C:\Users\spi085\OneDrive - CSIRO\Documents\_Projects\SCCP-QuantModelling\doc_store\Rogers-2022-Culling corallivores improves shor.pdf
+ Source [4]: https://www.semanticscholar.org/paper/f250fdb62dc1b4b53fdee6e05f1112e2710a415c
+ Source [5]: https://www.semanticscholar.org/paper/16d6ec86c550e70846ec64ba571559bb4e41a511
+Asking gpt-4.1-mini
+DEBUG: LLM response for rF: No relevant values found
+Processing literature parameter: rS
+Searching for rS with query: Intrinsic annual growth rate of slow-growing Faviidae and Porites coral
+Engine order for rS: ['semantic_scholar', 'rag']
+S2 Response Status Code: 200
+S2 Query: Intrinsic annual growth rate of slow-growing Faviidae and Porites coral
+S2 Total results: 0
+No papers found.
+No search results for rS (engine=semantic_scholar, attempt=1)
+S2 Response Status Code: 200
+S2 Query: Intrinsic annual growth rate of slow-growing Faviidae and Porites coral
+S2 Total results: 0
+No papers found.
+No search results for rS (engine=semantic_scholar, attempt=2)
+S2 Response Status Code: 200
+S2 Query: Intrinsic annual growth rate of slow-growing Faviidae and Porites coral
+S2 Total results: 0
+No papers found.
+No search results for rS (engine=semantic_scholar, attempt=3)
+Search results found for rS (engine=rag, attempt=1)
+DEBUG: Aggregated 3 total source chunks for rS:
+ Source [1]: C:\Users\spi085\OneDrive - CSIRO\Documents\_Projects\SCCP-QuantModelling\doc_store\Rogers-2022-Culling corallivores improves shor.pdf
+ Source [2]: C:\Users\spi085\OneDrive - CSIRO\Documents\_Projects\SCCP-QuantModelling\doc_store\Pratchett-2017-Thirty years of research on cro.pdf
+ Source [3]: C:\Users\spi085\OneDrive - CSIRO\Documents\_Projects\SCCP-QuantModelling\doc_store\Condie et al (2021) - large scale interventions may delay decline of Great Barrier Reef.pdf
+Asking gpt-4.1-mini
+DEBUG: LLM response for rS: No relevant values found
+Processing literature parameter: dF_base
+Searching for dF_base with query: Annual background mortality rate of fast-growing coral
+Engine order for dF_base: ['semantic_scholar', 'rag']
+S2 Response Status Code: 200
+S2 Query: Annual background mortality rate of fast-growing coral
+S2 Total results: 14
+Search results found for dF_base (engine=semantic_scholar, attempt=1)
+Search results found for dF_base (engine=rag, attempt=1)
+DEBUG: Aggregated 4 total source chunks for dF_base:
+ Source [1]: https://www.semanticscholar.org/paper/ed09a3240ebe9e7a1851d194e74b53e468f70c91
+ Source [2]: https://www.semanticscholar.org/paper/f250fdb62dc1b4b53fdee6e05f1112e2710a415c
+ Source [3]: C:\Users\spi085\OneDrive - CSIRO\Documents\_Projects\SCCP-QuantModelling\doc_store\Condie et al (2021) - large scale interventions may delay decline of Great Barrier Reef.pdf
+ Source [4]: C:\Users\spi085\OneDrive - CSIRO\Documents\_Projects\SCCP-QuantModelling\doc_store\Pratchett-2017-Thirty years of research on cro.pdf
+Asking gpt-4.1-mini
+DEBUG: LLM response for dF_base: No relevant values found
+Processing literature parameter: dS_base
+Searching for dS_base with query: Annual background mortality rate of slow-growing coral
+Engine order for dS_base: ['semantic_scholar', 'rag']
+S2 Response Status Code: 200
+S2 Query: Annual background mortality rate of slow-growing coral
+S2 Total results: 17
+Search results found for dS_base (engine=semantic_scholar, attempt=1)
+Search results found for dS_base (engine=rag, attempt=1)
+DEBUG: Aggregated 6 total source chunks for dS_base:
+ Source [1]: https://www.semanticscholar.org/paper/ed09a3240ebe9e7a1851d194e74b53e468f70c91
+ Source [2]: https://www.semanticscholar.org/paper/f250fdb62dc1b4b53fdee6e05f1112e2710a415c
+ Source [3]: https://www.semanticscholar.org/paper/0e87d3465780c9963d928b332016b5e447596b94
+ Source [4]: https://www.semanticscholar.org/paper/7e74aa95de1597227ec3d10ad8273b5d4400e0d9
+ Source [5]: C:\Users\spi085\OneDrive - CSIRO\Documents\_Projects\SCCP-QuantModelling\doc_store\Condie et al (2021) - large scale interventions may delay decline of Great Barrier Reef.pdf
+ Source [6]: C:\Users\spi085\OneDrive - CSIRO\Documents\_Projects\SCCP-QuantModelling\doc_store\Rogers-2022-Culling corallivores improves shor.pdf
+Asking gpt-4.1-mini
+DEBUG: LLM response for dS_base: No relevant values found
+Processing literature parameter: heat_sens_F
+Searching for heat_sens_F with query: Proportional growth reduction of fast coral under heat stress
+Engine order for heat_sens_F: ['rag', 'semantic_scholar']
+Search results found for heat_sens_F (engine=rag, attempt=1)
+S2 Response Status Code: 200
+S2 Query: Proportional growth reduction of fast coral under heat stress
+S2 Total results: 1
+Search results found for heat_sens_F (engine=semantic_scholar, attempt=1)
+DEBUG: Aggregated 3 total source chunks for heat_sens_F:
+ Source [1]: C:\Users\spi085\OneDrive - CSIRO\Documents\_Projects\SCCP-QuantModelling\doc_store\Condie et al (2021) - large scale interventions may delay decline of Great Barrier Reef.pdf
+ Source [2]: C:\Users\spi085\OneDrive - CSIRO\Documents\_Projects\SCCP-QuantModelling\doc_store\Rogers-2022-Culling corallivores improves shor.pdf
+ Source [3]: https://www.semanticscholar.org/paper/719d9d4519188c8e2249abde274b458171170d99
+Asking gpt-4.1-mini
+DEBUG: LLM response for heat_sens_F: No relevant values found
+Processing literature parameter: heat_sens_S
+Searching for heat_sens_S with query: Proportional growth reduction of slow coral under heat stress
+Engine order for heat_sens_S: ['rag', 'semantic_scholar']
+Search results found for heat_sens_S (engine=rag, attempt=1)
+S2 Response Status Code: 200
+S2 Query: Proportional growth reduction of slow coral under heat stress
+S2 Total results: 0
+No papers found.
+No search results for heat_sens_S (engine=semantic_scholar, attempt=1)
+S2 Response Status Code: 200
+S2 Query: Proportional growth reduction of slow coral under heat stress
+S2 Total results: 0
+No papers found.
+No search results for heat_sens_S (engine=semantic_scholar, attempt=2)
+S2 Response Status Code: 200
+S2 Query: Proportional growth reduction of slow coral under heat stress
+S2 Total results: 0
+No papers found.
+No search results for heat_sens_S (engine=semantic_scholar, attempt=3)
+DEBUG: Aggregated 2 total source chunks for heat_sens_S:
+ Source [1]: C:\Users\spi085\OneDrive - CSIRO\Documents\_Projects\SCCP-QuantModelling\doc_store\Condie et al (2021) - large scale interventions may delay decline of Great Barrier Reef.pdf
+ Source [2]: C:\Users\spi085\OneDrive - CSIRO\Documents\_Projects\SCCP-QuantModelling\doc_store\Rogers-2022-Culling corallivores improves shor.pdf
+Asking gpt-4.1-mini
+DEBUG: LLM response for heat_sens_S: No relevant values found
+Processing literature parameter: T_bleach
+Searching for T_bleach with query: Sea surface temperature threshold for coral bleaching onset (deg C)
+Engine order for T_bleach: ['rag', 'semantic_scholar']
+Search results found for T_bleach (engine=rag, attempt=1)
+S2 Response Status Code: 200
+S2 Query: Sea surface temperature threshold for coral bleaching onset (deg C)
+S2 Total results: 1
+Search results found for T_bleach (engine=semantic_scholar, attempt=1)
+DEBUG: Aggregated 3 total source chunks for T_bleach:
+ Source [1]: C:\Users\spi085\OneDrive - CSIRO\Documents\_Projects\SCCP-QuantModelling\doc_store\Rogers-2022-Culling corallivores improves shor.pdf
+ Source [2]: C:\Users\spi085\OneDrive - CSIRO\Documents\_Projects\SCCP-QuantModelling\doc_store\Condie et al (2021) - large scale interventions may delay decline of Great Barrier Reef.pdf
+ Source [3]: https://www.semanticscholar.org/paper/b5b5ddf5ee110855bda616fc90aa4f1d24ef11a1
+Asking gpt-4.1-mini
+DEBUG: LLM response for T_bleach: No relevant values found
+Processing literature parameter: m_bleach_max
+Searching for m_bleach_max with query: Maximum additional coral mortality rate due to extreme heat
+Engine order for m_bleach_max: ['rag', 'semantic_scholar']
+Search results found for m_bleach_max (engine=rag, attempt=1)
+S2 Response Status Code: 200
+S2 Query: Maximum additional coral mortality rate due to extreme heat
+S2 Total results: 5
+Search results found for m_bleach_max (engine=semantic_scholar, attempt=1)
+DEBUG: Aggregated 4 total source chunks for m_bleach_max:
+ Source [1]: C:\Users\spi085\OneDrive - CSIRO\Documents\_Projects\SCCP-QuantModelling\doc_store\Condie et al (2021) - large scale interventions may delay decline of Great Barrier Reef.pdf
+ Source [2]: C:\Users\spi085\OneDrive - CSIRO\Documents\_Projects\SCCP-QuantModelling\doc_store\Rogers-2022-Culling corallivores improves shor.pdf
+ Source [3]: https://www.semanticscholar.org/paper/b6d7ce725753c2b1572cb92e850b2744d2f5e827
+ Source [4]: https://www.semanticscholar.org/paper/4193d0bc153a95c906223583cd652363a8b88f2d
+Asking gpt-4.1-mini
+DEBUG: LLM response for m_bleach_max: No relevant values found
+Processing literature parameter: q_func
+Searching for q_func with query: Functional response exponent: 1=Type II, >1=Type III sigmoid
+Engine order for q_func: ['rag', 'semantic_scholar']
+Search results found for q_func (engine=rag, attempt=1)
+S2 Response Status Code: 200
+S2 Query: Functional response exponent: 1=Type II, >1=Type III sigmoid
+S2 Total results: 649
+Search results found for q_func (engine=semantic_scholar, attempt=1)
+DEBUG: Aggregated 5 total source chunks for q_func:
+ Source [1]: C:\Users\spi085\OneDrive - CSIRO\Documents\_Projects\SCCP-QuantModelling\doc_store\Plaganyi (2007) - Ecosystemmodellingfullversion.pdf
+ Source [2]: https://www.semanticscholar.org/paper/dc1fbae8120b4f883e648bcf5543e15b97f8eb49
+ Source [3]: https://www.semanticscholar.org/paper/62ad42cb9511aa4d3e31212de9407c0d3e37312e
+ Source [4]: https://www.semanticscholar.org/paper/7f24cd932d70afe2178f519db49bb8e07c0143c2
+ Source [5]: https://www.semanticscholar.org/paper/1e789a0da0390915315bcb40c505074de4916f8c
+Asking gpt-4.1-mini
+DEBUG: LLM response for q_func: No relevant values found
+Processing literature parameter: rC_max
+Searching for rC_max with query: Maximum per-capita annual growth rate of COTS population
+Engine order for rC_max: ['semantic_scholar', 'rag']
+S2 Response Status Code: 200
+S2 Query: Maximum per-capita annual growth rate of COTS population
+S2 Total results: 11
+Search results found for rC_max (engine=semantic_scholar, attempt=1)
+Search results found for rC_max (engine=rag, attempt=1)
+DEBUG: Aggregated 7 total source chunks for rC_max:
+ Source [1]: https://www.semanticscholar.org/paper/c5d8e70ee91c0dd8c9a8369cb3599b2f06019492
+ Source [2]: https://www.semanticscholar.org/paper/49dfd7154b271eec98a81a29f0686f1357a295bf
+ Source [3]: https://www.semanticscholar.org/paper/2e2ab5acd673bacd5407ec3fa5131d5433069759
+ Source [4]: https://www.semanticscholar.org/paper/df9dc455c9808a9f57813be34e5b56438d8a2d0d
+ Source [5]: https://www.semanticscholar.org/paper/acfb787ac660614db6fd1d2a746e5a68c06f8359
+ Source [6]: C:\Users\spi085\OneDrive - CSIRO\Documents\_Projects\SCCP-QuantModelling\doc_store\Morello-2014-Model to manage and reduce crown-.pdf
+ Source [7]: C:\Users\spi085\OneDrive - CSIRO\Documents\_Projects\SCCP-QuantModelling\doc_store\Rogers-2022-Culling corallivores improves shor.pdf
+Asking gpt-4.1-mini
+DEBUG: LLM response for rC_max: No relevant values found
+Processing literature parameter: mC_base
+Searching for mC_base with query: Baseline annual mortality rate of COTS (natural and predation)
+Engine order for mC_base: ['semantic_scholar', 'rag']
+S2 Response Status Code: 200
+S2 Query: Baseline annual mortality rate of COTS (natural and predation)
+S2 Total results: 0
+No papers found.
+No search results for mC_base (engine=semantic_scholar, attempt=1)
+S2 Response Status Code: 200
+S2 Query: Baseline annual mortality rate of COTS (natural and predation)
+S2 Total results: 0
+No papers found.
+No search results for mC_base (engine=semantic_scholar, attempt=2)
+S2 Response Status Code: 200
+S2 Query: Baseline annual mortality rate of COTS (natural and predation)
+S2 Total results: 0
+No papers found.
+No search results for mC_base (engine=semantic_scholar, attempt=3)
+Search results found for mC_base (engine=rag, attempt=1)
+DEBUG: Aggregated 2 total source chunks for mC_base:
+ Source [1]: C:\Users\spi085\OneDrive - CSIRO\Documents\_Projects\SCCP-QuantModelling\doc_store\Morello-2014-Model to manage and reduce crown-.pdf
+ Source [2]: C:\Users\spi085\OneDrive - CSIRO\Documents\_Projects\SCCP-QuantModelling\doc_store\Pratchett-2017-Thirty years of research on cro.pdf
+Asking gpt-4.1-mini
+DEBUG: LLM response for mC_base: ```json
+{
+  "min": 0.0013,
+  "max": 2.56,
+  "value": 1.28065,
+  "relevant_text": "The base-case model provides an estimate of natural mortality of COTS. This is rather high (M = 2.56 yr−1 or 94%) for an animal that can live for 7 to 8 yr...[1]; Sweatman found that losses attributable to predation were low (0.13% per day)...[2]",
+  "citations_used": [1, 2]
+}
+```
+Processing literature parameter: A50
+Searching for A50 with query: Density at which Allee effect reaches half strength for COTS mating success
+Engine order for A50: ['rag', 'semantic_scholar']
+Search results found for A50 (engine=rag, attempt=1)
+S2 Response Status Code: 200
+S2 Query: Density at which Allee effect reaches half strength for COTS mating success
+S2 Total results: 0
+No papers found.
+No search results for A50 (engine=semantic_scholar, attempt=1)
+S2 Response Status Code: 200
+S2 Query: Density at which Allee effect reaches half strength for COTS mating success
+S2 Total results: 0
+No papers found.
+No search results for A50 (engine=semantic_scholar, attempt=2)
+S2 Response Status Code: 200
+S2 Query: Density at which Allee effect reaches half strength for COTS mating success
+S2 Total results: 0
+No papers found.
+No search results for A50 (engine=semantic_scholar, attempt=3)
+DEBUG: Aggregated 3 total source chunks for A50:
+ Source [1]: C:\Users\spi085\OneDrive - CSIRO\Documents\_Projects\SCCP-QuantModelling\doc_store\Morello-2014-Model to manage and reduce crown-.pdf
+ Source [2]: C:\Users\spi085\OneDrive - CSIRO\Documents\_Projects\SCCP-QuantModelling\doc_store\Plagányi-2014-Ecosystem modelling provides clu.pdf
+ Source [3]: C:\Users\spi085\OneDrive - CSIRO\Documents\_Projects\SCCP-QuantModelling\doc_store\Rogers-2022-Culling corallivores improves shor.pdf
+Asking gpt-4.1-mini
+DEBUG: LLM response for A50: No relevant values found
+Processing literature parameter: Topt
+Searching for Topt with query: Thermal optimum for COTS larval survival and recruitment (deg C)
+Engine order for Topt: ['semantic_scholar', 'rag']
+S2 Response Status Code: 200
+S2 Query: Thermal optimum for COTS larval survival and recruitment (deg C)
+S2 Total results: 0
+No papers found.
+No search results for Topt (engine=semantic_scholar, attempt=1)
+S2 Response Status Code: 200
+S2 Query: Thermal optimum for COTS larval survival and recruitment (deg C)
+S2 Total results: 0
+No papers found.
+No search results for Topt (engine=semantic_scholar, attempt=2)
+S2 Response Status Code: 200
+S2 Query: Thermal optimum for COTS larval survival and recruitment (deg C)
+S2 Total results: 0
+No papers found.
+No search results for Topt (engine=semantic_scholar, attempt=3)
+Search results found for Topt (engine=rag, attempt=1)
+DEBUG: Aggregated 1 total source chunks for Topt:
+ Source [1]: C:\Users\spi085\OneDrive - CSIRO\Documents\_Projects\SCCP-QuantModelling\doc_store\Pratchett-2017-Thirty years of research on cro.pdf
+Asking gpt-4.1-mini
+DEBUG: LLM response for Topt: {
+  "min": 26.0,
+  "max": 30.0,
+  "value": 28.0,
+  "relevant_text": "Fitness of CoTS larvae is generally highest at 26–30 ◦C [24,76].",
+  "citations_used": [1]
+}
+Processing literature parameter: sigma_T
+Searching for sigma_T with query: Thermal tolerance breadth (SD) for COTS reproductive performance (deg C)
+Engine order for sigma_T: ['semantic_scholar', 'rag']
+S2 Response Status Code: 200
+S2 Query: Thermal tolerance breadth (SD) for COTS reproductive performance (deg C)
+S2 Total results: 0
+No papers found.
+No search results for sigma_T (engine=semantic_scholar, attempt=1)
+S2 Response Status Code: 200
+S2 Query: Thermal tolerance breadth (SD) for COTS reproductive performance (deg C)
+S2 Total results: 0
+No papers found.
+No search results for sigma_T (engine=semantic_scholar, attempt=2)
+S2 Response Status Code: 200
+S2 Query: Thermal tolerance breadth (SD) for COTS reproductive performance (deg C)
+S2 Total results: 0
+No papers found.
+No search results for sigma_T (engine=semantic_scholar, attempt=3)
+Search results found for sigma_T (engine=rag, attempt=1)
+DEBUG: Aggregated 2 total source chunks for sigma_T:
+ Source [1]: C:\Users\spi085\OneDrive - CSIRO\Documents\_Projects\SCCP-QuantModelling\doc_store\Pratchett-2017-Thirty years of research on cro.pdf
+ Source [2]: C:\Users\spi085\OneDrive - CSIRO\Documents\_Projects\SCCP-QuantModelling\doc_store\Rogers-2022-Culling corallivores improves shor.pdf
+Asking gpt-4.1-mini
+DEBUG: LLM response for sigma_T: No relevant values found
+Parameter processing completed successfully.
+Re-running model after parameter processing...
+[93m[PID 2701627] Running model for individual...[0m
+[0m[PID 2701627] Individual directory: POPULATIONS/POPULATION_0008/INDIVIDUAL_CZ49HWHH[0m
+[93m[PID 2701627] Removed old compilation: model.o[0m
+[96m[PID 2701627] Launching Rscript... (timeout=none)[0m
+[93m[PID 2701627] R script stdout BEGIN >>>[0m
+[0mg++ -std=gnu++17 -I"/usr/share/R/include" -DNDEBUG -I"/home/spi085/R/x86_64-pc-linux-gnu-library/4.4/TMB/include" -I"/home/spi085/R/x86_64-pc-linux-gnu-library/4.4/RcppEigen/include"   -DTMB_EIGEN_DISABLE_WARNINGS   -DTMB_LIB_INIT=R_init_model  -DCPPAD_FRAMEWORK      -fpic  -O2  -c POPULATIONS/POPULATION_0008/INDIVIDUAL_CZ49HWHH/model.cpp -o POPULATIONS/POPULATION_0008/INDIVIDUAL_CZ49HWHH/model.o
+g++ -std=gnu++17 -shared -L/usr/lib/R/lib -Wl,-Bsymbolic-functions -flto=auto -ffat-lto-objects -Wl,-z,relro -o POPULATIONS/POPULATION_0008/INDIVIDUAL_CZ49HWHH/model.so POPULATIONS/POPULATION_0008/INDIVIDUAL_CZ49HWHH/model.o -L/usr/lib/R/lib -lR
+
+NA counts per required column:
+       Year    cots_dat    fast_dat    slow_dat     sst_dat cotsimm_dat 
+          0           0           0           0           0           0 
+
+Out-of-range checks:
+Any cots_dat < 0?  FALSE 
+Any fast_dat outside [0,100]?  FALSE 
+Any slow_dat outside [0,100]?  FALSE 
+
+PARAMETER starts (first few):
+          rF           rS   beta_space      K_space      dF_base      dS_base 
+        0.60         0.25         3.00         0.90         0.15         0.10 
+ heat_sens_F  heat_sens_S     T_bleach bleach_slope m_bleach_max           aF 
+        0.70         0.40        31.75         0.80         0.40         6.00 
+Starting model phases
+Number of phases: 3 
+Phase 1 
+Initial parameter values for phase 1 :
+     rF      rS      aF      aS  rC_max mC_base     kCF     kCS 
+0.60000 0.25000 6.00000 3.00000 3.00000 1.28065 8.00000 4.00000 
+Final parameter values for phase 1 :
+       rF        rS        aF        aS    rC_max   mC_base       kCF       kCS 
+0.7290654 0.2512678 0.5499281 0.2299013 0.0000000 0.1628577 8.6778266 4.4751147 
+Convergence message: relative convergence (4) 
+Number of iterations: 139 
+Objective function value: 178.2636 
+Gradient at solution for phase 1 :
+             [,1]         [,2]          [,3]         [,4]     [,5]         [,6]
+[1,] 4.562342e-05 4.307109e-05 -4.508498e-05 -7.33948e-06 1.415853 8.295884e-05
+     [,7]          [,8]
+[1,]    0 -1.468533e-20
+Phase 2 
+Initial parameter values for phase 2 :
+      dF_base       dS_base   heat_sens_F   heat_sens_S      T_bleach 
+         0.15          0.10          0.70          0.40         31.75 
+ m_bleach_max            hF            hS        q_func  epsilon_food 
+         0.40          0.20          0.25          1.50          0.40 
+       K_food           A50          Topt       sigma_T     sd_lncots 
+         0.10          0.30         28.00          2.00          0.40 
+sd_logit_fast sd_logit_slow 
+         0.20          0.20 
+Final parameter values for phase 2 :
+      dF_base       dS_base   heat_sens_F   heat_sens_S      T_bleach 
+   0.09156538    0.06114630    0.62682445    0.95698332   32.38198945 
+ m_bleach_max            hF            hS        q_func  epsilon_food 
+   1.00000000    5.00000000    4.94763360    1.29420162    0.49988502 
+       K_food           A50          Topt       sigma_T     sd_lncots 
+   0.40492769    1.01546995   27.99771558    1.81231110    0.84860496 
+sd_logit_fast sd_logit_slow 
+   0.53129767    0.35217929 
+Convergence message: relative convergence (4) 
+Number of iterations: 145 
+Objective function value: 63.38937 
+Gradient at solution for phase 2 :
+             [,1]        [,2]          [,3]         [,4]          [,5]
+[1,] 8.476617e-05 0.000610081 -5.059448e-07 9.606536e-06 -2.591672e-05
+           [,6]       [,7]         [,8]          [,9]         [,10]
+[1,] -0.2169657 -0.3191884 4.532648e-06 -0.0001493576 -5.190262e-06
+             [,11]         [,12]        [,13]         [,14]        [,15]
+[1,] -8.315959e-06 -1.702557e-05 3.658336e-14 -7.977099e-07 1.783625e-05
+             [,16]        [,17]
+[1,] -1.562849e-06 8.654881e-05
+Phase 3 
+Initial parameter values for phase 3 :
+  beta_space      K_space bleach_slope          Kc0    gamma_imm    lag1_logw 
+    3.000000     0.900000     0.800000     0.200000     1.000000     1.386294 
+   lag2_logw        w_pen 
+   -2.302585     1.000000 
+Final parameter values for phase 3 :
+  beta_space      K_space bleach_slope          Kc0    gamma_imm    lag1_logw 
+   4.0529565    0.6306808    0.8173053    0.3277310    0.7948213    1.3862944 
+   lag2_logw        w_pen 
+  -2.3025851    0.0010000 
+Convergence message: relative convergence (4) 
+Number of iterations: 18 
+Objective function value: 61.34317 
+Gradient at solution for phase 3 :
+              [,1]         [,2]         [,3]          [,4]          [,5] [,6]
+[1,] -3.649775e-06 7.860871e-06 2.163777e-05 -1.154871e-05 -3.411216e-05    0
+     [,7]     [,8]
+[1,]    0 0.145864
+Final Phase
+Initial parameter values for final phase:
+           rF            rS    beta_space       K_space       dF_base 
+   0.72906535    0.25126775    4.05295646    0.63068078    0.09156538 
+      dS_base   heat_sens_F   heat_sens_S      T_bleach  bleach_slope 
+   0.06114630    0.62682445    0.95698332   32.38198945    0.81730528 
+ m_bleach_max            aF            aS            hF            hS 
+   1.00000000    0.54992808    0.22990132    5.00000000    4.94763360 
+       q_func        rC_max       mC_base  epsilon_food        K_food 
+   1.29420162    0.00000000    0.16285772    0.49988502    0.40492769 
+          Kc0           kCF           kCS           A50          Topt 
+   0.32773102    8.67782660    4.47511469    1.01546995   27.99771558 
+      sigma_T     gamma_imm     lag1_logw     lag2_logw     sd_lncots 
+   1.81231110    0.79482129    1.38629436   -2.30258509    0.84860496 
+sd_logit_fast sd_logit_slow         w_pen 
+   0.53129767    0.35217929    0.00100000 
+Final parameter values for final phase:
+           rF            rS    beta_space       K_space       dF_base 
+  0.747999169   0.191028734   4.031197738   0.665859636   0.046920972 
+      dS_base   heat_sens_F   heat_sens_S      T_bleach  bleach_slope 
+  0.005563172   0.588598271   0.924452993  32.439787436   0.968863640 
+ m_bleach_max            aF            aS            hF            hS 
+  1.000000000   0.958220953   0.409204376   4.951623764   4.920078812 
+       q_func        rC_max       mC_base  epsilon_food        K_food 
+  1.000000000   0.039287539   0.148674954   0.519844075   0.401321481 
+          Kc0           kCF           kCS           A50          Topt 
+  0.327892652   8.670408535   4.471512680   1.014936242  28.000479825 
+      sigma_T     gamma_imm     lag1_logw     lag2_logw     sd_lncots 
+  1.798919635   0.367929672   1.402558727  -2.313318435   0.522917919 
+sd_logit_fast sd_logit_slow         w_pen 
+  0.508475756   0.323886171   0.001000000 
+Convergence message: iteration limit reached without convergence (10) 
+Number of iterations: 150 
+Objective function value: 48.34433 
+Gradient at solution for final phase:
+          [,1]      [,2]      [,3]         [,4]     [,5]     [,6]        [,7]
+[1,] -7.459299 -8.656281 0.6904998 1.353954e-05 16.88679 17.87559 0.002996989
+           [,8]       [,9]     [,10]     [,11]     [,12]    [,13]      [,14]
+[1,] 0.03008157 -0.5073225 -2.824245 0.3733574 0.2596097 3.388089 -0.1039717
+           [,15]     [,16]     [,17]     [,18]      [,19]       [,20]
+[1,] -0.06938389 -5.394312 0.1599397 -25.20197 0.01209662 -0.01177887
+          [,21]      [,22]        [,23]       [,24]       [,25]      [,26]
+[1,] 0.01099769 0.00152288 0.0008795422 0.002215661 -0.01018342 0.01116218
+        [,27]        [,28]        [,29]      [,30]     [,31]     [,32]
+[1,] 10.79226 0.0004044613 1.727072e-05 -0.6952901 0.4623747 -4.857812
+         [,33]
+[1,] 0.1587232
+All phases completed
+Successfully updated parameters_metadata.json with optimized values
+[1] "Train test split:"
+[1] 0.7
+
+Running model validation...
+[1] "look here"
+   Year
+1  1980
+2  1981
+3  1982
+4  1983
+5  1984
+6  1985
+7  1986
+8  1987
+9  1988
+10 1989
+11 1990
+12 1991
+13 1992
+14 1993
+15 1994
+16 1995
+17 1996
+18 1997
+19 1998
+20 1999
+21 2000
+22 2001
+23 2002
+24 2003
+25 2004
+26 2005
+   cots_dat..Adult.Class.Crown.of.thorns.starfish.abundance.in.individuals.m2.
+1                                                                    0.2615042
+2                                                                    0.5498196
+3                                                                    0.7268086
+4                                                                    0.5522907
+5                                                                    0.8281210
+6                                                                    0.5470078
+7                                                                    0.7580244
+8                                                                    0.6287678
+9                                                                    0.4761596
+10                                                                   0.6465779
+11                                                                   0.9107070
+12                                                                   2.1519930
+13                                                                   0.6446117
+14                                                                   1.6723480
+15                                                                   0.4765907
+16                                                                   0.8075009
+17                                                                   0.3634731
+18                                                                   0.3727647
+19                                                                   0.6172546
+20                                                                   0.3106559
+21                                                                   0.2560048
+22                                                                   0.2983628
+23                                                                   0.3362447
+24                                                                   0.2878112
+25                                                                   0.3220782
+26                                                                   0.4308113
+   fast_dat..Fast.growing.coral..Acropora.spp...cover.in...
+1                                                 10.069386
+2                                                 17.723573
+3                                                 23.827578
+4                                                 19.418118
+5                                                 15.635417
+6                                                 32.459609
+7                                                 21.556739
+8                                                 34.193850
+9                                                 18.870792
+10                                                27.317593
+11                                                44.330127
+12                                                13.327491
+13                                                11.374120
+14                                                 8.336190
+15                                                15.206950
+16                                                12.443031
+17                                                11.066606
+18                                                10.644162
+19                                                 2.362755
+20                                                 2.760007
+21                                                 3.723647
+22                                                 7.035517
+23                                                10.223949
+24                                                 8.475412
+25                                                 9.081878
+26                                                13.731449
+   slow_dat..Slow.growing.coral..Faviidae.spp..and.Porities.spp...cover.in...
+1                                                                   12.772605
+2                                                                   16.414745
+3                                                                   12.777292
+4                                                                   12.279754
+5                                                                   15.115161
+6                                                                   12.819409
+7                                                                   10.463078
+8                                                                    9.725137
+9                                                                   13.201352
+10                                                                  16.451200
+11                                                                  11.139259
+12                                                                  18.083162
+13                                                                  11.522349
+14                                                                   8.509987
+15                                                                   9.162216
+16                                                                   5.335342
+17                                                                   8.604409
+18                                                                   7.278116
+19                                                                   2.629035
+20                                                                   4.695132
+21                                                                   1.594753
+22                                                                   5.217158
+23                                                                   2.604070
+24                                                                   3.361801
+25                                                                   7.328911
+26                                                                   4.401384
+[1] "time col"
+[1] "Year"
+[1] "look here"
+   Year  cots_dat  fast_dat  slow_dat sst_dat cotsimm_dat
+1  1980 0.2615042 10.069386 12.772605    28.1         0.0
+2  1981 0.5498196 17.723573 16.414745    28.2         0.0
+3  1982 0.7268086 23.827578 12.777292    29.2         0.0
+4  1983 0.5522907 19.418118 12.279754    24.9         0.0
+5  1984 0.8281210 15.635417 15.115161    27.8         0.0
+6  1985 0.5470078 32.459609 12.819409    28.6         0.0
+7  1986 0.7580244 21.556739 10.463078    26.9         0.0
+8  1987 0.6287678 34.193850  9.725137    26.5         0.0
+9  1988 0.4761596 18.870792 13.201352    26.8         0.0
+10 1989 0.6465779 27.317593 16.451200    25.2         1.5
+11 1990 0.9107070 44.330127 11.139259    26.3         0.0
+12 1991 2.1519930 13.327491 18.083162    25.9         1.6
+13 1992 0.6446117 11.374120 11.522349    26.9         0.7
+14 1993 1.6723480  8.336190  8.509987    25.8         0.0
+15 1994 0.4765907 15.206950  9.162216    23.2         0.0
+16 1995 0.8075009 12.443031  5.335342    28.9         0.0
+17 1996 0.3634731 11.066606  8.604409    30.2         0.0
+18 1997 0.3727647 10.644162  7.278116    31.4         0.0
+19 1998 0.6172546  2.362755  2.629035    25.4         0.0
+20 1999 0.3106559  2.760007  4.695132    25.7         0.0
+21 2000 0.2560048  3.723647  1.594753    24.5         0.0
+22 2001 0.2983628  7.035517  5.217158    26.1         0.0
+23 2002 0.3362447 10.223949  2.604070    26.8         0.0
+24 2003 0.2878112  8.475412  3.361801    27.8         0.0
+25 2004 0.3220782  9.081878  7.328911    25.1         0.0
+26 2005 0.4308113 13.731449  4.401384    26.3         0.0
+
+Validation Results Summary:
+
+ cots :
+  RMSE: 0.102 
+  MAE: 0.089 
+  R²: 0.265 
+
+ fast :
+  RMSE: 2.094 
+  MAE: 1.8 
+  R²: 0.831 
+
+ slow :
+  RMSE: 1.68 
+  MAE: 1.406 
+  R²: 0.105 
+
+DEBUG: Report contents:
+List of 6
+ $ S_state  : num [1:26] 0.128 0.13 0.127 0.13 0.132 ...
+ $ cots_pred: num [1:26] 0.262 0.28 0.291 0.299 0.304 ...
+ $ fast_pred: num [1:26] 10.1 11.5 12.6 14.3 16 ...
+ $ F_state  : num [1:26] 0.101 0.115 0.126 0.143 0.16 ...
+ $ slow_pred: num [1:26] 12.8 13 12.7 13 13.2 ...
+ $ w_lag    : num [1:3] 0.1936 0.7872 0.0192
+NULL
+
+DEBUG: Available variables in report:
+[1] "S_state"   "cots_pred" "fast_pred" "F_state"   "slow_pred" "w_lag"    
+
+Checking predictions and calculating objective function...
+
+DEBUG: Processing cots_pred 
+DEBUG: First few predictions: 0.2615042 0.2795631 0.2912573 0.2989096 0.3039377 0.3074068 
+DEBUG: Summary statistics:
+   Min. 1st Qu.  Median    Mean 3rd Qu.    Max. 
+ 0.2615  0.3101  0.3773  0.5354  0.6997  1.2725 
+DEBUG: All zeros? FALSE 
+DEBUG: Any infinities? FALSE 
+
+DEBUG: Processing fast_pred 
+DEBUG: First few predictions: 10.06939 11.48507 12.56398 14.32408 16.01564 17.55537 
+DEBUG: Summary statistics:
+   Min. 1st Qu.  Median    Mean 3rd Qu.    Max. 
+  5.102   7.730  11.635  13.441  18.854  26.726 
+DEBUG: All zeros? FALSE 
+DEBUG: Any infinities? FALSE 
+
+DEBUG: Processing slow_pred 
+DEBUG: First few predictions: 12.77261 12.95501 12.72824 13.04225 13.18791 13.13835 
+DEBUG: Summary statistics:
+   Min. 1st Qu.  Median    Mean 3rd Qu.    Max. 
+  3.811   3.992  10.397   9.088  13.114  14.024 
+DEBUG: All zeros? FALSE 
+DEBUG: Any infinities? FALSE 
+
+DEBUG: Using the following variables for objective function:
+cots_dat -> cots_pred
+fast_dat -> fast_pred
+slow_dat -> slow_pred
+
+DEBUG: Calculating MSE for prediction variables only:
+
+DEBUG: cots_pred 
+Observed: 0.2615042 0.5498196 0.7268086 0.5522907 0.828121 0.5470078 ...
+Predicted: 0.2615042 0.2795631 0.2912573 0.2989096 0.3039377 0.3074068 ...
+MSE (normalized): 0.6590862 
+
+DEBUG: fast_pred 
+Observed: 10.06939 17.72357 23.82758 19.41812 15.63542 32.45961 ...
+Predicted: 10.06939 11.48507 12.56398 14.32408 16.01564 17.55537 ...
+MSE (normalized): 0.4843518 
+
+DEBUG: slow_pred 
+Observed: 12.77261 16.41474 12.77729 12.27975 15.11516 12.81941 ...
+Predicted: 12.77261 12.95501 12.72824 13.04225 13.18791 13.13835 ...
+MSE (normalized): 0.216234 
+
+DEBUG: MSE values:
+ cots_dat  fast_dat  slow_dat 
+0.6590862 0.4843518 0.2162340 
+
+DEBUG: Final objective value (mean of MSEs): 0.453224 
+
+Final objective function value: 0.453224 
+
+JSON_REPORT_START
+{
+  "status": "SUCCESS",
+  "objective_value": 0.4532,
+  "model_summary": ["            Length Class  Mode     ", "par         33     -none- numeric  ", "objective    1     -none- numeric  ", "convergence  1     -none- numeric  ", "iterations   1     -none- numeric  ", "evaluations  2     -none- numeric  ", "message      1     -none- character"],
+  "model_report": {
+    "S_state": [0.1277, 0.1296, 0.1273, 0.1304, 0.1319, 0.1314, 0.1335, 0.1358, 0.1378, 0.1402, 0.1321, 0.1265, 0.1117, 0.0962, 0.0844, 0.0731, 0.0599, 0.0416, 0.0396, 0.0385, 0.0381, 0.0381, 0.0385, 0.0388, 0.0397, 0.0406],
+    "cots_pred": [0.2615, 0.2796, 0.2913, 0.2989, 0.3039, 0.3074, 0.3097, 0.3113, 0.3123, 0.8213, 0.7056, 1.1906, 1.2725, 1.0854, 0.9264, 0.7927, 0.682, 0.5914, 0.5191, 0.4628, 0.4201, 0.3886, 0.3659, 0.3499, 0.3386, 0.3308],
+    "fast_pred": [10.0694, 11.4851, 12.564, 14.3241, 16.0156, 17.5554, 19.6015, 21.8223, 24.156, 26.7262, 24.783, 23.8909, 19.2874, 14.7253, 11.7857, 9.5963, 7.5858, 5.1701, 5.1019, 5.2891, 5.7114, 6.341, 7.1732, 8.1633, 9.4892, 11.0533],
+    "F_state": [0.1007, 0.1149, 0.1256, 0.1432, 0.1602, 0.1756, 0.196, 0.2182, 0.2416, 0.2673, 0.2478, 0.2389, 0.1929, 0.1473, 0.1179, 0.096, 0.0759, 0.0517, 0.051, 0.0529, 0.0571, 0.0634, 0.0717, 0.0816, 0.0949, 0.1105],
+    "slow_pred": [12.7726, 12.955, 12.7282, 13.0423, 13.1879, 13.1384, 13.35, 13.5752, 13.7781, 14.0244, 13.2091, 12.6463, 11.1724, 9.6221, 8.4422, 7.3124, 5.9866, 4.1619, 3.9615, 3.8502, 3.8109, 3.8146, 3.8464, 3.8753, 3.9672, 4.0649],
+    "w_lag": [0.1936, 0.7872, 0.0192]
+  },
+  "plot_data": {
+    "cots_pred": {
+      "Year": [1980, 1981, 1982, 1983, 1984, 1985, 1986, 1987, 1988, 1989, 1990, 1991, 1992, 1993, 1994, 1995, 1996, 1997, 1998, 1999, 2000, 2001, 2002, 2003, 2004, 2005],
+      "Modeled": [0.2615, 0.2796, 0.2913, 0.2989, 0.3039, 0.3074, 0.3097, 0.3113, 0.3123, 0.8213, 0.7056, 1.1906, 1.2725, 1.0854, 0.9264, 0.7927, 0.682, 0.5914, 0.5191, 0.4628, 0.4201, 0.3886, 0.3659, 0.3499, 0.3386, 0.3308],
+      "Observed": [0.2615, 0.5498, 0.7268, 0.5523, 0.8281, 0.547, 0.758, 0.6288, 0.4762, 0.6466, 0.9107, 2.152, 0.6446, 1.6723, 0.4766, 0.8075, 0.3635, 0.3728, 0.6173, 0.3107, 0.256, 0.2984, 0.3362, 0.2878, 0.3221, 0.4308]
+    },
+    "fast_pred": {
+      "Year": [1980, 1981, 1982, 1983, 1984, 1985, 1986, 1987, 1988, 1989, 1990, 1991, 1992, 1993, 1994, 1995, 1996, 1997, 1998, 1999, 2000, 2001, 2002, 2003, 2004, 2005],
+      "Modeled": [10.0694, 11.4851, 12.564, 14.3241, 16.0156, 17.5554, 19.6015, 21.8223, 24.156, 26.7262, 24.783, 23.8909, 19.2874, 14.7253, 11.7857, 9.5963, 7.5858, 5.1701, 5.1019, 5.2891, 5.7114, 6.341, 7.1732, 8.1633, 9.4892, 11.0533],
+      "Observed": [10.0694, 17.7236, 23.8276, 19.4181, 15.6354, 32.4596, 21.5567, 34.1938, 18.8708, 27.3176, 44.3301, 13.3275, 11.3741, 8.3362, 15.207, 12.443, 11.0666, 10.6442, 2.3628, 2.76, 3.7236, 7.0355, 10.2239, 8.4754, 9.0819, 13.7314]
+    },
+    "slow_pred": {
+      "Year": [1980, 1981, 1982, 1983, 1984, 1985, 1986, 1987, 1988, 1989, 1990, 1991, 1992, 1993, 1994, 1995, 1996, 1997, 1998, 1999, 2000, 2001, 2002, 2003, 2004, 2005],
+      "Modeled": [12.7726, 12.955, 12.7282, 13.0423, 13.1879, 13.1384, 13.35, 13.5752, 13.7781, 14.0244, 13.2091, 12.6463, 11.1724, 9.6221, 8.4422, 7.3124, 5.9866, 4.1619, 3.9615, 3.8502, 3.8109, 3.8146, 3.8464, 3.8753, 3.9672, 4.0649],
+      "Observed": [12.7726, 16.4147, 12.7773, 12.2798, 15.1152, 12.8194, 10.4631, 9.7251, 13.2014, 16.4512, 11.1393, 18.0832, 11.5223, 8.51, 9.1622, 5.3353, 8.6044, 7.2781, 2.629, 4.6951, 1.5948, 5.2172, 2.6041, 3.3618, 7.3289, 4.4014]
+    }
+  }
+}
+JSON_REPORT_END[0m
+[93m[PID 2701627] R script stdout END <<<[0m
+[93m[PID 2701627] R script stderr BEGIN >>>[0m
+[0mLoading required package: TMB
+Loading required package: jsonlite
+using C++ compiler: ‘g++ (Ubuntu 13.3.0-6ubuntu2~24.04) 13.3.0’
+Warning message:
+`aes_string()` was deprecated in ggplot2 3.0.0.
+ℹ Please use tidy evaluation idioms with `aes()`.
+ℹ See also `vignette("ggplot2-in-packages")` for more information.[0m
+[93m[PID 2701627] R script stderr END <<<[0m
+[96m[PID 2701627] JSON detected, parsing...[0m
+[96m[PID 2701627] Writing model report...[0m
+[94m[PID 2701627] Objective value: 0.4532[0m
+[96m[PID 2701627] Generating plots...[0m
+[94m[PID 2701627] Objective Value: 0.4532[0m
+[92m[PID 2701627] Successful model run[0m
+[0m----------------------------------------------[0m
+FINAL MODEL RUN FINISHED
+Final model run successful. Objective value: 0.4532

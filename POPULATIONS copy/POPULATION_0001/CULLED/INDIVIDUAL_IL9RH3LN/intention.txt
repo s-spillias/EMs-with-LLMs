@@ -1,0 +1,56 @@
+Assessment and rationale for improvement
+
+1) Fit to data
+- Residuals file was not provided in this exchange, so I could not quantify misfit patterns by variable and time (e.g., outbreak timing offset, peak magnitude bias, or persistence after peaks). Please share the residuals so I can verify improvements and tune penalties/priors.
+- Qualitatively, the current structure can reproduce boom-bust cycles: positive feedbacks (Allee effect, fecundity boosted by feeding, higher carrying capacity when coral is abundant) followed by negative feedbacks (coral depletion reduces K_A, mortality). However, without an explicit maturation delay on internally generated recruits, the model may synchronize peaks too tightly with the prior year’s adult density and feeding conditions, leading to timing mismatches relative to observed outbreaks.
+
+2) Alignment with project context
+- The project requires accurate timing, magnitude, and duration of episodic COTS outbreaks. Current mechanisms:
+  - Allee effect in reproduction (density-dependent fertilization success).
+  - Resource feedback: COTS K_A scales with coral; feeding reduces coral.
+  - Environmental modifier: SST hump on COTS growth and bleaching effects on corals.
+  - Exogenous larval supply with a 1-year distributed lag (rho_lag_I).
+- Missing/oversimplified processes affecting episodicity:
+  - Cryptic juvenile stage and maturation delay of locally produced recruits (well-documented 1–2 years before appearing in adult surveys).
+  - Potential nutrient/flood-driven larval survival pulses (not available in the provided data).
+  - Predator release or density-dependent mortality at high densities (not currently modeled).
+- Among these, adding a juvenile maturation delay to internal recruitment is the most targeted and data-consistent mechanism to improve outbreak timing without requiring new covariates.
+
+3) Key ecological processes possibly missing or simplified
+- Juvenile cryptic phase (added here).
+- Type-III (sigmoid) functional response on corals: we currently lock q_fr ≈ 1. If residuals show systematic bias at low coral cover, we could relax q_fr > 1.0, but this change is deferred pending residual review to avoid over-parameterization.
+- Environment-driven juvenile survival: If river discharge/nutrients become available, a multiplicative juvenile survival term would be justified.
+- High-density disease/conspecific interference: could add a density-dependent mortality term if peaks are too persistent.
+
+Parameter review and structural implications
+- No parameters are flagged as updated_from_literature = true in parameters.json. Current ranges look biologically plausible.
+- sst_ref bounds [28–29 °C] reflect literature; we retain.
+- q_fr is currently forced to Type II (1.0). This is conservative and identifiable. We keep this for now.
+- The internal recruitment process previously assumed immediate appearance of new adults (modulo Allee and K_A). Literature on COTS ontogeny indicates a cryptic juvenile period of ~1–2 years; this supports inserting a distributed 1-year delay in internal recruitment.
+
+Chosen improvement: add a 1-year cryptic juvenile maturation delay for internal recruitment
+- Approach category: Environmental modifiers and indirect pathways/feedbacks via life-stage structure (distributed delay).
+- Mathematical change (conceptual):
+  Previously:
+    recruit_t_internal = rA * f_SST_A(t−1) * Phi_A(A_{t−1}) * fec_boost(t−1) * A_{t−1} / (1 + A_{t−1}/K_A(t−1))
+  Now:
+    Let FEC(τ) be the same fecundity kernel evaluated at time τ using states and SST at τ.
+    recruit_t_internal = (1 − rho_lag_R) * FEC(t−1) + rho_lag_R * FEC(t−2)
+  - This uses only predicted states from previous years (no data leakage) and assigns a fraction rho_lag_R (0–1) to mature after an additional year.
+  - Immigration remains separately lagged via rho_lag_I, preserving identifiability between local reproduction and external larval input.
+
+Expected effects on fit and dynamics
+- Timing: peaks in adults should occur later relative to peaks in fecundity drivers (adult density, feeding, SST), better matching observed outbreak lags.
+- Magnitude/persistence: distributed delay introduces inertia and overshoot, enhancing boom-bust cycles without requiring stronger density dependence.
+- If residuals still show phase mismatch or overly persistent peaks, subsequent refinements could include a modest density-dependent mortality term or relaxing q_fr > 1 to capture refuge-like dynamics at low coral cover.
+
+Implementation notes
+- New parameter: rho_lag_R (dimensionless; [0,1]), initial value 0.6 to reflect a substantial cryptic juvenile contribution.
+- Code computes the fecundity kernel at t−1 and t−2 using their respective predicted states and SST values, then weights by rho_lag_R.
+- No use of current-time observed variables in predictions. Observation model unchanged.
+- If estimation drives rho_lag_R toward 0, data do not support the delay; if near 1, strong maturation lag is indicated.
+
+Next steps once residuals are available
+- Verify reduction in timing residuals of COTS peaks.
+- Check for changes in cross-correlation between predicted COTS and coral losses.
+- If low-coral bias appears, consider allowing q_fr > 1 (Type III-like).

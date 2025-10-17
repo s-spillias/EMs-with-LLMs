@@ -1,0 +1,37 @@
+Assessment and rationale
+
+Fit to data:
+- A residuals file was referenced but not provided here. To support fit assessment going forward, the model now reports residuals on both transformed (log/logit) and natural scales for COTS, fast coral, and slow coral.
+- Without residuals, we cannot quantify misfit. Typical issues in similar systems include: abrupt, overly instantaneous bleaching responses; lagged recovery not captured; and timing mismatches of coral losses during heatwaves.
+
+Alignment with PROJECT CONTEXT (NPZ model: N, P, Z in mixed layer):
+- The current codebase models Crown-of-Thorns Starfish (COTS) dynamics and coral cover (fast/slow), not an NPZ system.
+- A full conversion to an NPZ structure (with nutrient-phytoplankton-zooplankton compartments and appropriate process equations) would be a larger refactor beyond “one improvement”. The present enhancement focuses on a key ecological shortcoming in the coral-COTS model.
+
+Key ecological processes missing or oversimplified:
+- Heat-stress effects were instantaneous (based only on SST exceedance in the current year). Empirical observations show bleaching risk and recovery depend on cumulative thermal stress (carryover/memory).
+- No explicit memory/recovery dynamics for prior bleaching events.
+- Additional potential omissions (not addressed here): water-quality/nutrient effects on coral growth, other predator guilds, larval connectivity feedbacks, spatial heterogeneity.
+
+Parameter review:
+- T_opt_bleach has updated_from_literature = true, with narrowed bounds; the bleaching process still relied solely on instantaneous temperature excess. This is ecologically limiting given evidence for cumulative stress.
+- Other parameters remain initial estimates with broad, weak penalties. Their ranges remain appropriate for exploratory fitting.
+
+Chosen improvement: cumulative heat-stress memory for coral
+- Add a state H_t representing cumulative heat stress with first-order persistence:
+  H_t = rho_heat * H_{t-1} + max(0, SST_{t-1} - T_opt_bleach)
+  where 0 ≤ rho_heat ≤ 1 controls memory persistence.
+- Modify coral growth and bleaching losses to depend on H_{t-1}:
+  Growth multiplier: exp(-beta_bleach * H_{t-1})
+  Additional bleaching losses: m_bleachF * H_{t-1} * Fast and m_bleachS * H_{t-1} * Slow
+- Ecological justification: This captures delayed and cumulative impacts of heatwaves (e.g., degree-heating weeks concept) and allows more realistic coral loss-and-recovery dynamics.
+- Complexity justification: Introduces only one parameter (rho_heat) and one additional state, improving temporal realism without overfitting risk. All process updates continue to use previous-step information only, avoiding data leakage.
+
+Implementation notes:
+- New parameter rho_heat (default 0.7, bounds [0,1]) added to parameters.json with smooth range penalty in model.cpp.
+- New state heat_idx is initialized from year 0 SST exceedance and updated with previous-year SST. Coral growth multiplier and bleaching losses now use heat_idx(t-1).
+- Residual vectors (transformed and natural scales) are reported to enable diagnostics and model fit assessment.
+
+Next steps for evaluation:
+- Inspect residual time series and autocorrelation: improved fit should reduce systematic runs of residual sign following heatwave sequences.
+- If residuals still show lag mismatches, consider introducing asymmetric recovery (e.g., different decay of H when below threshold) or resource-quality modifiers. If moving to the NPZ project context, a dedicated NPZ compartmental model will be required.

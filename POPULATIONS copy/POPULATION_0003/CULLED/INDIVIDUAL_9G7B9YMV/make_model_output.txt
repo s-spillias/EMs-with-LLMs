@@ -1,0 +1,1036 @@
+Warning: Input is not a terminal (fd=4).
+Skipping POPULATIONS/POPULATION_0003/INDIVIDUAL_9G7B9YMV/model.cpp that matches gitignore spec.
+Skipping POPULATIONS/POPULATION_0003/INDIVIDUAL_9G7B9YMV/parameters.json that matches gitignore spec.
+Skipping POPULATIONS/POPULATION_0003/INDIVIDUAL_9G7B9YMV/intention.txt that matches gitignore spec.
+Creating empty file POPULATIONS/POPULATION_0003/INDIVIDUAL_9G7B9YMV/intention.txt
+I reviewed the code and parameters you provided. Because no residuals file was included, I can’t quantitatively assess fit. Qualitatively, the structure captures several key processes (fertilization Allee effect, food       
+limitation, temperature response, immigration, selective predation, coral growth, Beverton–Holt crowding). However, an important ecological process for outbreak timing is missing: the maturation delay between larval         
+recruitment and adult reproduction. Instantaneous conversion of recruits to adults tends to smear outbreak timing and can under-represent the boom-bust pulse dynamics.                                                         
+
+Changes needed:                                                                                                                                                                                                                 
+
+ • Add a juvenile/subadult state with a maturation delay so larval pulses first fill a juvenile pool, then transition to adults after survival and a maturation fraction. This adds temporal memory consistent with COTS life   
+   history (1–2 years to maturity) and improves outbreak timing and duration without using current-time observations.                                                                                                           
+
+What I changed:                                                                                                                                                                                                                 
+
+ • model.cpp: Introduced a juvenile state (juv_pred), added juvenile survival and a maturation fraction, routed new recruits into juveniles (not directly into adults), and allowed matured juveniles to join the adult pool    
+   next year. Immigration remains an adult contribution, consistent with its parameter description.                                                                                                                             
+ • parameters.json: Added mJ, mJ_food, p_mature, and init_J with bounds and descriptions.                                                                                                                                       
+ • intention.txt: Documented assessment, reasoning, and the ecological justification for the improvement.                                                                                                                       
+
+Please share the residuals file if available; I will refine diagnostics and, if needed, tune functional forms or priors based on residual patterns.                                                                             
+
+POPULATIONS/POPULATION_0003/INDIVIDUAL_9G7B9YMV/model.cpp                                                                                                                                                                       
+
+                                                                                                                                                                                                                                
+ @@ -1,4 +1,5 @@                                                                                                                                                                                                                
+  #include <TMB.hpp>                                                                                                                                                                                                            
+  1) Initial conditions (no data leakage):                                                                                                                                                                                      
+     cots_pred(0) = cots_dat(0)                                                                                                                                                                                                 
+     fast_pred(0) = fast_dat(0)                                                                                                                                                                                                 
+     slow_pred(0) = slow_dat(0)                                                                                                                                                                                                 
+ +   juv_pred(0)  = init_J   // new juvenile/subadult state                                                                                                                                                                     
+                                                                                                                                                                                                                                
+  2) Temperature modifiers (Gaussian/bell-shaped performance):                                                                                                                                                                  
+     phi_T_COTS(t)  = exp(-0.5 * ((sst_dat(t) - Topt_cots)  / sigmaT_cots)^2)                                                                                                                                                   
+     phi_T_CORAL(t) = exp(-0.5 * ((sst_dat(t) - Topt_coral) / sigmaT_coral)^2)                                                                                                                                                  
+                                                                                                                                                                                                                                
+ @@ -36,5 +37,6 @@                                                                                                                                                                                                              
+     phi_spawn(t) = C_t / (h_spawn + C_t)                                                                                                                                                                                       
+     wA = inv_logit(prefA_logit); wS = 1 - wA                                                                                                                                                                                   
+     consA_per(t) = max_cons * wA * A_t^q / (hA + A_t^q)                                                                                                                                                                        
+     consS_per(t) = max_cons * wS * S_t^q / (hS + S_t^q)                                                                                                                                                                        
+     predA_eff(t) = A_t * [1 - exp(-C_t * consA_per(t) / (A_t + eps))] // smooth cap by availability                                                                                                                            
+ -   predS_eff(t) = S_t * [1 - exp(-C_t * consS_per(t) / (S_t + eps))]                                                                                                                                                          
+ +   predS_eff(t) = S_t * [1 - exp(-C_t * consS_per(t) / (S + eps))]                                                                                                                                                            
+                                                                                                                                                                                                                                
+  6) Coral growth (space-limited logistic with temperature modifier and background mortality):                                                                                                                                  
+     F_t = max(0, 100 - A_t - S_t) [implemented smoothly]                                                                                                                                                                       
+     growthA(t) = rA * A_t * (F_t / 100) * phi_T_CORAL(t)                                                                                                                                                                       
+     growthS(t) = rS * S_t * (F_t / 100) * phi_T_CORAL(t)                                                                                                                                                                       
+     A_{t+1} = clamp_0_100( A_t + growthA(t) - predA_eff(t) - mA0 * A_t )                                                                                                                                                       
+     S_{t+1} = clamp_0_100( S_t + growthS(t) - predS_eff(t) - mS0 * S_t )                                                                                                                                                       
+                                                                                                                                                                                                                                
+ +7) COTS survival, recruitment, immigration, crowding, and maturation delay (new juvenile stage J_t):                                                                                                                          
+ +   survival_adult(t) = exp( -[ mC + mC_food * (1 - phi_food(t)) ] )                                                                                                                                                           
+ +   C_surv(t)         = C_t * survival_adult(t)                                                                                                                                                                                
+ +   fec_eff(t)        = fec * [ 1 - alpha_fec_food * (1 - phi_food(t)) ]    // food-conditioned fecundity (0..fec)                                                                                                             
+ +   J_recruits(t)     = fec_eff(t) * C_t * phi_spawn(t) * phi_T_COTS(t)     // larvae that become juveniles                                                                                                                    
+ +   survival_juv(t)   = exp( -[ mJ + mJ_food * (1 - phi_food(t)) ] )                                                                                                                                                           
+ +   J_surv(t)         = J_t * survival_juv(t)                                                                                                                                                                                  
+ -   C_{t+1}     = C_raw_{t+1} / (1 + beta_dd * C_raw_{t+1})  // Beverton–Holt crowding                                                                                                                                         
+ +7) COTS survival, recruitment, immigration, crowding, and maturation delay (new juvenile stage J_t):                                                                                                                          
+ +   survival_adult(t) = exp( -[ mC + mC_food * (1 - phi_food(t)) ] )                                                                                                                                                           
+ +   C_surv(t)         = C_t * survival_adult(t)                                                                                                                                                                                
+ +   fec_eff(t)        = fec * [ 1 - alpha_fec_food * (1 - phi_food(t)) ]    // food-conditioned fecundity (0..fec)                                                                                                             
+ +   J_recruits(t)     = fec_eff(t) * C_t * phi_spawn(t) * phi_T_COTS(t)     // larvae that become juveniles                                                                                                                    
+ +   survival_juv(t)   = exp( -[ mJ + mJ_food * (1 - phi_food(t)) ] )                                                                                                                                                           
+ +   J_surv(t)         = J_t * survival_juv(t)                                                                                                                                                                                  
+ +   matured(t)        = p_mature * J_surv(t)                                 // fraction of surviving juveniles that mature                                                                                                    
+ +   J_{t+1}           = (1 - p_mature) * J_surv(t) + J_recruits(t)           // carryover plus new recruits                                                                                                                    
+ +   I(t)              = alpha_imm * cotsimm_dat(t) / (k_imm + cotsimm_dat(t))                                                                                                                                                  
+ +   C_raw_{t+1}       = C_surv(t) + matured(t) + I(t)                                                                                                                                                                          
+ +   C_{t+1}           = C_raw_{t+1} / (1 + beta_dd * C_raw_{t+1})            // Beverton–Holt crowding                                                                                                                         
+  */                                                                                                                                                                                                                            
+                                                                                                                                                                                                                                
+  template<class Type>                                                                                                                                                                                                          
+  Type objective_function<Type>::operator() () {                                                                                                                                                                                
+    // -------------------------                                                                                                                                                                                                
+    // Data (all lengths are T)                                                                                                                                                                                                 
+    // -------------------------                                                                                                                                                                                                
+    PARAMETER(log_q_FR);       // log of (q-1) for functional response exponent (dimensionless), initial estimate (q = 1 + exp(log_q_FR))                                                                                       
+    PARAMETER(log_sigma_cots); // log observation SD for log(COTS) (dimensionless), initial estimate                                                                                                                            
+    PARAMETER(log_sigma_fast); // log observation SD for logit(fast proportion) (dimensionless), initial estimate                                                                                                               
+    PARAMETER(log_sigma_slow); // log observation SD for logit(slow proportion) (dimensionless), initial estimate                                                                                                               
+ -  PARAMETER(alpha_fec_food); // new: strength of food control on fecundity (dimensionless, 0..1), initial estimate                                                                                                            
+ +  PARAMETER(alpha_fec_food); // strength of food control on fecundity (dimensionless, 0..1), initial estimate                                                                                                                 
+                                                                                                                                                                                                                                
+ -  // -------------------------                                                                                                                                                                                                
+ -  // Constants and helpers                                                                                                                                                                                                    
+ -  // -------------------------                                                                                                                                                                                                
+ -  int T = Year.size();                     // number of time steps (years)                                                                                                                                                    
+ -  Type eps = Type(1e-8);                   // small epsilon for numerical stability                                                                                                                                           
+ -  Type nll = Type(0);                      // negative log-likelihood accumulator                                                                                                                                             
+ -  Type sigma_min = Type(0.05);             // minimum SD to avoid singular likelihoods                                                                                                                                        
+ -  Type prop_eps = Type(1e-6);              // small offset for proportions to avoid 0/1 on logit                                                                                                                              
+ +  // New parameters for juvenile stage                                                                                                                                                                                        
+ +  PARAMETER(mJ);             // baseline juvenile/subadult mortality rate (yr^-1), initial estimate                                                                                                                           
+    Type eps = Type(1e-8);                   // small epsilon for numerical stability                                                                                                                                           
+    Type nll = Type(0);                      // negative log-likelihood accumulator                                                                                                                                             
+    // -------------------------                                                                                                                                                                                                
+    vector<Type> cots_pred(T); // predicted adult COTS (ind m^-2)                                                                                                                                                               
+    vector<Type> fast_pred(T); // predicted fast coral cover (%)                                                                                                                                                                
+    vector<Type> slow_pred(T); // predicted slow coral cover (%)                                                                                                                                                                
+ +  vector<Type> juv_pred(T);  // predicted juvenile/subadult COTS (ind m^-2) - unobserved state                                                                                                                                
+                                                                                                                                                                                                                                
+    // Initial conditions from data (no data leakage beyond t=0)                                                                                                                                                                
+    cots_pred(0) = cots_dat(0); // initialize with observed COTS density                                                                                                                                                        
+    fast_pred(0) = fast_dat(0); // initialize with observed fast coral cover                                                                                                                                                    
+    slow_pred(0) = slow_dat(0); // initialize with observed slow coral cover                                                                                                                                                    
+ +  juv_pred(0)  = smooth_max(init_J, eps); // initialize juvenile pool (estimated parameter, nonnegative)                                                                                                                      
+                                                                                                                                                                                                                                
+    // Time loop for process model                                                                                                                                                                                              
+    for (int t = 0; t < T - 1; ++t) {                                                                                                                                                                                           
+      // Previous state values (t)                                                                                                                                                                                              
+      Type C = cots_pred(t); // adults at time t                                                                                                                                                                                
+      Type A = fast_pred(t); // fast coral at time t                                                                                                                                                                            
+      Type S = slow_pred(t); // slow coral at time t                                                                                                                                                                            
+ +    Type J = juv_pred(t);  // juveniles at time t                                                                                                                                                                             
+                                                                                                                                                                                                                                
+      // Environmental drivers at time t                                                                                                                                                                                        
+      Type sst = sst_dat(t);       // SST forcing                                                                                                                                                                               
+      Type imm = cotsimm_dat(t);   // immigration forcing                                                                                                                                                                       
+                                                                                                                                                                                                                                
+      // (2) Temperature modifiers (Gaussian)                                                                                                                                                                                   
+      Type phi_T_CORAL = exp(-Type(0.5) * pow((sst - Topt_coral) / (sigmaT_coral + eps), 2)); // coral performance 0-1                                                                                                          
+      Type S_next = S + growthS - predS_eff - mS0 * S;                  // provisional slow coral next year                                                                                                                     
+      A_next = Type(100.0) - smooth_max(Type(100.0) - smooth_max(A_next, eps), eps); // clamp to [0,100] smoothly                                                                                                               
+      S_next = Type(100.0) - smooth_max(Type(100.0) - smooth_max(S_next, eps), eps); // clamp to [0,100] smoothly                                                                                                               
+                                                                                                                                                                                                                                
+ -    // (7) COTS survival, recruitment, immigration, and crowding                                                                                                                                                              
+ -    Type survival = exp(-(mC + mC_food * (Type(1) - phi_food)));      // fraction surviving 0-1                                                                                                                               
+ -    Type C_surv = C * survival;                                        // adults after survival                                                                                                                               
+ -    Type fec_eff = fec * (Type(1) - alpha_fec_food * (Type(1) - phi_food)); // new: food-conditioned fecundity (0..fec)                                                                                                       
+ -    Type recruits = fec_eff * C * phi_spawn * phi_T_COTS;              // new adults from local production                                                                                                                    
+ -    Type I = alpha_imm * (imm / (k_imm + imm + eps));                  // saturating immigration contribution                                                                                                                 
+ -    Type C_raw_next = C_surv + recruits + I;                           // adults before crowding                                                                                                                              
+ -    Type C_next = C_raw_next / (Type(1) + beta_dd * C_raw_next);       // Beverton–Holt self-limitation                                                                                                                       
+ -    C_next = smooth_max(C_next, eps);                                  // ensure nonnegative                                                                                                                                  
+ -                                                                                                                                                                                                                              
+ +    // (7) COTS survival, recruitment (to juveniles), immigration, and crowding with maturation delay                                                                                                                         
+ +    // Adults                                                                                                                                                                                                                 
+ +    Type survival_adult = exp(-(mC + mC_food * (Type(1) - phi_food)));      // fraction surviving 0-1                                                                                                                         
+ +    Type C_surv = C * survival_adult;                                       // adults after survival                                                                                                                          
+ +                                                                                                                                                                                                                              
+ +    // Reproduction -> juveniles                                                                                                                                                                                              
+ +    Type fec_eff = fec * (Type(1) - alpha_fec_food * (Type(1) - phi_food)); // food-conditioned fecundity (0..fec)                                                                                                            
+ +    Type J_recruits = fec_eff * C * phi_spawn * phi_T_COTS;                 // new juveniles (from larvae)                                                                                                                    
+ +                                                                                                                                                                                                                              
+ +    // Juvenile dynamics and maturation                                                                                                                                                                                       
+ +    Type survival_juv = exp(-(mJ + mJ_food * (Type(1) - phi_food)));        // juvenile survival fraction 0-1                                                                                                                 
+ +    Type J_surv = J * survival_juv;                                                                                                                                                                                           
+ +    Type matured = p_mature * J_surv;                                       // juveniles maturing to adults                                                                                                                   
+ +    Type J_carry = (Type(1) - p_mature) * J_surv;                           // remaining juveniles                                                                                                                            
+ +    Type J_next = J_carry + J_recruits;                                     // next year's juveniles                                                                                                                          
+ +    J_next = smooth_max(J_next, eps);                                       // ensure nonnegative                                                                                                                             
+ +                                                                                                                                                                                                                              
+ +    // Immigration (direct to adults per alpha_imm definition)                                                                                                                                                                
+ +    Type I = alpha_imm * (imm / (k_imm + imm + eps));                       // saturating immigration contribution                                                                                                            
+ +                                                                                                                                                                                                                              
+ +    // Adult update with crowding                                                                                                                                                                                             
+ +    Type C_next = C_raw_next / (Type(1) + beta_dd * C_raw_next);            // Beverton–Holt self-limitation                                                                                                                  
+ +    C_next = smooth_max(C_next, eps);                                       // ensure nonnegative                                                                                                                             
+                                                                                                                                                                                                                                
+      // Assign to predictions (t+1)                                                                                                                                                                                            
+      cots_pred(t + 1) = C_next;                                                                                                                                                                                                
+      fast_pred(t + 1) = A_next;                                                                                                                                                                                                
+      slow_pred(t + 1) = S_next;                                                                                                                                                                                                
+ +    juv_pred(t + 1)  = J_next;                                                                                                                                                                                                
+    }                                                                                                                                                                                                                           
+                                                                                                                                                                                                                                
+    // -------------------------                                                                                                                                                                                                
+    // Likelihood (all observations included)                                                                                                                                                                                   
+    // -------------------------                                                                                                                                                                                                
+    // Lognormal for strictly positive COTS, with small offset to avoid log(0)                                                                                                                                                  
+    for (int t = 0; t < T; ++t) {                                                                                                                                                                                               
+    nll += penalty_bounds(foodK,      Type(1.0),   Type(80.0),  lambda, eps);                                                                                                                                                   
+    nll += penalty_bounds(beta_dd,    Type(0.0),   Type(2.0),   lambda, eps);                                                                                                                                                   
+    // prefA_logit unconstrained in R, but implied wA in (0,1); no penalty needed unless extreme values cause issues                                                                                                            
+    // log_q_FR unconstrained; q >= 1 via exp transform, so no penalty needed                                                                                                                                                   
+ -  nll += penalty_bounds(alpha_fec_food, Type(0.0), Type(1.0), lambda, eps); // new: bounds for food effect on fecundity                                                                                                       
+ -                                                                                                                                                                                                                              
+ +  nll += penalty_bounds(alpha_fec_food, Type(0.0), Type(1.0), lambda, eps);                                                                                                                                                   
+ +                                                                                                                                                                                                                              
+ -  // -------------------------                                                                                                                                                                                                
+ -  REPORT(cots_pred); // predicted adult COTS (ind m^-2)                                                                                                                                                                       
+ -  REPORT(fast_pred); // predicted fast coral cover (%)                                                                                                                                                                        
+ -  REPORT(slow_pred); // predicted slow coral cover (%)                                                                                                                                                                        
+ -                                                                                                                                                                                                                              
+ +  nll += penalty_bounds(alpha_fec_food, Type(0.0), Type(1.0), lambda, eps);                                                                                                                                                   
+ +                                                                                                                                                                                                                              
+ +  // New parameter penalties                                                                                                                                                                                                  
+ +  nll += penalty_bounds(mJ,        Type(0.0), Type(5.0), lambda, eps);                                                                                                                                                        
+    REPORT(fast_pred); // predicted fast coral cover (%)                                                                                                                                                                        
+    REPORT(slow_pred); // predicted slow coral cover (%)                                                                                                                                                                        
+ +  REPORT(juv_pred);  // predicted juvenile/subadult COTS (ind m^-2)                                                                                                                                                           
+                                                                                                                                                                                                                                
+    return nll;                                                                                                                                                                                                                 
+  }                                                                                                                                                                                                                             
+                                                                                                                                                                                                                                
+
+POPULATIONS/POPULATION_0003/INDIVIDUAL_9G7B9YMV/parameters.json                                                                                                                                                                 
+
+                                                                                                                                                                                                                                
+ @@ -1,4 +1,5 @@                                                                                                                                                                                                                
+  {                                                                                                                                                                                                                             
+              "upper_bound": null,                                                                                                                                                                                              
+              "enhanced_semantic_description": "Log observation SD for logit-transformed slow coral cover",                                                                                                                     
+              "updated_from_literature": false,                                                                                                                                                                                 
+              "updated_fields_from_literature": []                                                                                                                                                                              
+ +        },                                                                                                                                                                                                                    
+ +                                                                                                                                                                                                                              
+ +        {                                                                                                                                                                                                                     
+ +            "parameter": "mJ",                                                                                                                                                                                                
+ +            "value": 1.0,                                                                                                                                                                                                     
+ +            "units": "year^-1",                                                                                                                                                                                               
+ +            "description": "Baseline juvenile/subadult COTS mortality rate",                                                                                                                                                  
+ +            "source": "initial estimate",                                                                                                                                                                                     
+ +            "import_type": "PARAMETER",                                                                                                                                                                                       
+ +            "priority": 2,                                                                                                                                                                                                    
+ +            "lower_bound": 0.0,                                                                                                                                                                                               
+ +            "upper_bound": 5.0,                                                                                                                                                                                               
+ +            "enhanced_semantic_description": "Baseline annual mortality rate of juvenile/subadult COTS (yr\u207b\u00b9)",                                                                                                     
+ +            "updated_from_literature": false,                                                                                                                                                                                 
+ +            "updated_fields_from_literature": []                                                                                                                                                                              
+ +        },                                                                                                                                                                                                                    
+ +        {                                                                                                                                                                                                                     
+ +            "parameter": "mJ_food",                                                                                                                                                                                           
+ +            "value": 1.2,                                                                                                                                                                                                     
+ +            "units": "year^-1",                                                                                                                                                                                               
+ +            "description": "Additional juvenile mortality scaling when food (live coral) is scarce; multiplies (1 - phi_food)",                                                                                               
+ +            "source": "initial estimate",                                                                                                                                                                                     
+ +            "import_type": "PARAMETER",                                                                                                                                                                                       
+ +            "priority": 2,                                                                                                                                                                                                    
+ +            "lower_bound": 0.0,                                                                                                                                                                                               
+ +            "upper_bound": 5.0,                                                                                                                                                                                               
+ +            "enhanced_semantic_description": "Additional mortality for juveniles when food is scarce",                                                                                                                        
+ +            "updated_from_literature": false,                                                                                                                                                                                 
+ +            "updated_fields_from_literature": []                                                                                                                                                                              
+ +        },                                                                                                                                                                                                                    
+ +        {                                                                                                                                                                                                                     
+ +            "parameter": "p_mature",                                                                                                                                                                                          
+ +            "value": 0.7,                                                                                                                                                                                                     
+ +            "units": "dimensionless",                                                                                                                                                                                         
+ +            "description": "Fraction of surviving juveniles that mature into adults each year",                                                                                                                               
+ +            "source": "initial estimate",                                                                                                                                                                                     
+ +            "import_type": "PARAMETER",                                                                                                                                                                                       
+ +            "priority": 2,                                                                                                                                                                                                    
+ +            "lower_bound": 0.0,                                                                                                                                                                                               
+ +            "upper_bound": 1.0,                                                                                                                                                                                               
+ +            "enhanced_semantic_description": "Yearly maturation fraction from juvenile to adult stage",                                                                                                                       
+ +            "updated_from_literature": false,                                                                                                                                                                                 
+ +            "updated_fields_from_literature": []                                                                                                                                                                              
+ +        },                                                                                                                                                                                                                    
+ +        {                                                                                                                                                                                                                     
+ +            "parameter": "init_J",                                                                                                                                                                                            
+ +            "value": 0.1,                                                                                                                                                                                                     
+ +            "units": "individuals m^-2",                                                                                                                                                                                      
+ +            "description": "Initial juvenile/subadult density at the first modeled year",                                                                                                                                     
+ +            "source": "initial estimate",                                                                                                                                                                                     
+ +            "import_type": "PARAMETER",                                                                                                                                                                                       
+ +            "priority": 3,                                                                                                                                                                                                    
+ +            "lower_bound": 0.0,                                                                                                                                                                                               
+ +            "upper_bound": 5.0,                                                                                                                                                                                               
+ +            "enhanced_semantic_description": "Initial condition for juvenile/subadult COTS (ind m^-2)",                                                                                                                       
+ +            "updated_from_literature": false,                                                                                                                                                                                 
+ +            "updated_fields_from_literature": []                                                                                                                                                                              
+          }                                                                                                                                                                                                                     
+      ]                                                                                                                                                                                                                         
+ -}+}                                                                                                                                                                                                                           
+                                                                                                                                                                                                                                
+
+POPULATIONS/POPULATION_0003/INDIVIDUAL_9G7B9YMV/intention.txt                                                                                                                                                                   
+
+                                                                                                                                                                                                                                
+ @@ -0,0 +1,42 @@                                                                                                                                                                                                               
+ +Assessment and rationale:                                                                                                                                                                                                     
+ +                                                                                                                                                                                                                              
+ +1) Fit to data                                                                                                                                                                                                                
+ +- Quantitative residual analysis could not be performed because a residuals file was not provided here. Please share it so we can examine bias, autocorrelation, and error scale.                                             
+ +- Qualitatively, the current structure is capable of reproducing general trends but can blur outbreak timing because recruits are added directly to the adult pool without delay. This typically leads to smoother, less      
+ episodic adult dynamics than observed for COTS.                                                                                                                                                                                
+ +                                                                                                                                                                                                                              
+ +2) Alignment with PROJECT CONTEXT (episodic outbreaks; timing, magnitude, duration)                                                                                                                                           
+ +- Strengths already present: (i) fertilization Allee effect, (ii) food limitation via total coral cover, (iii) temperature dependence for larvae and corals, (iv) immigration forcing, (v) selective predation on coral group 
+ (vi) Beverton–Holt density dependence.                                                                                                                                                                                         
+ +- Key gap: maturation delay from larval recruitment to adult stage. COTS generally require ~1–2 years to reach maturity; larval survival pulses induced by environmental conditions (e.g., river runoff–driven plankton bloom 
+ translate to adult outbreaks only after a delay. Without this temporal memory, the model can miss the characteristic boom–bust pulse and misalign peaks.                                                                       
+ +                                                                                                                                                                                                                              
+ +3) Potentially missing or simplified ecological processes                                                                                                                                                                     
+ +- Not explicitly modeled: (a) juvenile/subadult stage, (b) nutrient/runoff-driven pulses in larval survival, (c) predator control or removal, (d) management culling, (e) spatial connectivity beyond an exogenous immigratio 
+ index.                                                                                                                                                                                                                         
+ +- Among these, adding a juvenile stage directly targets outbreak timing with minimal additional complexity and no new data requirements.                                                                                      
+ +                                                                                                                                                                                                                              
+ +Parameter review                                                                                                                                                                                                              
+ +- Many parameters are flagged as initial estimates; none are marked updated_from_literature = true. No evidence here suggests immediate rescaling or functional form changes are required for those values. However, the dire 
+ recruitment-to-adult structure is ecologically inconsistent with the life history when outbreaks are episodic.                                                                                                                 
+ +                                                                                                                                                                                                                              
+ +Chosen improvement: introduce a juvenile/subadult stage with maturation delay                                                                                                                                                 
+ +- Ecological justification: COTS take multiple months to years to mature; juvenile survival and delayed maturation create “cohort resonance” that sharpens booms and supports realistic busts. Larval pulses do not           
+ instantaneously create adults; instead, they first populate a juvenile pool that matures subsequently.                                                                                                                         
+ +- Mathematical form:                                                                                                                                                                                                          
+ +  - New unobserved state J_t (ind m^-2).                                                                                                                                                                                      
+ +  - Juveniles survive via survival_juv(t) = exp( -[ mJ + mJ_food * (1 - phi_food(t)) ] ).                                                                                                                                     
+ +  - A fraction p_mature of surviving juveniles mature each year.                                                                                                                                                              
+ +  - Larval production (fecundity × spawning success × temperature) contributes to J_{t+1}, not directly to adults.                                                                                                            
+ +  - Adults update to next year as C_{t+1} = BH( C_surv + matured + immigration ), where BH is Beverton–Holt.                                                                                                                  
+ +- Expected benefits:                                                                                                                                                                                                          
+ +  - Adds a realistic 1+ year lag from reproduction to adult abundance, improving the timing and sharpness of outbreaks.                                                                                                       
+ +  - Maintains parsimony: only four additional parameters with interpretable roles and bounded ranges.                                                                                                                         
+ +  - Respects the “no data leakage” constraint by initializing juveniles with an estimated init_J and not using current-time observations in dynamics.                                                                         
+ +                                                                                                                                                                                                                              
+ +New/modified parameters (with suggested bounds)                                                                                                                                                                               
+ +- mJ (yr^-1, 0..5): baseline juvenile mortality; juveniles typically have higher mortality than adults.                                                                                                                       
+ +- mJ_food (yr^-1, 0..5): additional juvenile mortality when food is scarce; juveniles are likely more food-limited than adults.                                                                                               
+ +- p_mature (0..1): fraction of surviving juveniles maturing each year; encapsulates time to maturity and variability.                                                                                                         
+ +- init_J (ind m^-2, 0..5): initial juvenile density to avoid forcing from zero; improves stability at the first step.                                                                                                         
+ +                                                                                                                                                                                                                              
+ +Notes                                                                                                                                                                                                                         
+ +- Immigration remains a direct adult input per its current definition and units. If later evidence indicates that immigration is pre-settlement larval supply, we can route it into the juvenile pool instead.                
+ +- If residuals later show systematic underestimation of outbreak thresholds at low adult density, we could consider a higher-order fertilization function (e.g., Hill coefficient >1) as an alternative or complementary      
+ mechanism; for now we kept the original Allee form to limit complexity.                                                                                                                                                        
+ +                                                                                                                                                                                                                              
+ +Next steps requested                                                                                                                                                                                                          
+ +- Please provide the residuals file to validate reductions in bias/autocorrelation and to fine-tune the maturation fraction and juvenile mortality scales.                                                                    
+                                                                                                                                                                                                                                
+
+Tokens: 9.3k sent, 11k received. Cost: $0.12 message, $0.12 session.
+Committing POPULATIONS/POPULATION_0003/INDIVIDUAL_9G7B9YMV/model.cpp before applying edits.
+Committing POPULATIONS/POPULATION_0003/INDIVIDUAL_9G7B9YMV/parameters.json before applying edits.
+Committing POPULATIONS/POPULATION_0003/INDIVIDUAL_9G7B9YMV/intention.txt before applying edits.
+Unable to add /home/spi085/Documents/_Projects/EMs-with-LLMs/POPULATIONS/POPULATION_0003/INDIVIDUAL_9G7B9YMV/intention.txt: Cmd('git') failed due to: exit code(1)
+  cmdline: git add /home/spi085/Documents/_Projects/EMs-with-LLMs/POPULATIONS/POPULATION_0003/INDIVIDUAL_9G7B9YMV/intention.txt
+  stderr: 'The following paths are ignored by one of your .gitignore files:
+POPULATIONS
+hint: Use -f if you really want to add them.
+hint: Turn this message off by running
+hint: "git config advice.addIgnoredFile false"'
+Unable to add /home/spi085/Documents/_Projects/EMs-with-LLMs/POPULATIONS/POPULATION_0003/INDIVIDUAL_9G7B9YMV/parameters.json: Cmd('git') failed due to: exit code(1)
+  cmdline: git add /home/spi085/Documents/_Projects/EMs-with-LLMs/POPULATIONS/POPULATION_0003/INDIVIDUAL_9G7B9YMV/parameters.json
+  stderr: 'The following paths are ignored by one of your .gitignore files:
+POPULATIONS
+hint: Use -f if you really want to add them.
+hint: Turn this message off by running
+hint: "git config advice.addIgnoredFile false"'
+Unable to add /home/spi085/Documents/_Projects/EMs-with-LLMs/POPULATIONS/POPULATION_0003/INDIVIDUAL_9G7B9YMV/model.cpp: Cmd('git') failed due to: exit code(1)
+  cmdline: git add /home/spi085/Documents/_Projects/EMs-with-LLMs/POPULATIONS/POPULATION_0003/INDIVIDUAL_9G7B9YMV/model.cpp
+  stderr: 'The following paths are ignored by one of your .gitignore files:
+POPULATIONS
+hint: Use -f if you really want to add them.
+hint: Turn this message off by running
+hint: "git config advice.addIgnoredFile false"'
+Unable to commit: Cmd('git') failed due to: exit code(1)
+  cmdline: git commit -m feat: Add POPULATION_0003 individual 9G7B9YMV files --no-verify -- /home/spi085/Documents/_Projects/EMs-with-LLMs/POPULATIONS/POPULATION_0003/INDIVIDUAL_9G7B9YMV/intention.txt 
+/home/spi085/Documents/_Projects/EMs-with-LLMs/POPULATIONS/POPULATION_0003/INDIVIDUAL_9G7B9YMV/parameters.json /home/spi085/Documents/_Projects/EMs-with-LLMs/POPULATIONS/POPULATION_0003/INDIVIDUAL_9G7B9YMV/model.cpp
+  stderr: 'error: pathspec '/home/spi085/Documents/_Projects/EMs-with-LLMs/POPULATIONS/POPULATION_0003/INDIVIDUAL_9G7B9YMV/intention.txt' did not match any file(s) known to git
+error: pathspec '/home/spi085/Documents/_Projects/EMs-with-LLMs/POPULATIONS/POPULATION_0003/INDIVIDUAL_9G7B9YMV/parameters.json' did not match any file(s) known to git
+error: pathspec '/home/spi085/Documents/_Projects/EMs-with-LLMs/POPULATIONS/POPULATION_0003/INDIVIDUAL_9G7B9YMV/model.cpp' did not match any file(s) known to git'
+Applied edit to POPULATIONS/POPULATION_0003/INDIVIDUAL_9G7B9YMV/intention.txt
+Applied edit to POPULATIONS/POPULATION_0003/INDIVIDUAL_9G7B9YMV/parameters.json
+Applied edit to POPULATIONS/POPULATION_0003/INDIVIDUAL_9G7B9YMV/model.cpp
+Improved existing model in individual: POPULATIONS/POPULATION_0003/INDIVIDUAL_9G7B9YMV
+Validating model for data leakage...
+Opening file: POPULATIONS/POPULATION_0003/INDIVIDUAL_9G7B9YMV/model.cpp
+File read successfully
+TMB convention check: {'uses_tmb_header': True, 'uses_data_macros': True, 'uses_vector_type': True, 'uses_standard_report': True, 'uses_objective_function': True, 'uses_std_vector': False, 'uses_string_report': False}
+Extracting vectors...
+Found data vectors: {'cots_dat', 'slow_dat', 'fast_dat', 'cotsimm_dat', 'Year', 'sst_dat'}
+Found prediction vectors: {'juv_pred', 'cots_pred', 'slow_pred', 'fast_pred'}
+Found reported vectors: {'juv_pred', 'cots_pred', 'slow_pred', 'fast_pred'}
+Finding initial conditions...
+Found 9 initial conditions
+Finding time-stepping loop...
+Found loop from line 150 to 224
+Looking for metadata file at: /home/spi085/Documents/_Projects/EMs-with-LLMs/POPULATIONS/POPULATION_0003/population_metadata.json
+Attempting to read CSV file: /home/spi085/Documents/_Projects/EMs-with-LLMs/Data/timeseries_data_COTS_response.csv
+Successfully read CSV file with 4 columns
+Found response variables from /home/spi085/Documents/_Projects/EMs-with-LLMs/Data/timeseries_data_COTS_response.csv: {'slow_dat', 'cots_dat', 'fast_dat'}
+[93m[PID 3575036] Running model for individual...[0m
+[0m[PID 3575036] Individual directory: POPULATIONS/POPULATION_0003/INDIVIDUAL_9G7B9YMV[0m
+[96m[PID 3575036] Launching Rscript... (timeout=none)[0m
+[93m[PID 3575036] R script stdout BEGIN >>>[0m
+[0mg++ -std=gnu++17 -I"/usr/share/R/include" -DNDEBUG -I"/home/spi085/R/x86_64-pc-linux-gnu-library/4.4/TMB/include" -I"/home/spi085/R/x86_64-pc-linux-gnu-library/4.4/RcppEigen/include"   -DTMB_EIGEN_DISABLE_WARNINGS   -DTMB_LIB_INIT=R_init_model  -DCPPAD_FRAMEWORK      -fpic  -O2  -c POPULATIONS/POPULATION_0003/INDIVIDUAL_9G7B9YMV/model.cpp -o POPULATIONS/POPULATION_0003/INDIVIDUAL_9G7B9YMV/model.o
+g++ -std=gnu++17 -shared -L/usr/lib/R/lib -Wl,-Bsymbolic-functions -flto=auto -ffat-lto-objects -Wl,-z,relro -o POPULATIONS/POPULATION_0003/INDIVIDUAL_9G7B9YMV/model.so POPULATIONS/POPULATION_0003/INDIVIDUAL_9G7B9YMV/model.o -L/usr/lib/R/lib -lR
+
+NA counts per required column:
+       Year    cots_dat    fast_dat    slow_dat     sst_dat cotsimm_dat 
+          0           0           0           0           0           0 
+
+Out-of-range checks:
+Any cots_dat < 0?  FALSE 
+Any fast_dat outside [0,100]?  FALSE 
+Any slow_dat outside [0,100]?  FALSE 
+
+PARAMETER starts (first few):
+        fec     h_spawn          mC     mC_food   alpha_imm       k_imm 
+        1.2         0.2         0.6         0.8         0.6         0.5 
+  Topt_cots sigmaT_cots          rA          rS          hA          hS 
+       28.5         2.0         0.6         0.3         5.0        10.0 
+Starting model phases
+Number of phases: 3 
+Phase 1 
+Initial parameter values for phase 1 :
+      fec        mC alpha_imm  max_cons   beta_dd 
+      1.2       0.6       0.6      20.0       0.2 
+Final parameter values for phase 1 :
+      fec        mC alpha_imm  max_cons   beta_dd 
+5.0000000 0.0000000 5.0000000 7.8963462 0.1475243 
+Convergence message: relative convergence (4) 
+Number of iterations: 31 
+Objective function value: 346.1252 
+Gradient at solution for phase 1 :
+          [,1]     [,2]      [,3]         [,4]         [,5]
+[1,] -17.37923 340.0535 -2.924704 5.350134e-05 -0.001788992
+Phase 2 
+Initial parameter values for phase 2 :
+       h_spawn        mC_food      Topt_cots             rA             rS 
+     0.2000000      0.8000000     28.5000000      0.6000000      0.3000000 
+           mA0            mS0          foodK    prefA_logit       log_q_FR 
+     0.0500000      0.0300000     30.0000000      1.0000000     -0.6931472 
+alpha_fec_food             mJ        mJ_food       p_mature 
+     0.6000000      1.0000000      1.2000000      0.7000000 
+Final parameter values for phase 2 :
+       h_spawn        mC_food      Topt_cots             rA             rS 
+   0.010000000    0.510195466   29.000000000    1.078636101    0.193994051 
+           mA0            mS0          foodK    prefA_logit       log_q_FR 
+   0.360924511    0.001325816   30.331474269    0.343295490   -3.632233417 
+alpha_fec_food             mJ        mJ_food       p_mature 
+   0.001004827    0.838190607    2.331710904    0.891129028 
+Convergence message: iteration limit reached without convergence (10) 
+Number of iterations: 150 
+Objective function value: 98.90124 
+Gradient at solution for phase 2 :
+         [,1]      [,2]      [,3]      [,4]     [,5]     [,6]      [,7]
+[1,] 108.7815 -1.505176 -5.118206 -4.161312 14.00229 12.46125 -27.31313
+            [,8]     [,9]   [,10]     [,11]     [,12]     [,13]      [,14]
+[1,] -0.08702421 2.583177 1.11636 0.6312156 -1.892296 -1.768022 -0.2318716
+Phase 3 
+Initial parameter values for phase 3 :
+         k_imm    sigmaT_cots             hA             hS     Topt_coral 
+     0.5000000      2.0000000      5.0000000     10.0000000     27.0000000 
+  sigmaT_coral log_sigma_cots log_sigma_fast log_sigma_slow         init_J 
+     2.5000000     -0.9162907     -1.2039728     -1.2039728      0.1000000 
+Final parameter values for phase 3 :
+         k_imm    sigmaT_cots             hA             hS     Topt_coral 
+     5.0000000      1.9559149      9.2411254      9.5013827     27.8618646 
+  sigmaT_coral log_sigma_cots log_sigma_fast log_sigma_slow         init_J 
+     2.0504621     -0.5862886     -0.6766572     -1.0580195      4.3974277 
+Convergence message: relative convergence (4) 
+Number of iterations: 113 
+Objective function value: 50.33211 
+Gradient at solution for phase 3 :
+           [,1]          [,2]          [,3]         [,4]         [,5]
+[1,] -0.6266417 -9.460993e-06 -4.149139e-07 2.020682e-06 2.017384e-07
+             [,6]          [,7]         [,8]          [,9]         [,10]
+[1,] 2.271004e-06 -1.780634e-06 1.516466e-06 -2.364171e-06 -1.677274e-06
+Final Phase
+Initial parameter values for final phase:
+           fec        h_spawn             mC        mC_food      alpha_imm 
+   5.000000000    0.010000000    0.000000000    0.510195466    5.000000000 
+         k_imm      Topt_cots    sigmaT_cots             rA             rS 
+   5.000000000   29.000000000    1.955914902    1.078636101    0.193994051 
+            hA             hS       max_cons     Topt_coral   sigmaT_coral 
+   9.241125361    9.501382736    7.896346162   27.861864595    2.050462149 
+           mA0            mS0          foodK        beta_dd    prefA_logit 
+   0.360924511    0.001325816   30.331474269    0.147524271    0.343295490 
+      log_q_FR log_sigma_cots log_sigma_fast log_sigma_slow alpha_fec_food 
+  -3.632233417   -0.586288568   -0.676657213   -1.058019544    0.001004827 
+            mJ        mJ_food       p_mature         init_J 
+   0.838190607    2.331710904    0.891129028    4.397427689 
+Final parameter values for final phase:
+           fec        h_spawn             mC        mC_food      alpha_imm 
+    4.99999997     0.01000000     0.00000000     0.46260980     4.99889591 
+         k_imm      Topt_cots    sigmaT_cots             rA             rS 
+    5.00000000    28.99706022     1.96453296     1.06396771     0.19333244 
+            hA             hS       max_cons     Topt_coral   sigmaT_coral 
+    9.24138309     9.50097593     7.89717249    27.85587312     2.05798809 
+           mA0            mS0          foodK        beta_dd    prefA_logit 
+    0.37762042     0.01452772    30.33142624     0.19314752     0.34246561 
+      log_q_FR log_sigma_cots log_sigma_fast log_sigma_slow alpha_fec_food 
+   -3.63211768    -0.59903589    -0.67471180    -1.05952804     0.00000000 
+            mJ        mJ_food       p_mature         init_J 
+    0.83831193     2.32488308     0.88860617     4.39446717 
+Convergence message: iteration limit reached without convergence (10) 
+Number of iterations: 150 
+Objective function value: 47.83499 
+Gradient at solution for final phase:
+           [,1]     [,2]     [,3]     [,4]      [,5]       [,6]     [,7]
+[1,] -0.2381914 12.69334 19.88531 17.09617 0.3112373 -0.2459942 1.112271
+         [,8]       [,9]    [,10]      [,11]     [,12]      [,13]    [,14]
+[1,] -3.19394 -0.6270958 13.07935 -0.1369397 0.2639158 -0.4402099 2.514877
+         [,15]    [,16]     [,17]      [,18]     [,19]    [,20]       [,21]
+[1,] -3.469288 5.964007 -29.46944 0.04899199 -10.38881 2.456721 -0.07917324
+        [,22]      [,23]     [,24]    [,25]    [,26]    [,27]     [,28]
+[1,] 4.474276 -0.6371696 0.5169964 1.996639 1.213026 1.978741 -1.314678
+            [,29]
+[1,] -0.003829619
+All phases completed
+Successfully updated parameters_metadata.json with optimized values
+[1] "Train test split:"
+[1] 1
+
+Running model validation...
+
+DEBUG: Report contents:
+List of 4
+ $ cots_pred: num [1:26] 0.262 0.577 0.529 0.655 0.743 ...
+ $ fast_pred: num [1:26] 10.1 13.8 17.6 19.6 15.1 ...
+ $ juv_pred : num [1:26] 4.394 1.191 2.628 2.624 0.409 ...
+ $ slow_pred: num [1:26] 12.8 14 14.6 14.9 14.1 ...
+NULL
+
+DEBUG: Available variables in report:
+[1] "cots_pred" "fast_pred" "juv_pred"  "slow_pred"
+
+Checking predictions and calculating objective function...
+
+DEBUG: Processing cots_pred 
+DEBUG: First few predictions: 0.2615042 0.5768473 0.529102 0.6546102 0.7425197 0.5651734 
+DEBUG: Summary statistics:
+   Min. 1st Qu.  Median    Mean 3rd Qu.    Max. 
+ 0.1548  0.4224  0.6604  0.7067  0.8090  1.6408 
+DEBUG: All zeros? FALSE 
+DEBUG: Any infinities? FALSE 
+
+DEBUG: Processing fast_pred 
+DEBUG: First few predictions: 10.06939 13.84765 17.55562 19.59799 15.07104 18.70805 
+DEBUG: Summary statistics:
+   Min. 1st Qu.  Median    Mean 3rd Qu.    Max. 
+  4.412   8.772  14.459  14.693  20.239  27.898 
+DEBUG: All zeros? FALSE 
+DEBUG: Any infinities? FALSE 
+
+DEBUG: Processing slow_pred 
+DEBUG: First few predictions: 12.77261 13.98311 14.59271 14.88635 14.05494 14.3591 
+DEBUG: Summary statistics:
+   Min. 1st Qu.  Median    Mean 3rd Qu.    Max. 
+  3.666   4.629   9.812   9.387  14.071  14.886 
+DEBUG: All zeros? FALSE 
+DEBUG: Any infinities? FALSE 
+
+DEBUG: Using the following variables for objective function:
+cots_dat -> cots_pred
+fast_dat -> fast_pred
+slow_dat -> slow_pred
+
+DEBUG: Calculating MSE for prediction variables only:
+
+DEBUG: cots_pred 
+Observed: 0.2615042 0.5498196 0.7268086 0.5522907 0.828121 0.5470078 ...
+Predicted: 0.2615042 0.5768473 0.529102 0.6546102 0.7425197 0.5651734 ...
+MSE (normalized): 0.8269943 
+
+DEBUG: fast_pred 
+Observed: 10.06939 17.72357 23.82758 19.41812 15.63542 32.45961 ...
+Predicted: 10.06939 13.84765 17.55562 19.59799 15.07104 18.70805 ...
+MSE (normalized): 0.461078 
+
+DEBUG: slow_pred 
+Observed: 12.77261 16.41474 12.77729 12.27975 15.11516 12.81941 ...
+Predicted: 12.77261 13.98311 14.59271 14.88635 14.05494 14.3591 ...
+MSE (normalized): 0.273657 
+
+DEBUG: MSE values:
+ cots_dat  fast_dat  slow_dat 
+0.8269943 0.4610780 0.2736570 
+
+DEBUG: Final objective value (mean of MSEs): 0.5205764 
+
+Final objective function value: 0.5205764 
+
+JSON_REPORT_START
+{
+  "status": "SUCCESS",
+  "objective_value": 0.5206,
+  "model_summary": ["            Length Class  Mode     ", "par         29     -none- numeric  ", "objective    1     -none- numeric  ", "convergence  1     -none- numeric  ", "iterations   1     -none- numeric  ", "evaluations  2     -none- numeric  ", "message      1     -none- character"],
+  "model_report": {
+    "cots_pred": [0.2615, 0.5768, 0.5291, 0.6546, 0.7425, 0.5652, 0.7214, 0.8102, 0.8051, 0.7795, 1.4983, 1.0347, 1.6408, 1.4917, 1.2961, 0.9923, 0.6425, 0.7514, 0.6662, 0.5343, 0.3868, 0.297, 0.2063, 0.17, 0.1548, 0.165],
+    "fast_pred": [10.0694, 13.8477, 17.5556, 19.598, 15.071, 18.7081, 22.4151, 25.1064, 25.9047, 27.8978, 22.2232, 20.8474, 19.3995, 20.4522, 17.7094, 8.5035, 10.122, 9.5758, 6.2773, 5.6754, 5.7931, 4.4118, 5.3118, 7.4634, 11.3098, 10.7689],
+    "juv_pred": [4.3945, 1.1909, 2.6282, 2.6236, 0.4089, 3.0486, 2.7689, 2.0594, 1.8205, 2.1598, 0.6336, 2.9106, 1.5243, 4.6354, 2.0397, 0.1103, 4.907, 2.6733, 1.7817, 0.6293, 0.6466, 0.1426, 0.4855, 0.5303, 0.6715, 0.1087],
+    "slow_pred": [12.7726, 13.9831, 14.5927, 14.8863, 14.0549, 14.3591, 14.7893, 14.7779, 14.3739, 14.0758, 13.0735, 11.4906, 10.5198, 9.1041, 7.5652, 5.8285, 5.449, 5.0994, 4.4039, 4.0569, 3.9031, 3.6657, 3.7975, 4.1343, 4.6107, 4.6822]
+  },
+  "plot_data": {
+    "cots_pred": {
+      "Year": [1980, 1981, 1982, 1983, 1984, 1985, 1986, 1987, 1988, 1989, 1990, 1991, 1992, 1993, 1994, 1995, 1996, 1997, 1998, 1999, 2000, 2001, 2002, 2003, 2004, 2005],
+      "Modeled": [0.2615, 0.5768, 0.5291, 0.6546, 0.7425, 0.5652, 0.7214, 0.8102, 0.8051, 0.7795, 1.4983, 1.0347, 1.6408, 1.4917, 1.2961, 0.9923, 0.6425, 0.7514, 0.6662, 0.5343, 0.3868, 0.297, 0.2063, 0.17, 0.1548, 0.165],
+      "Observed": [0.2615, 0.5498, 0.7268, 0.5523, 0.8281, 0.547, 0.758, 0.6288, 0.4762, 0.6466, 0.9107, 2.152, 0.6446, 1.6723, 0.4766, 0.8075, 0.3635, 0.3728, 0.6173, 0.3107, 0.256, 0.2984, 0.3362, 0.2878, 0.3221, 0.4308]
+    },
+    "fast_pred": {
+      "Year": [1980, 1981, 1982, 1983, 1984, 1985, 1986, 1987, 1988, 1989, 1990, 1991, 1992, 1993, 1994, 1995, 1996, 1997, 1998, 1999, 2000, 2001, 2002, 2003, 2004, 2005],
+      "Modeled": [10.0694, 13.8477, 17.5556, 19.598, 15.071, 18.7081, 22.4151, 25.1064, 25.9047, 27.8978, 22.2232, 20.8474, 19.3995, 20.4522, 17.7094, 8.5035, 10.122, 9.5758, 6.2773, 5.6754, 5.7931, 4.4118, 5.3118, 7.4634, 11.3098, 10.7689],
+      "Observed": [10.0694, 17.7236, 23.8276, 19.4181, 15.6354, 32.4596, 21.5567, 34.1938, 18.8708, 27.3176, 44.3301, 13.3275, 11.3741, 8.3362, 15.207, 12.443, 11.0666, 10.6442, 2.3628, 2.76, 3.7236, 7.0355, 10.2239, 8.4754, 9.0819, 13.7314]
+    },
+    "slow_pred": {
+      "Year": [1980, 1981, 1982, 1983, 1984, 1985, 1986, 1987, 1988, 1989, 1990, 1991, 1992, 1993, 1994, 1995, 1996, 1997, 1998, 1999, 2000, 2001, 2002, 2003, 2004, 2005],
+      "Modeled": [12.7726, 13.9831, 14.5927, 14.8863, 14.0549, 14.3591, 14.7893, 14.7779, 14.3739, 14.0758, 13.0735, 11.4906, 10.5198, 9.1041, 7.5652, 5.8285, 5.449, 5.0994, 4.4039, 4.0569, 3.9031, 3.6657, 3.7975, 4.1343, 4.6107, 4.6822],
+      "Observed": [12.7726, 16.4147, 12.7773, 12.2798, 15.1152, 12.8194, 10.4631, 9.7251, 13.2014, 16.4512, 11.1393, 18.0832, 11.5223, 8.51, 9.1622, 5.3353, 8.6044, 7.2781, 2.629, 4.6951, 1.5948, 5.2172, 2.6041, 3.3618, 7.3289, 4.4014]
+    }
+  }
+}
+JSON_REPORT_END[0m
+[93m[PID 3575036] R script stdout END <<<[0m
+[93m[PID 3575036] R script stderr BEGIN >>>[0m
+[0mLoading required package: TMB
+Loading required package: jsonlite
+here() starts at /home/spi085/Documents/_Projects/EMs-with-LLMs
+using C++ compiler: ‘g++ (Ubuntu 13.3.0-6ubuntu2~24.04) 13.3.0’
+Warning message:
+`aes_string()` was deprecated in ggplot2 3.0.0.
+ℹ Please use tidy evaluation idioms with `aes()`.
+ℹ See also `vignette("ggplot2-in-packages")` for more information.[0m
+[93m[PID 3575036] R script stderr END <<<[0m
+[96m[PID 3575036] JSON detected, parsing...[0m
+[96m[PID 3575036] Writing model report...[0m
+[94m[PID 3575036] Objective value: 0.5206[0m
+[96m[PID 3575036] Generating plots...[0m
+[94m[PID 3575036] Objective Value: 0.5206[0m
+[92m[PID 3575036] Successful model run[0m
+[0m----------------------------------------------[0m
+MODEL RUN FINISHED
+Model run successful. Objective value: 0.5206
+Model ran successful and returned meaningful objective value... enhancing parameter descriptions.
+Enhancing parameter descriptions...
+Parameter descriptions enhanced successfully.
+Running parameter processing...
+DEBUG: get_params() called with directory_path: POPULATIONS/POPULATION_0003/INDIVIDUAL_9G7B9YMV
+DEBUG: population_dir: POPULATIONS/POPULATION_0003
+DEBUG: meta_file path: POPULATIONS/POPULATION_0003/population_metadata.json
+DEBUG: Checking if meta_file exists...
+DEBUG: meta_file exists, attempting to read...
+DEBUG: Successfully read meta_file
+DEBUG: rag_choice: gpt-4.1-mini, doc_store_dir: doc_store
+DEBUG: About to resolve model name...
+[get_params] Using model from rag_choice: 'gpt-4.1-mini' -> 'gpt-4.1-mini'
+[get_params] Using doc_store_dir: 'doc_store'
+Processing literature parameter: mC
+Searching for mC with query: Baseline adult COTS annual mortality rate
+Engine order for mC: ['rag', 'semantic_scholar']
+Loading llama_index.core.storage.kvstore.simple_kvstore from /home/spi085/Documents/_Projects/EMs-with-LLMs/storage_chroma_doc_store/docstore.json.
+Loading llama_index.core.storage.kvstore.simple_kvstore from /home/spi085/Documents/_Projects/EMs-with-LLMs/storage_chroma_doc_store/index_store.json.
+Search results found for mC (engine=rag, attempt=1)
+S2 Response Status Code: 200
+S2 Query: Baseline adult COTS annual mortality rate
+S2 Total results: 1841
+Search results found for mC (engine=semantic_scholar, attempt=1)
+DEBUG: Aggregated 8 total source chunks for mC:
+ Source [1]: C:\Users\spi085\OneDrive - CSIRO\Documents\_Projects\SCCP-QuantModelling\doc_store\Rogers-2022-Culling corallivores improves shor.pdf
+ Source [2]: C:\Users\spi085\OneDrive - CSIRO\Documents\_Projects\SCCP-QuantModelling\doc_store\Morello-2014-Model to manage and reduce crown-.pdf
+ Source [3]: C:\Users\spi085\OneDrive - CSIRO\Documents\_Projects\SCCP-QuantModelling\doc_store\Pratchett-2017-Thirty years of research on cro.pdf
+ Source [4]: https://www.semanticscholar.org/paper/278350bf9bb5dec02d204f1a0ff1dceb281b4ab3
+ Source [5]: https://www.semanticscholar.org/paper/89945e1245d91a327cdf1489bdd471cc92c22751
+ Source [6]: https://www.semanticscholar.org/paper/a2452a84adeb6c8ccb2d78e22e538583e4c3e141
+ Source [7]: https://www.semanticscholar.org/paper/1d10649b08ac74ff31e2920d880e90e4e705f630
+ Source [8]: https://www.semanticscholar.org/paper/b9b7f2da003b6de0b54c29700771c9dfa483b7ec
+Asking gpt-4.1-mini
+DEBUG: LLM response for mC: No relevant values found
+Processing literature parameter: Topt_cots
+Searching for Topt_cots with query: Optimal sea surface temperature for COTS larvae (°C)
+Engine order for Topt_cots: ['semantic_scholar', 'rag']
+S2 Response Status Code: 200
+S2 Query: Optimal sea surface temperature for COTS larvae (°C)
+S2 Total results: 17
+Search results found for Topt_cots (engine=semantic_scholar, attempt=1)
+Search results found for Topt_cots (engine=rag, attempt=1)
+DEBUG: Aggregated 2 total source chunks for Topt_cots:
+ Source [1]: https://www.semanticscholar.org/paper/6f3a5ed4b2e54acae7b225bdddf9f047006f17ac
+ Source [2]: C:\Users\spi085\OneDrive - CSIRO\Documents\_Projects\SCCP-QuantModelling\doc_store\Pratchett-2017-Thirty years of research on cro.pdf
+Asking gpt-4.1-mini
+DEBUG: LLM response for Topt_cots: No relevant values found
+Processing literature parameter: sigmaT_cots
+Searching for sigmaT_cots with query: SST response width for COTS larval survival (°C)
+Engine order for sigmaT_cots: ['semantic_scholar', 'rag']
+S2 Response Status Code: 200
+S2 Query: SST response width for COTS larval survival (°C)
+S2 Total results: 0
+No papers found.
+No search results for sigmaT_cots (engine=semantic_scholar, attempt=1)
+S2 Response Status Code: 200
+S2 Query: SST response width for COTS larval survival (°C)
+S2 Total results: 0
+No papers found.
+No search results for sigmaT_cots (engine=semantic_scholar, attempt=2)
+S2 Response Status Code: 200
+S2 Query: SST response width for COTS larval survival (°C)
+S2 Total results: 0
+No papers found.
+No search results for sigmaT_cots (engine=semantic_scholar, attempt=3)
+Search results found for sigmaT_cots (engine=rag, attempt=1)
+DEBUG: Aggregated 1 total source chunks for sigmaT_cots:
+ Source [1]: C:\Users\spi085\OneDrive - CSIRO\Documents\_Projects\SCCP-QuantModelling\doc_store\Pratchett-2017-Thirty years of research on cro.pdf
+Asking gpt-4.1-mini
+DEBUG: LLM response for sigmaT_cots: No relevant values found
+Processing literature parameter: rA
+Searching for rA with query: Intrinsic growth rate of fast-growing coral (Acropora)
+Engine order for rA: ['semantic_scholar', 'rag']
+S2 Response Status Code: 200
+S2 Query: Intrinsic growth rate of fast-growing coral (Acropora)
+S2 Total results: 29
+Search results found for rA (engine=semantic_scholar, attempt=1)
+Search results found for rA (engine=rag, attempt=1)
+DEBUG: Aggregated 5 total source chunks for rA:
+ Source [1]: https://www.semanticscholar.org/paper/f250fdb62dc1b4b53fdee6e05f1112e2710a415c
+ Source [2]: https://www.semanticscholar.org/paper/0b4eacdedeef4548087a50a6224ce8d5e17d1045
+ Source [3]: C:\Users\spi085\OneDrive - CSIRO\Documents\_Projects\SCCP-QuantModelling\doc_store\Pratchett-2017-Thirty years of research on cro.pdf
+ Source [4]: C:\Users\spi085\OneDrive - CSIRO\Documents\_Projects\SCCP-QuantModelling\doc_store\Rogers-2022-Culling corallivores improves shor.pdf
+ Source [5]: C:\Users\spi085\OneDrive - CSIRO\Documents\_Projects\SCCP-QuantModelling\doc_store\Condie et al (2021) - large scale interventions may delay decline of Great Barrier Reef.pdf
+Asking gpt-4.1-mini
+DEBUG: LLM response for rA: No relevant values found
+Processing literature parameter: rS
+Searching for rS with query: Intrinsic growth rate of slow-growing coral (Faviidae/Porites)
+Engine order for rS: ['semantic_scholar', 'rag']
+S2 Response Status Code: 200
+S2 Query: Intrinsic growth rate of slow-growing coral (Faviidae/Porites)
+S2 Total results: 0
+No papers found.
+No search results for rS (engine=semantic_scholar, attempt=1)
+S2 Response Status Code: 200
+S2 Query: Intrinsic growth rate of slow-growing coral (Faviidae/Porites)
+S2 Total results: 0
+No papers found.
+No search results for rS (engine=semantic_scholar, attempt=2)
+S2 Response Status Code: 200
+S2 Query: Intrinsic growth rate of slow-growing coral (Faviidae/Porites)
+S2 Total results: 0
+No papers found.
+No search results for rS (engine=semantic_scholar, attempt=3)
+Search results found for rS (engine=rag, attempt=1)
+DEBUG: Aggregated 2 total source chunks for rS:
+ Source [1]: C:\Users\spi085\OneDrive - CSIRO\Documents\_Projects\SCCP-QuantModelling\doc_store\Rogers-2022-Culling corallivores improves shor.pdf
+ Source [2]: C:\Users\spi085\OneDrive - CSIRO\Documents\_Projects\SCCP-QuantModelling\doc_store\Pratchett-2017-Thirty years of research on cro.pdf
+Asking gpt-4.1-mini
+DEBUG: LLM response for rS: No relevant values found
+Processing literature parameter: max_cons
+Searching for max_cons with query: Max coral cover consumed per starfish annually (%)
+Engine order for max_cons: ['semantic_scholar', 'rag']
+S2 Response Status Code: 200
+S2 Query: Max coral cover consumed per starfish annually (%)
+S2 Total results: 8
+Search results found for max_cons (engine=semantic_scholar, attempt=1)
+Search results found for max_cons (engine=rag, attempt=1)
+DEBUG: Aggregated 6 total source chunks for max_cons:
+ Source [1]: https://www.semanticscholar.org/paper/97117b8ed8c079f80f2f6eb6f619a0d850566dd8
+ Source [2]: https://www.semanticscholar.org/paper/8e14be3fd7d61f1c265c5b44a57624d4d57e4177
+ Source [3]: https://www.semanticscholar.org/paper/42735ef4c787f405b79fb8a40725c464df4ee5d2
+ Source [4]: C:\Users\spi085\OneDrive - CSIRO\Documents\_Projects\SCCP-QuantModelling\doc_store\Rogers-2022-Culling corallivores improves shor.pdf
+ Source [5]: C:\Users\spi085\OneDrive - CSIRO\Documents\_Projects\SCCP-QuantModelling\doc_store\Pratchett-2017-Thirty years of research on cro.pdf
+ Source [6]: C:\Users\spi085\OneDrive - CSIRO\Documents\_Projects\SCCP-QuantModelling\doc_store\Morello-2014-Model to manage and reduce crown-.pdf
+Asking gpt-4.1-mini
+DEBUG: LLM response for max_cons: No relevant values found
+Processing literature parameter: Topt_coral
+Searching for Topt_coral with query: Optimal SST for coral growth and recovery (°C)
+Engine order for Topt_coral: ['rag', 'semantic_scholar']
+Search results found for Topt_coral (engine=rag, attempt=1)
+S2 Response Status Code: 200
+S2 Query: Optimal SST for coral growth and recovery (°C)
+S2 Total results: 0
+No papers found.
+No search results for Topt_coral (engine=semantic_scholar, attempt=1)
+S2 Response Status Code: 200
+S2 Query: Optimal SST for coral growth and recovery (°C)
+S2 Total results: 0
+No papers found.
+No search results for Topt_coral (engine=semantic_scholar, attempt=2)
+S2 Response Status Code: 200
+S2 Query: Optimal SST for coral growth and recovery (°C)
+S2 Total results: 0
+No papers found.
+No search results for Topt_coral (engine=semantic_scholar, attempt=3)
+DEBUG: Aggregated 3 total source chunks for Topt_coral:
+ Source [1]: C:\Users\spi085\OneDrive - CSIRO\Documents\_Projects\SCCP-QuantModelling\doc_store\Pratchett-2017-Thirty years of research on cro.pdf
+ Source [2]: C:\Users\spi085\OneDrive - CSIRO\Documents\_Projects\SCCP-QuantModelling\doc_store\Rogers-2022-Culling corallivores improves shor.pdf
+ Source [3]: C:\Users\spi085\OneDrive - CSIRO\Documents\_Projects\SCCP-QuantModelling\doc_store\Condie et al (2021) - large scale interventions may delay decline of Great Barrier Reef.pdf
+Asking gpt-4.1-mini
+DEBUG: LLM response for Topt_coral: No relevant values found
+Processing literature parameter: sigmaT_coral
+Searching for sigmaT_coral with query: SST response width for coral performance (°C)
+Engine order for sigmaT_coral: ['rag', 'semantic_scholar']
+Search results found for sigmaT_coral (engine=rag, attempt=1)
+S2 Response Status Code: 200
+S2 Query: SST response width for coral performance (°C)
+S2 Total results: 6
+Search results found for sigmaT_coral (engine=semantic_scholar, attempt=1)
+DEBUG: Aggregated 5 total source chunks for sigmaT_coral:
+ Source [1]: C:\Users\spi085\OneDrive - CSIRO\Documents\_Projects\SCCP-QuantModelling\doc_store\Rogers-2022-Culling corallivores improves shor.pdf
+ Source [2]: C:\Users\spi085\OneDrive - CSIRO\Documents\_Projects\SCCP-QuantModelling\doc_store\Condie et al (2021) - large scale interventions may delay decline of Great Barrier Reef.pdf
+ Source [3]: https://www.semanticscholar.org/paper/266e606b1adee3172c6f468300bfe5651caa25c1
+ Source [4]: https://www.semanticscholar.org/paper/fb55485c1ce2ae7121676650638b56796a11b55d
+ Source [5]: https://www.semanticscholar.org/paper/2b451c7d500aff8ff621c9afb80971f9cf7afa15
+Asking gpt-4.1-mini
+DEBUG: LLM response for sigmaT_coral: No relevant values found
+Parameter processing completed successfully.
+Re-running model after parameter processing...
+[93m[PID 3575036] Running model for individual...[0m
+[0m[PID 3575036] Individual directory: POPULATIONS/POPULATION_0003/INDIVIDUAL_9G7B9YMV[0m
+[93m[PID 3575036] Removed old compilation: model.o[0m
+[96m[PID 3575036] Launching Rscript... (timeout=none)[0m
+[93m[PID 3575036] R script stdout BEGIN >>>[0m
+[0mg++ -std=gnu++17 -I"/usr/share/R/include" -DNDEBUG -I"/home/spi085/R/x86_64-pc-linux-gnu-library/4.4/TMB/include" -I"/home/spi085/R/x86_64-pc-linux-gnu-library/4.4/RcppEigen/include"   -DTMB_EIGEN_DISABLE_WARNINGS   -DTMB_LIB_INIT=R_init_model  -DCPPAD_FRAMEWORK      -fpic  -O2  -c POPULATIONS/POPULATION_0003/INDIVIDUAL_9G7B9YMV/model.cpp -o POPULATIONS/POPULATION_0003/INDIVIDUAL_9G7B9YMV/model.o
+g++ -std=gnu++17 -shared -L/usr/lib/R/lib -Wl,-Bsymbolic-functions -flto=auto -ffat-lto-objects -Wl,-z,relro -o POPULATIONS/POPULATION_0003/INDIVIDUAL_9G7B9YMV/model.so POPULATIONS/POPULATION_0003/INDIVIDUAL_9G7B9YMV/model.o -L/usr/lib/R/lib -lR
+
+NA counts per required column:
+       Year    cots_dat    fast_dat    slow_dat     sst_dat cotsimm_dat 
+          0           0           0           0           0           0 
+
+Out-of-range checks:
+Any cots_dat < 0?  FALSE 
+Any fast_dat outside [0,100]?  FALSE 
+Any slow_dat outside [0,100]?  FALSE 
+
+PARAMETER starts (first few):
+        fec     h_spawn          mC     mC_food   alpha_imm       k_imm 
+        1.2         0.2         0.6         0.8         0.6         0.5 
+  Topt_cots sigmaT_cots          rA          rS          hA          hS 
+       28.5         2.0         0.6         0.3         5.0        10.0 
+Starting model phases
+Number of phases: 3 
+Phase 1 
+Initial parameter values for phase 1 :
+      fec        mC alpha_imm  max_cons   beta_dd 
+      1.2       0.6       0.6      20.0       0.2 
+Final parameter values for phase 1 :
+      fec        mC alpha_imm  max_cons   beta_dd 
+5.0000000 0.0000000 5.0000000 7.8963462 0.1475243 
+Convergence message: relative convergence (4) 
+Number of iterations: 31 
+Objective function value: 346.1252 
+Gradient at solution for phase 1 :
+          [,1]     [,2]      [,3]         [,4]         [,5]
+[1,] -17.37923 340.0535 -2.924704 5.350134e-05 -0.001788992
+Phase 2 
+Initial parameter values for phase 2 :
+       h_spawn        mC_food      Topt_cots             rA             rS 
+     0.2000000      0.8000000     28.5000000      0.6000000      0.3000000 
+           mA0            mS0          foodK    prefA_logit       log_q_FR 
+     0.0500000      0.0300000     30.0000000      1.0000000     -0.6931472 
+alpha_fec_food             mJ        mJ_food       p_mature 
+     0.6000000      1.0000000      1.2000000      0.7000000 
+Final parameter values for phase 2 :
+       h_spawn        mC_food      Topt_cots             rA             rS 
+   0.010000000    0.510195466   29.000000000    1.078636101    0.193994051 
+           mA0            mS0          foodK    prefA_logit       log_q_FR 
+   0.360924511    0.001325816   30.331474269    0.343295490   -3.632233417 
+alpha_fec_food             mJ        mJ_food       p_mature 
+   0.001004827    0.838190607    2.331710904    0.891129028 
+Convergence message: iteration limit reached without convergence (10) 
+Number of iterations: 150 
+Objective function value: 98.90124 
+Gradient at solution for phase 2 :
+         [,1]      [,2]      [,3]      [,4]     [,5]     [,6]      [,7]
+[1,] 108.7815 -1.505176 -5.118206 -4.161312 14.00229 12.46125 -27.31313
+            [,8]     [,9]   [,10]     [,11]     [,12]     [,13]      [,14]
+[1,] -0.08702421 2.583177 1.11636 0.6312156 -1.892296 -1.768022 -0.2318716
+Phase 3 
+Initial parameter values for phase 3 :
+         k_imm    sigmaT_cots             hA             hS     Topt_coral 
+     0.5000000      2.0000000      5.0000000     10.0000000     27.0000000 
+  sigmaT_coral log_sigma_cots log_sigma_fast log_sigma_slow         init_J 
+     2.5000000     -0.9162907     -1.2039728     -1.2039728      0.1000000 
+Final parameter values for phase 3 :
+         k_imm    sigmaT_cots             hA             hS     Topt_coral 
+     5.0000000      1.9559149      9.2411254      9.5013827     27.8618646 
+  sigmaT_coral log_sigma_cots log_sigma_fast log_sigma_slow         init_J 
+     2.0504621     -0.5862886     -0.6766572     -1.0580195      4.3974277 
+Convergence message: relative convergence (4) 
+Number of iterations: 113 
+Objective function value: 50.33211 
+Gradient at solution for phase 3 :
+           [,1]          [,2]          [,3]         [,4]         [,5]
+[1,] -0.6266417 -9.460993e-06 -4.149139e-07 2.020682e-06 2.017384e-07
+             [,6]          [,7]         [,8]          [,9]         [,10]
+[1,] 2.271004e-06 -1.780634e-06 1.516466e-06 -2.364171e-06 -1.677274e-06
+Final Phase
+Initial parameter values for final phase:
+           fec        h_spawn             mC        mC_food      alpha_imm 
+   5.000000000    0.010000000    0.000000000    0.510195466    5.000000000 
+         k_imm      Topt_cots    sigmaT_cots             rA             rS 
+   5.000000000   29.000000000    1.955914902    1.078636101    0.193994051 
+            hA             hS       max_cons     Topt_coral   sigmaT_coral 
+   9.241125361    9.501382736    7.896346162   27.861864595    2.050462149 
+           mA0            mS0          foodK        beta_dd    prefA_logit 
+   0.360924511    0.001325816   30.331474269    0.147524271    0.343295490 
+      log_q_FR log_sigma_cots log_sigma_fast log_sigma_slow alpha_fec_food 
+  -3.632233417   -0.586288568   -0.676657213   -1.058019544    0.001004827 
+            mJ        mJ_food       p_mature         init_J 
+   0.838190607    2.331710904    0.891129028    4.397427689 
+Final parameter values for final phase:
+           fec        h_spawn             mC        mC_food      alpha_imm 
+    4.99999997     0.01000000     0.00000000     0.46260980     4.99889591 
+         k_imm      Topt_cots    sigmaT_cots             rA             rS 
+    5.00000000    28.99706022     1.96453296     1.06396771     0.19333244 
+            hA             hS       max_cons     Topt_coral   sigmaT_coral 
+    9.24138309     9.50097593     7.89717249    27.85587312     2.05798809 
+           mA0            mS0          foodK        beta_dd    prefA_logit 
+    0.37762042     0.01452772    30.33142624     0.19314752     0.34246561 
+      log_q_FR log_sigma_cots log_sigma_fast log_sigma_slow alpha_fec_food 
+   -3.63211768    -0.59903589    -0.67471180    -1.05952804     0.00000000 
+            mJ        mJ_food       p_mature         init_J 
+    0.83831193     2.32488308     0.88860617     4.39446717 
+Convergence message: iteration limit reached without convergence (10) 
+Number of iterations: 150 
+Objective function value: 47.83499 
+Gradient at solution for final phase:
+           [,1]     [,2]     [,3]     [,4]      [,5]       [,6]     [,7]
+[1,] -0.2381914 12.69334 19.88531 17.09617 0.3112373 -0.2459942 1.112271
+         [,8]       [,9]    [,10]      [,11]     [,12]      [,13]    [,14]
+[1,] -3.19394 -0.6270958 13.07935 -0.1369397 0.2639158 -0.4402099 2.514877
+         [,15]    [,16]     [,17]      [,18]     [,19]    [,20]       [,21]
+[1,] -3.469288 5.964007 -29.46944 0.04899199 -10.38881 2.456721 -0.07917324
+        [,22]      [,23]     [,24]    [,25]    [,26]    [,27]     [,28]
+[1,] 4.474276 -0.6371696 0.5169964 1.996639 1.213026 1.978741 -1.314678
+            [,29]
+[1,] -0.003829619
+All phases completed
+Successfully updated parameters_metadata.json with optimized values
+[1] "Train test split:"
+[1] 1
+
+Running model validation...
+
+DEBUG: Report contents:
+List of 4
+ $ cots_pred: num [1:26] 0.262 0.577 0.529 0.655 0.743 ...
+ $ fast_pred: num [1:26] 10.1 13.8 17.6 19.6 15.1 ...
+ $ juv_pred : num [1:26] 4.394 1.191 2.628 2.624 0.409 ...
+ $ slow_pred: num [1:26] 12.8 14 14.6 14.9 14.1 ...
+NULL
+
+DEBUG: Available variables in report:
+[1] "cots_pred" "fast_pred" "juv_pred"  "slow_pred"
+
+Checking predictions and calculating objective function...
+
+DEBUG: Processing cots_pred 
+DEBUG: First few predictions: 0.2615042 0.5768473 0.529102 0.6546102 0.7425197 0.5651734 
+DEBUG: Summary statistics:
+   Min. 1st Qu.  Median    Mean 3rd Qu.    Max. 
+ 0.1548  0.4224  0.6604  0.7067  0.8090  1.6408 
+DEBUG: All zeros? FALSE 
+DEBUG: Any infinities? FALSE 
+
+DEBUG: Processing fast_pred 
+DEBUG: First few predictions: 10.06939 13.84765 17.55562 19.59799 15.07104 18.70805 
+DEBUG: Summary statistics:
+   Min. 1st Qu.  Median    Mean 3rd Qu.    Max. 
+  4.412   8.772  14.459  14.693  20.239  27.898 
+DEBUG: All zeros? FALSE 
+DEBUG: Any infinities? FALSE 
+
+DEBUG: Processing slow_pred 
+DEBUG: First few predictions: 12.77261 13.98311 14.59271 14.88635 14.05494 14.3591 
+DEBUG: Summary statistics:
+   Min. 1st Qu.  Median    Mean 3rd Qu.    Max. 
+  3.666   4.629   9.812   9.387  14.071  14.886 
+DEBUG: All zeros? FALSE 
+DEBUG: Any infinities? FALSE 
+
+DEBUG: Using the following variables for objective function:
+cots_dat -> cots_pred
+fast_dat -> fast_pred
+slow_dat -> slow_pred
+
+DEBUG: Calculating MSE for prediction variables only:
+
+DEBUG: cots_pred 
+Observed: 0.2615042 0.5498196 0.7268086 0.5522907 0.828121 0.5470078 ...
+Predicted: 0.2615042 0.5768473 0.529102 0.6546102 0.7425197 0.5651734 ...
+MSE (normalized): 0.8269943 
+
+DEBUG: fast_pred 
+Observed: 10.06939 17.72357 23.82758 19.41812 15.63542 32.45961 ...
+Predicted: 10.06939 13.84765 17.55562 19.59799 15.07104 18.70805 ...
+MSE (normalized): 0.461078 
+
+DEBUG: slow_pred 
+Observed: 12.77261 16.41474 12.77729 12.27975 15.11516 12.81941 ...
+Predicted: 12.77261 13.98311 14.59271 14.88635 14.05494 14.3591 ...
+MSE (normalized): 0.273657 
+
+DEBUG: MSE values:
+ cots_dat  fast_dat  slow_dat 
+0.8269943 0.4610780 0.2736570 
+
+DEBUG: Final objective value (mean of MSEs): 0.5205764 
+
+Final objective function value: 0.5205764 
+
+JSON_REPORT_START
+{
+  "status": "SUCCESS",
+  "objective_value": 0.5206,
+  "model_summary": ["            Length Class  Mode     ", "par         29     -none- numeric  ", "objective    1     -none- numeric  ", "convergence  1     -none- numeric  ", "iterations   1     -none- numeric  ", "evaluations  2     -none- numeric  ", "message      1     -none- character"],
+  "model_report": {
+    "cots_pred": [0.2615, 0.5768, 0.5291, 0.6546, 0.7425, 0.5652, 0.7214, 0.8102, 0.8051, 0.7795, 1.4983, 1.0347, 1.6408, 1.4917, 1.2961, 0.9923, 0.6425, 0.7514, 0.6662, 0.5343, 0.3868, 0.297, 0.2063, 0.17, 0.1548, 0.165],
+    "fast_pred": [10.0694, 13.8477, 17.5556, 19.598, 15.071, 18.7081, 22.4151, 25.1064, 25.9047, 27.8978, 22.2232, 20.8474, 19.3995, 20.4522, 17.7094, 8.5035, 10.122, 9.5758, 6.2773, 5.6754, 5.7931, 4.4118, 5.3118, 7.4634, 11.3098, 10.7689],
+    "juv_pred": [4.3945, 1.1909, 2.6282, 2.6236, 0.4089, 3.0486, 2.7689, 2.0594, 1.8205, 2.1598, 0.6336, 2.9106, 1.5243, 4.6354, 2.0397, 0.1103, 4.907, 2.6733, 1.7817, 0.6293, 0.6466, 0.1426, 0.4855, 0.5303, 0.6715, 0.1087],
+    "slow_pred": [12.7726, 13.9831, 14.5927, 14.8863, 14.0549, 14.3591, 14.7893, 14.7779, 14.3739, 14.0758, 13.0735, 11.4906, 10.5198, 9.1041, 7.5652, 5.8285, 5.449, 5.0994, 4.4039, 4.0569, 3.9031, 3.6657, 3.7975, 4.1343, 4.6107, 4.6822]
+  },
+  "plot_data": {
+    "cots_pred": {
+      "Year": [1980, 1981, 1982, 1983, 1984, 1985, 1986, 1987, 1988, 1989, 1990, 1991, 1992, 1993, 1994, 1995, 1996, 1997, 1998, 1999, 2000, 2001, 2002, 2003, 2004, 2005],
+      "Modeled": [0.2615, 0.5768, 0.5291, 0.6546, 0.7425, 0.5652, 0.7214, 0.8102, 0.8051, 0.7795, 1.4983, 1.0347, 1.6408, 1.4917, 1.2961, 0.9923, 0.6425, 0.7514, 0.6662, 0.5343, 0.3868, 0.297, 0.2063, 0.17, 0.1548, 0.165],
+      "Observed": [0.2615, 0.5498, 0.7268, 0.5523, 0.8281, 0.547, 0.758, 0.6288, 0.4762, 0.6466, 0.9107, 2.152, 0.6446, 1.6723, 0.4766, 0.8075, 0.3635, 0.3728, 0.6173, 0.3107, 0.256, 0.2984, 0.3362, 0.2878, 0.3221, 0.4308]
+    },
+    "fast_pred": {
+      "Year": [1980, 1981, 1982, 1983, 1984, 1985, 1986, 1987, 1988, 1989, 1990, 1991, 1992, 1993, 1994, 1995, 1996, 1997, 1998, 1999, 2000, 2001, 2002, 2003, 2004, 2005],
+      "Modeled": [10.0694, 13.8477, 17.5556, 19.598, 15.071, 18.7081, 22.4151, 25.1064, 25.9047, 27.8978, 22.2232, 20.8474, 19.3995, 20.4522, 17.7094, 8.5035, 10.122, 9.5758, 6.2773, 5.6754, 5.7931, 4.4118, 5.3118, 7.4634, 11.3098, 10.7689],
+      "Observed": [10.0694, 17.7236, 23.8276, 19.4181, 15.6354, 32.4596, 21.5567, 34.1938, 18.8708, 27.3176, 44.3301, 13.3275, 11.3741, 8.3362, 15.207, 12.443, 11.0666, 10.6442, 2.3628, 2.76, 3.7236, 7.0355, 10.2239, 8.4754, 9.0819, 13.7314]
+    },
+    "slow_pred": {
+      "Year": [1980, 1981, 1982, 1983, 1984, 1985, 1986, 1987, 1988, 1989, 1990, 1991, 1992, 1993, 1994, 1995, 1996, 1997, 1998, 1999, 2000, 2001, 2002, 2003, 2004, 2005],
+      "Modeled": [12.7726, 13.9831, 14.5927, 14.8863, 14.0549, 14.3591, 14.7893, 14.7779, 14.3739, 14.0758, 13.0735, 11.4906, 10.5198, 9.1041, 7.5652, 5.8285, 5.449, 5.0994, 4.4039, 4.0569, 3.9031, 3.6657, 3.7975, 4.1343, 4.6107, 4.6822],
+      "Observed": [12.7726, 16.4147, 12.7773, 12.2798, 15.1152, 12.8194, 10.4631, 9.7251, 13.2014, 16.4512, 11.1393, 18.0832, 11.5223, 8.51, 9.1622, 5.3353, 8.6044, 7.2781, 2.629, 4.6951, 1.5948, 5.2172, 2.6041, 3.3618, 7.3289, 4.4014]
+    }
+  }
+}
+JSON_REPORT_END[0m
+[93m[PID 3575036] R script stdout END <<<[0m
+[93m[PID 3575036] R script stderr BEGIN >>>[0m
+[0mLoading required package: TMB
+Loading required package: jsonlite
+here() starts at /home/spi085/Documents/_Projects/EMs-with-LLMs
+using C++ compiler: ‘g++ (Ubuntu 13.3.0-6ubuntu2~24.04) 13.3.0’
+Warning message:
+`aes_string()` was deprecated in ggplot2 3.0.0.
+ℹ Please use tidy evaluation idioms with `aes()`.
+ℹ See also `vignette("ggplot2-in-packages")` for more information.[0m
+[93m[PID 3575036] R script stderr END <<<[0m
+[96m[PID 3575036] JSON detected, parsing...[0m
+[96m[PID 3575036] Writing model report...[0m
+[94m[PID 3575036] Objective value: 0.5206[0m
+[96m[PID 3575036] Generating plots...[0m
+[94m[PID 3575036] Objective Value: 0.5206[0m
+[92m[PID 3575036] Successful model run[0m
+[0m----------------------------------------------[0m
+FINAL MODEL RUN FINISHED
+Final model run successful. Objective value: 0.5206

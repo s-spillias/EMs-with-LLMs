@@ -1,0 +1,1284 @@
+You are a leading expert in constructing dynamic ecosystem models. You always use robust ecological theory to construct your models, which will be used for predicting future ecosystem states given data on initial conditions. Please create a Template Model Builder model for the following topic:The dynamical behaviour of a simple plankton population model, which explicitly simulates the concentrations of nutrient (N), phytoplankton (P) and zooplankton (Z) in the oceanic mixed layer. Start by writing intention.txt, in which you provide a concise summary of the ecological functioning of the model. In model.cpp, write your TMB model with the following important considerations:
+
+1. ECOLOGICAL PROCESSES:
+- Consider multiple forms of resource limitation (e.g., saturating functions, threshold effects)
+- Include process-specific efficiencies where biologically relevant
+- Think about how environmental conditions might modify rates
+- Consider indirect effects and feedback loops between components
+- Use functional responses that capture observed biological behaviors
+
+2. NUMERICAL STABILITY:
+- Always use small constants (e.g., Type(1e-8)) to prevent division by zero
+- Use smooth transitions instead of hard cutoffs in equations
+- Bound parameters within biologically meaningful ranges using smooth penalties rather than hard constraints
+  (and propose numeric lower/upper bounds per parameter when applicable; see parameters.json spec below)
+
+3. LIKELIHOOD CALCULATION:
+- Always include observations in the likelihood calculation, don't skip any based on conditions
+- Use fixed minimum standard deviations to prevent numerical issues when data values are small
+- Consider log-transforming data if it spans multiple orders of magnitude
+- Use appropriate error distributions (e.g., lognormal for strictly positive data)
+
+4. MODEL STRUCTURE:
+- Include comments after each line explaining the parameters (including their units and how to determine their values)
+- Provide a numbered list of descriptions for the equations
+- Ensure all _pred variables are included in the reporting section and called using REPORT()
+- Use '_pred' suffix for model predictions corresponding to '_dat' observations. Use the same _dat names as are found in the data file. Use the exact same time variable name as is provided in the first column of the datafile.
+- IMPORTANT: Never use current time step values of response variables (variables ending in '_dat') in prediction calculations. Only use values from previous time steps to avoid data leakage.
+- INITIAL CONDITIONS: Initialize your prediction vectors with the first data point using **name**_dat(0). For example: var1_pred(0) = var1_dat(0); var2_pred(0) = var2_dat(0); var3_pred(0) = var3_dat(0). This ensures initial conditions are drawn directly from the observed data rather than being optimization parameters.
+
+For the parameters.json file, please structure it as an array of parameter objects, where each parameter object must include the following fields:
+- parameter: The name of the parameter matching the model.cpp
+- value: The initial value for the parameter
+- description: A clear description of what the parameter represents, including units
+- source: Where the initial value comes from. IMPORTANT: If the source contains the word 'literature', this will automatically trigger downstream literature searches using Semantic Scholar and other academic databases to find citations and refine parameter values. Use 'literature' only when you want the system to search for academic papers. Use 'initial estimate' for parameters that are unlikely to have reported values in the literature.
+- import_type: Should be 'PARAMETER' for model parameters, or 'DATA_VECTOR'/'DATA_SCALAR' for data inputs
+- priority: A number indicating the optimization priority (1 for highest priority parameters to optimize first)
+- lower_bound (optional): Suggested biological lower bound as a number, or null if not applicable
+- upper_bound (optional): Suggested biological upper bound as a number, or null if not applicable
+
+Example structure:
+{
+  "parameters": [
+    {
+      "parameter": "growth_rate",
+      "value": 0.5,
+      "units": "dimensionsless | year ^-1",
+      "description": "Intrinsic growth rate (year^-1)",
+      "source": "literature",
+      "import_type": "PARAMETER",
+      "priority": 1,
+      "lower_bound": 0.0,
+      "upper_bound": null
+    }
+  ]
+}
+Warning: Input is not a terminal (fd=13).
+Skipping POPULATIONS/POPULATION_0019/INDIVIDUAL_JGE7YE3C/model.cpp that matches gitignore spec.
+Creating empty file POPULATIONS/POPULATION_0019/INDIVIDUAL_JGE7YE3C/model.cpp
+Skipping POPULATIONS/POPULATION_0019/INDIVIDUAL_JGE7YE3C/parameters.json that matches gitignore spec.
+Creating empty file POPULATIONS/POPULATION_0019/INDIVIDUAL_JGE7YE3C/parameters.json
+Skipping POPULATIONS/POPULATION_0019/INDIVIDUAL_JGE7YE3C/intention.txt that matches gitignore spec.
+Creating empty file POPULATIONS/POPULATION_0019/INDIVIDUAL_JGE7YE3C/intention.txt
+Added /home/spi085/Documents/_Projects/EMs-with-LLMs/Data/NPZ_example/npz_model_response.csv to read-only files.
+I'll create a comprehensive NPZ (Nutrient-Phytoplankton-Zooplankton) model based on robust ecological theory. This model will capture the key dynamics of plankton populations in the oceanic mixed layer.                  
+
+POPULATIONS/POPULATION_0019/INDIVIDUAL_JGE7YE3C/intention.txt                                                                                                                                                               
+
+                                                                                                                                                                                                                            
+ @@ -0,0 +1,22 @@                                                                                                                                                                                                           
+ +NPZ Model: Nutrient-Phytoplankton-Zooplankton Dynamics in the Oceanic Mixed Layer                                                                                                                                         
+ +                                                                                                                                                                                                                          
+ +This model simulates the coupled dynamics of nutrients, phytoplankton, and zooplankton in a marine ecosystem. The ecological functioning is based on the following principles:                                            
+ +                                                                                                                                                                                                                          
+ +1. NUTRIENT UPTAKE: Phytoplankton take up dissolved nutrients (N) for growth using a Michaelis-Menten (Monod) saturating function, representing limitation at low nutrient concentrations and saturation at high          
+ concentrations.                                                                                                                                                                                                            
+ +                                                                                                                                                                                                                          
+ +2. PHYTOPLANKTON GROWTH: Phytoplankton (P) grow by converting nutrients into biomass with a maximum growth rate modified by nutrient availability. A fraction of this growth is lost to respiration and natural mortality 
+ +                                                                                                                                                                                                                          
+ +3. GRAZING: Zooplankton (Z) consume phytoplankton using a Holling Type II functional response (saturating with prey density), representing handling time limitations at high phytoplankton densities.                     
+ +                                                                                                                                                                                                                          
+ +4. ZOOPLANKTON DYNAMICS: Zooplankton grow through assimilation of consumed phytoplankton (with conversion efficiency less than 1 due to metabolic costs) and experience natural mortality.                                
+ +                                                                                                                                                                                                                          
+ +5. NUTRIENT RECYCLING: Nutrients are recycled back into the system through phytoplankton mortality, zooplankton mortality, and zooplankton excretion (inefficient assimilation), creating a closed nutrient loop.         
+ +                                                                                                                                                                                                                          
+ +6. MASS BALANCE: The model conserves total nitrogen (N + P + Z remains approximately constant when accounting for all flows), representing a closed system in the mixed layer.                                            
+ +                                                                                                                                                                                                                          
+ +The model captures key ecological phenomena including:                                                                                                                                                                    
+ +- Bottom-up control (nutrient limitation of phytoplankton)                                                                                                                                                                
+ +- Top-down control (grazing pressure on phytoplankton)                                                                                                                                                                    
+ +- Trophic cascades and feedback loops                                                                                                                                                                                     
+ +- Potential for oscillatory dynamics and predator-prey cycles                                                                                                                                                             
+ +- Nutrient regeneration maintaining ecosystem productivity                                                                                                                                                                
+                                                                                                                                                                                                                            
+
+POPULATIONS/POPULATION_0019/INDIVIDUAL_JGE7YE3C/model.cpp                                                                                                                                                                   
+
+                                                                                                                                                                                                                            
+ @@ -0,0 +1,146 @@                                                                                                                                                                                                          
+ +#include <TMB.hpp>                                                                                                                                                                                                        
+ +                                                                                                                                                                                                                          
+ +template<class Type>                                                                                                                                                                                                      
+ +Type objective_function<Type>::operator() ()                                                                                                                                                                              
+ +{                                                                                                                                                                                                                         
+ +  // DATA INPUTS                                                                                                                                                                                                          
+ +  DATA_VECTOR(Time);  // Time in days                                                                                                                                                                                     
+ +  DATA_VECTOR(N_dat);  // Nutrient concentration observations (g C m^-3)                                                                                                                                                  
+ +  DATA_VECTOR(P_dat);  // Phytoplankton concentration observations (g C m^-3)                                                                                                                                             
+ +  DATA_VECTOR(Z_dat);  // Zooplankton concentration observations (g C m^-3)                                                                                                                                               
+ +                                                                                                                                                                                                                          
+ +  // PARAMETERS                                                                                                                                                                                                           
+ +  PARAMETER(r);  // Maximum phytoplankton growth rate (day^-1)                                                                                                                                                            
+ +  PARAMETER(K_N);  // Half-saturation constant for nutrient uptake (g C m^-3)                                                                                                                                             
+ +  PARAMETER(m_P);  // Phytoplankton mortality rate (day^-1)                                                                                                                                                               
+ +  PARAMETER(g_max);  // Maximum zooplankton grazing rate (day^-1)                                                                                                                                                         
+ +  PARAMETER(K_P);  // Half-saturation constant for grazing (g C m^-3)                                                                                                                                                     
+ +  PARAMETER(e);  // Zooplankton assimilation efficiency (dimensionless, 0-1)                                                                                                                                              
+ +  PARAMETER(m_Z);  // Zooplankton mortality rate (day^-1)                                                                                                                                                                 
+ +  PARAMETER(log_sigma_N);  // Log standard deviation for nutrient observations                                                                                                                                            
+ +  PARAMETER(log_sigma_P);  // Log standard deviation for phytoplankton observations                                                                                                                                       
+ +  PARAMETER(log_sigma_Z);  // Log standard deviation for zooplankton observations                                                                                                                                         
+ +                                                                                                                                                                                                                          
+ +  // Transform log standard deviations to ensure positivity                                                                                                                                                               
+ +  Type sigma_N = exp(log_sigma_N);  // Standard deviation for nutrient (g C m^-3)                                                                                                                                         
+ +  Type sigma_P = exp(log_sigma_P);  // Standard deviation for phytoplankton (g C m^-3)                                                                                                                                    
+ +  Type sigma_Z = exp(log_sigma_Z);  // Standard deviation for zooplankton (g C m^-3)                                                                                                                                      
+ +                                                                                                                                                                                                                          
+ +  // Add minimum standard deviations to prevent numerical issues                                                                                                                                                          
+ +  Type min_sigma = Type(1e-6);  // Minimum standard deviation (g C m^-3)                                                                                                                                                  
+ +  sigma_N = sigma_N + min_sigma;  // Ensure sigma_N is not too small                                                                                                                                                      
+ +  sigma_P = sigma_P + min_sigma;  // Ensure sigma_P is not too small                                                                                                                                                      
+ +  sigma_Z = sigma_Z + min_sigma;  // Ensure sigma_Z is not too small                                                                                                                                                      
+ +                                                                                                                                                                                                                          
+ +  // INITIALIZE PREDICTIONS                                                                                                                                                                                               
+ +  int n = Time.size();  // Number of time points                                                                                                                                                                          
+ +  vector<Type> N_pred(n);  // Predicted nutrient concentrations (g C m^-3)                                                                                                                                                
+ +  vector<Type> P_pred(n);  // Predicted phytoplankton concentrations (g C m^-3)                                                                                                                                           
+ +  vector<Type> Z_pred(n);  // Predicted zooplankton concentrations (g C m^-3)                                                                                                                                             
+ +                                                                                                                                                                                                                          
+ +  // Set initial conditions from first observation                                                                                                                                                                        
+ +  N_pred(0) = N_dat(0);  // Initial nutrient concentration from data (g C m^-3)                                                                                                                                           
+ +  P_pred(0) = P_dat(0);  // Initial phytoplankton concentration from data (g C m^-3)                                                                                                                                      
+ +  Z_pred(0) = Z_dat(0);  // Initial zooplankton concentration from data (g C m^-3)                                                                                                                                        
+ +                                                                                                                                                                                                                          
+ +  // Small constant to prevent division by zero                                                                                                                                                                           
+ +  Type eps = Type(1e-8);  // Small constant for numerical stability                                                                                                                                                       
+ +                                                                                                                                                                                                                          
+ +  // SIMULATE DYNAMICS                                                                                                                                                                                                    
+ +  for(int i = 1; i < n; i++) {                                                                                                                                                                                            
+ +    Type dt = Time(i) - Time(i-1);  // Time step (days)                                                                                                                                                                   
+ +                                                                                                                                                                                                                          
+ +    // Get previous state (avoid data leakage by using only previous predictions)                                                                                                                                         
+ +    Type N_prev = N_pred(i-1);  // Nutrient at previous time step (g C m^-3)                                                                                                                                              
+ +    Type P_prev = P_pred(i-1);  // Phytoplankton at previous time step (g C m^-3)                                                                                                                                         
+ +    Type Z_prev = Z_pred(i-1);  // Zooplankton at previous time step (g C m^-3)                                                                                                                                           
+ +                                                                                                                                                                                                                          
+ +    // Ensure non-negative concentrations                                                                                                                                                                                 
+ +    N_prev = fmax(N_prev, Type(0.0));  // Prevent negative nutrients (g C m^-3)                                                                                                                                           
+ +    P_prev = fmax(P_prev, Type(0.0));  // Prevent negative phytoplankton (g C m^-3)                                                                                                                                       
+ +    Z_prev = fmax(Z_prev, Type(0.0));  // Prevent negative zooplankton (g C m^-3)                                                                                                                                         
+ +                                                                                                                                                                                                                          
+ +    // EQUATION 1: Nutrient uptake by phytoplankton (Monod/Michaelis-Menten kinetics)                                                                                                                                     
+ +    Type nutrient_limitation = N_prev / (K_N + N_prev + eps);  // Dimensionless (0-1), nutrient limitation factor                                                                                                         
+ +                                                                                                                                                                                                                          
+ +    // EQUATION 2: Phytoplankton growth rate                                                                                                                                                                              
+ +    Type phyto_growth = r * nutrient_limitation * P_prev;  // g C m^-3 day^-1, nutrient-limited growth                                                                                                                    
+ +                                                                                                                                                                                                                          
+ +    // EQUATION 3: Phytoplankton mortality                                                                                                                                                                                
+ +    Type phyto_mortality = m_P * P_prev;  // g C m^-3 day^-1, linear mortality                                                                                                                                            
+ +                                                                                                                                                                                                                          
+ +    // EQUATION 4: Zooplankton grazing (Holling Type II functional response)                                                                                                                                              
+ +    Type grazing_rate = (g_max * P_prev) / (K_P + P_prev + eps);  // day^-1, per-capita grazing rate                                                                                                                      
+ +    Type grazing = grazing_rate * Z_prev;  // g C m^-3 day^-1, total grazing flux                                                                                                                                         
+ +                                                                                                                                                                                                                          
+ +    // EQUATION 5: Zooplankton growth (assimilation of grazed phytoplankton)                                                                                                                                              
+ +    Type zoo_growth = e * grazing;  // g C m^-3 day^-1, assimilated carbon from grazing                                                                                                                                   
+ +                                                                                                                                                                                                                          
+ +    // EQUATION 6: Zooplankton mortality                                                                                                                                                                                  
+ +    Type zoo_mortality = m_Z * Z_prev;  // g C m^-3 day^-1, linear mortality                                                                                                                                              
+ +                                                                                                                                                                                                                          
+ +    // EQUATION 7: Nutrient recycling (from phytoplankton mortality, zooplankton mortality, and inefficient grazing)                                                                                                      
+ +    Type nutrient_recycling = phyto_mortality + zoo_mortality + (Type(1.0) - e) * grazing;  // g C m^-3 day^-1, total nutrient return                                                                                     
+ +                                                                                                                                                                                                                          
+ +    // EQUATION 8: Rate of change for nutrients (dN/dt)                                                                                                                                                                   
+ +    Type dN_dt = -phyto_growth + nutrient_recycling;  // g C m^-3 day^-1, net nutrient change                                                                                                                             
+ +                                                                                                                                                                                                                          
+ +    // EQUATION 9: Rate of change for phytoplankton (dP/dt)                                                                                                                                                               
+ +    Type dP_dt = phyto_growth - phyto_mortality - grazing;  // g C m^-3 day^-1, net phytoplankton change                                                                                                                  
+ +                                                                                                                                                                                                                          
+ +    // EQUATION 10: Rate of change for zooplankton (dZ/dt)                                                                                                                                                                
+ +    Type dZ_dt = zoo_growth - zoo_mortality;  // g C m^-3 day^-1, net zooplankton change                                                                                                                                  
+ +                                                                                                                                                                                                                          
+ +    // Update predictions using Euler integration                                                                                                                                                                         
+ +    N_pred(i) = N_prev + dN_dt * dt;  // Nutrient at current time step (g C m^-3)                                                                                                                                         
+ +    P_pred(i) = P_prev + dP_dt * dt;  // Phytoplankton at current time step (g C m^-3)                                                                                                                                    
+ +    Z_pred(i) = Z_prev + dZ_dt * dt;  // Zooplankton at current time step (g C m^-3)                                                                                                                                      
+ +                                                                                                                                                                                                                          
+ +    // Ensure non-negative predictions                                                                                                                                                                                    
+ +    N_pred(i) = fmax(N_pred(i), Type(0.0));  // Prevent negative nutrients (g C m^-3)                                                                                                                                     
+ +    P_pred(i) = fmax(P_pred(i), Type(0.0));  // Prevent negative phytoplankton (g C m^-3)                                                                                                                                 
+ +    Z_pred(i) = fmax(Z_pred(i), Type(0.0));  // Prevent negative zooplankton (g C m^-3)                                                                                                                                   
+ +  }                                                                                                                                                                                                                       
+ +                                                                                                                                                                                                                          
+ +  // CALCULATE NEGATIVE LOG-LIKELIHOOD                                                                                                                                                                                    
+ +  Type nll = 0.0;  // Initialize negative log-likelihood                                                                                                                                                                  
+ +                                                                                                                                                                                                                          
+ +  // Add Gaussian likelihood for all observations                                                                                                                                                                         
+ +  for(int i = 0; i < n; i++) {                                                                                                                                                                                            
+ +    nll -= dnorm(N_dat(i), N_pred(i), sigma_N, true);  // Nutrient observation likelihood                                                                                                                                 
+ +    nll -= dnorm(P_dat(i), P_pred(i), sigma_P, true);  // Phytoplankton observation likelihood                                                                                                                            
+ +    nll -= dnorm(Z_dat(i), Z_pred(i), sigma_Z, true);  // Zooplankton observation likelihood                                                                                                                              
+ +  }                                                                                                                                                                                                                       
+ +                                                                                                                                                                                                                          
+ +  // SOFT PARAMETER CONSTRAINTS (biological realism penalties)                                                                                                                                                            
+ +  // Growth rate should be positive and reasonable (0.01 to 5.0 day^-1)                                                                                                                                                   
+ +  if(r < Type(0.01)) nll += Type(100.0) * pow(Type(0.01) - r, 2);  // Penalty for r too small                                                                                                                             
+ +  if(r > Type(5.0)) nll += Type(100.0) * pow(r - Type(5.0), 2);  // Penalty for r too large                                                                                                                               
+ +                                                                                                                                                                                                                          
+ +  // Half-saturation constants should be positive and reasonable (0.001 to 2.0 g C m^-3)                                                                                                                                  
+ +  if(K_N < Type(0.001)) nll += Type(100.0) * pow(Type(0.001) - K_N, 2);  // Penalty for K_N too small                                                                                                                     
+ +  if(K_N > Type(2.0)) nll += Type(100.0) * pow(K_N - Type(2.0), 2);  // Penalty for K_N too large                                                                                                                         
+ +  if(K_P < Type(0.001)) nll += Type(100.0) * pow(Type(0.001) - K_P, 2);  // Penalty for K_P too small                                                                                                                     
+ +  if(K_P > Type(2.0)) nll += Type(100.0) * pow(K_P - Type(2.0), 2);  // Penalty for K_P too large                                                                                                                         
+ +                                                                                                                                                                                                                          
+ +  // Mortality rates should be positive and reasonable (0.001 to 2.0 day^-1)                                                                                                                                              
+ +  if(m_P < Type(0.001)) nll += Type(100.0) * pow(Type(0.001) - m_P, 2);  // Penalty for m_P too small                                                                                                                     
+ +  if(m_P > Type(2.0)) nll += Type(100.0) * pow(m_P - Type(2.0), 2);  // Penalty for m_P too large                                                                                                                         
+ +  if(m_Z < Type(0.001)) nll += Type(100.0) * pow(Type(0.001) - m_Z, 2);  // Penalty for m_Z too small                                                                                                                     
+ +  if(m_Z > Type(2.0)) nll += Type(100.0) * pow(m_Z - Type(2.0), 2);  // Penalty for m_Z too large                                                                                                                         
+ +                                                                                                                                                                                                                          
+ +  // Grazing rate should be positive and reasonable (0.01 to 5.0 day^-1)                                                                                                                                                  
+ +  if(g_max < Type(0.01)) nll += Type(100.0) * pow(Type(0.01) - g_max, 2);  // Penalty for g_max too small                                                                                                                 
+ +  if(g_max > Type(5.0)) nll += Type(100.0) * pow(g_max - Type(5.0), 2);  // Penalty for g_max too large                                                                                                                   
+ +                                                                                                                                                                                                                          
+ +  // Assimilation efficiency should be between 0 and 1                                                                                                                                                                    
+ +  if(e < Type(0.0)) nll += Type(1000.0) * pow(e, 2);  // Strong penalty for negative efficiency                                                                                                                           
+ +  if(e > Type(1.0)) nll += Type(1000.0) * pow(e - Type(1.0), 2);  // Strong penalty for efficiency > 1                                                                                                                    
+ +                                                                                                                                                                                                                          
+ +  // REPORT PREDICTIONS                                                                                                                                                                                                   
+ +  REPORT(N_pred);  // Report predicted nutrient concentrations                                                                                                                                                            
+ +  REPORT(P_pred);  // Report predicted phytoplankton concentrations                                                                                                                                                       
+ +  REPORT(Z_pred);  // Report predicted zooplankton concentrations                                                                                                                                                         
+ +                                                                                                                                                                                                                          
+ +  return nll;  // Return negative log-likelihood for optimization                                                                                                                                                         
+ +}                                                                                                                                                                                                                         
+                                                                                                                                                                                                                            
+
+POPULATIONS/POPULATION_0019/INDIVIDUAL_JGE7YE3C/parameters.json                                                                                                                                                             
+
+                                                                                                                                                                                                                            
+ @@ -0,0 +1,158 @@                                                                                                                                                                                                          
+ +{                                                                                                                                                                                                                         
+ +  "parameters": [                                                                                                                                                                                                         
+ +    {                                                                                                                                                                                                                     
+ +      "parameter": "r",                                                                                                                                                                                                   
+ +      "value": 0.8,                                                                                                                                                                                                       
+ +      "units": "day^-1",                                                                                                                                                                                                  
+ +      "description": "Maximum phytoplankton growth rate under optimal nutrient conditions",                                                                                                                               
+ +      "source": "literature",                                                                                                                                                                                             
+ +      "import_type": "PARAMETER",                                                                                                                                                                                         
+ +      "priority": 1,                                                                                                                                                                                                      
+ +      "lower_bound": 0.01,                                                                                                                                                                                                
+ +      "upper_bound": 5.0                                                                                                                                                                                                  
+ +    },                                                                                                                                                                                                                    
+ +    {                                                                                                                                                                                                                     
+ +      "parameter": "K_N",                                                                                                                                                                                                 
+ +      "value": 0.1,                                                                                                                                                                                                       
+ +      "units": "g C m^-3",                                                                                                                                                                                                
+ +      "description": "Half-saturation constant for nutrient uptake by phytoplankton (Monod constant)",                                                                                                                    
+ +      "source": "literature",                                                                                                                                                                                             
+ +      "import_type": "PARAMETER",                                                                                                                                                                                         
+ +      "priority": 2,                                                                                                                                                                                                      
+ +      "lower_bound": 0.001,                                                                                                                                                                                               
+ +      "upper_bound": 2.0                                                                                                                                                                                                  
+ +    },                                                                                                                                                                                                                    
+ +    {                                                                                                                                                                                                                     
+ +      "parameter": "m_P",                                                                                                                                                                                                 
+ +      "value": 0.1,                                                                                                                                                                                                       
+ +      "units": "day^-1",                                                                                                                                                                                                  
+ +      "description": "Phytoplankton mortality rate (includes respiration and natural death)",                                                                                                                             
+ +      "source": "literature",                                                                                                                                                                                             
+ +      "import_type": "PARAMETER",                                                                                                                                                                                         
+ +      "priority": 2,                                                                                                                                                                                                      
+ +      "lower_bound": 0.001,                                                                                                                                                                                               
+ +      "upper_bound": 2.0                                                                                                                                                                                                  
+ +    },                                                                                                                                                                                                                    
+ +    {                                                                                                                                                                                                                     
+ +      "parameter": "g_max",                                                                                                                                                                                               
+ +      "value": 0.5,                                                                                                                                                                                                       
+ +      "units": "day^-1",                                                                                                                                                                                                  
+ +      "description": "Maximum zooplankton grazing rate (per-capita consumption rate at high phytoplankton density)",                                                                                                      
+ +      "source": "literature",                                                                                                                                                                                             
+ +      "import_type": "PARAMETER",                                                                                                                                                                                         
+ +      "priority": 1,                                                                                                                                                                                                      
+ +      "lower_bound": 0.01,                                                                                                                                                                                                
+ +      "upper_bound": 5.0                                                                                                                                                                                                  
+ +    },                                                                                                                                                                                                                    
+ +    {                                                                                                                                                                                                                     
+ +      "parameter": "K_P",                                                                                                                                                                                                 
+ +      "value": 0.2,                                                                                                                                                                                                       
+ +      "units": "g C m^-3",                                                                                                                                                                                                
+ +      "description": "Half-saturation constant for zooplankton grazing (Holling Type II parameter)",                                                                                                                      
+ +      "source": "literature",                                                                                                                                                                                             
+ +      "import_type": "PARAMETER",                                                                                                                                                                                         
+ +      "priority": 2,                                                                                                                                                                                                      
+ +      "lower_bound": 0.001,                                                                                                                                                                                               
+ +      "upper_bound": 2.0                                                                                                                                                                                                  
+ +    },                                                                                                                                                                                                                    
+ +    {                                                                                                                                                                                                                     
+ +      "parameter": "e",                                                                                                                                                                                                   
+ +      "value": 0.3,                                                                                                                                                                                                       
+ +      "units": "dimensionless",                                                                                                                                                                                           
+ +      "description": "Zooplankton assimilation efficiency (fraction of grazed phytoplankton converted to zooplankton biomass)",                                                                                           
+ +      "source": "literature",                                                                                                                                                                                             
+ +      "import_type": "PARAMETER",                                                                                                                                                                                         
+ +      "priority": 2,                                                                                                                                                                                                      
+ +      "lower_bound": 0.0,                                                                                                                                                                                                 
+ +      "upper_bound": 1.0                                                                                                                                                                                                  
+ +    },                                                                                                                                                                                                                    
+ +    {                                                                                                                                                                                                                     
+ +      "parameter": "m_Z",                                                                                                                                                                                                 
+ +      "value": 0.05,                                                                                                                                                                                                      
+ +      "units": "day^-1",                                                                                                                                                                                                  
+ +      "description": "Zooplankton mortality rate (includes predation, disease, and natural death)",                                                                                                                       
+ +      "source": "literature",                                                                                                                                                                                             
+ +      "import_type": "PARAMETER",                                                                                                                                                                                         
+ +      "priority": 2,                                                                                                                                                                                                      
+ +      "lower_bound": 0.001,                                                                                                                                                                                               
+ +      "upper_bound": 2.0                                                                                                                                                                                                  
+ +    },                                                                                                                                                                                                                    
+ +    {                                                                                                                                                                                                                     
+ +      "parameter": "log_sigma_N",                                                                                                                                                                                         
+ +      "value": -3.0,                                                                                                                                                                                                      
+ +      "units": "log(g C m^-3)",                                                                                                                                                                                           
+ +      "description": "Log standard deviation of nutrient observation error",                                                                                                                                              
+ +      "source": "initial estimate",                                                                                                                                                                                       
+ +      "import_type": "PARAMETER",                                                                                                                                                                                         
+ +      "priority": 3,                                                                                                                                                                                                      
+ +      "lower_bound": null,                                                                                                                                                                                                
+ +      "upper_bound": null                                                                                                                                                                                                 
+ +    },                                                                                                                                                                                                                    
+ +    {                                                                                                                                                                                                                     
+ +      "parameter": "log_sigma_P",                                                                                                                                                                                         
+ +      "value": -3.0,                                                                                                                                                                                                      
+ +      "units": "log(g C m^-3)",                                                                                                                                                                                           
+ +      "description": "Log standard deviation of phytoplankton observation error",                                                                                                                                         
+ +      "source": "initial estimate",                                                                                                                                                                                       
+ +      "import_type": "PARAMETER",                                                                                                                                                                                         
+ +      "priority": 3,                                                                                                                                                                                                      
+ +      "lower_bound": null,                                                                                                                                                                                                
+ +      "upper_bound": null                                                                                                                                                                                                 
+ +    },                                                                                                                                                                                                                    
+ +    {                                                                                                                                                                                                                     
+ +      "parameter": "log_sigma_Z",                                                                                                                                                                                         
+ +      "value": -3.0,                                                                                                                                                                                                      
+ +      "units": "log(g C m^-3)",                                                                                                                                                                                           
+ +      "description": "Log standard deviation of zooplankton observation error",                                                                                                                                           
+ +      "source": "initial estimate",                                                                                                                                                                                       
+ +      "import_type": "PARAMETER",                                                                                                                                                                                         
+ +      "priority": 3,                                                                                                                                                                                                      
+ +      "lower_bound": null,                                                                                                                                                                                                
+ +      "upper_bound": null                                                                                                                                                                                                 
+ +    },                                                                                                                                                                                                                    
+ +    {                                                                                                                                                                                                                     
+ +      "parameter": "Time",                                                                                                                                                                                                
+ +      "value": 0,                                                                                                                                                                                                         
+ +      "units": "days",                                                                                                                                                                                                    
+ +      "description": "Time vector for model simulation",                                                                                                                                                                  
+ +      "source": "data",                                                                                                                                                                                                   
+ +      "import_type": "DATA_VECTOR",                                                                                                                                                                                       
+ +      "priority": null,                                                                                                                                                                                                   
+ +      "lower_bound": null,                                                                                                                                                                                                
+ +      "upper_bound": null                                                                                                                                                                                                 
+ +    },                                                                                                                                                                                                                    
+ +    {                                                                                                                                                                                                                     
+ +      "parameter": "N_dat",                                                                                                                                                                                               
+ +      "value": 0,                                                                                                                                                                                                         
+ +      "units": "g C m^-3",                                                                                                                                                                                                
+ +      "description": "Observed nutrient concentrations",                                                                                                                                                                  
+ +      "source": "data",                                                                                                                                                                                                   
+ +      "import_type": "DATA_VECTOR",                                                                                                                                                                                       
+ +      "priority": null,                                                                                                                                                                                                   
+ +      "lower_bound": null,                                                                                                                                                                                                
+ +      "upper_bound": null                                                                                                                                                                                                 
+ +    },                                                                                                                                                                                                                    
+ +    {                                                                                                                                                                                                                     
+ +      "parameter": "P_dat",                                                                                                                                                                                               
+ +      "value": 0,                                                                                                                                                                                                         
+ +      "units": "g C m^-3",                                                                                                                                                                                                
+ +      "description": "Observed phytoplankton concentrations",                                                                                                                                                             
+ +      "source": "data",                                                                                                                                                                                                   
+ +      "import_type": "DATA_VECTOR",                                                                                                                                                                                       
+ +      "priority": null,                                                                                                                                                                                                   
+ +      "lower_bound": null,                                                                                                                                                                                                
+ +      "upper_bound": null                                                                                                                                                                                                 
+ +    },                                                                                                                                                                                                                    
+ +    {                                                                                                                                                                                                                     
+ +      "parameter": "Z_dat",                                                                                                                                                                                               
+ +      "value": 0,                                                                                                                                                                                                         
+ +      "units": "g C m^-3",                                                                                                                                                                                                
+ +      "description": "Observed zooplankton concentrations",                                                                                                                                                               
+ +      "source": "data",                                                                                                                                                                                                   
+ +      "import_type": "DATA_VECTOR",                                                                                                                                                                                       
+ +      "priority": null,                                                                                                                                                                                                   
+ +      "lower_bound": null,                                                                                                                                                                                                
+ +      "upper_bound": null                                                                                                                                                                                                 
+ +    }                                                                                                                                                                                                                     
+ +  ]                                                                                                                                                                                                                       
+ +}                                                                                                                                                                                                                         
+                                                                                                                                                                                                                            
+
+Tokens: 4.9k sent, 4.4k received.
+Committing POPULATIONS/POPULATION_0019/INDIVIDUAL_JGE7YE3C/intention.txt before applying edits.
+Committing POPULATIONS/POPULATION_0019/INDIVIDUAL_JGE7YE3C/model.cpp before applying edits.
+Committing POPULATIONS/POPULATION_0019/INDIVIDUAL_JGE7YE3C/parameters.json before applying edits.
+Unable to add /home/spi085/Documents/_Projects/EMs-with-LLMs/POPULATIONS/POPULATION_0019/INDIVIDUAL_JGE7YE3C/parameters.json: Cmd('git') failed due to: exit code(1)
+  cmdline: git add /home/spi085/Documents/_Projects/EMs-with-LLMs/POPULATIONS/POPULATION_0019/INDIVIDUAL_JGE7YE3C/parameters.json
+  stderr: 'The following paths are ignored by one of your .gitignore files:
+POPULATIONS
+hint: Use -f if you really want to add them.
+hint: Turn this message off by running
+hint: "git config advice.addIgnoredFile false"'
+Unable to add /home/spi085/Documents/_Projects/EMs-with-LLMs/POPULATIONS/POPULATION_0019/INDIVIDUAL_JGE7YE3C/model.cpp: Cmd('git') failed due to: exit code(1)
+  cmdline: git add /home/spi085/Documents/_Projects/EMs-with-LLMs/POPULATIONS/POPULATION_0019/INDIVIDUAL_JGE7YE3C/model.cpp
+  stderr: 'The following paths are ignored by one of your .gitignore files:
+POPULATIONS
+hint: Use -f if you really want to add them.
+hint: Turn this message off by running
+hint: "git config advice.addIgnoredFile false"'
+Unable to add /home/spi085/Documents/_Projects/EMs-with-LLMs/POPULATIONS/POPULATION_0019/INDIVIDUAL_JGE7YE3C/intention.txt: Cmd('git') failed due to: exit code(1)
+  cmdline: git add /home/spi085/Documents/_Projects/EMs-with-LLMs/POPULATIONS/POPULATION_0019/INDIVIDUAL_JGE7YE3C/intention.txt
+  stderr: 'The following paths are ignored by one of your .gitignore files:
+POPULATIONS
+hint: Use -f if you really want to add them.
+hint: Turn this message off by running
+hint: "git config advice.addIgnoredFile false"'
+Unable to commit: Cmd('git') failed due to: exit code(1)
+  cmdline: git commit -m feat: add individual JGE7YE3C to population 0019 --no-verify -- /home/spi085/Documents/_Projects/EMs-with-LLMs/POPULATIONS/POPULATION_0019/INDIVIDUAL_JGE7YE3C/parameters.json 
+/home/spi085/Documents/_Projects/EMs-with-LLMs/POPULATIONS/POPULATION_0019/INDIVIDUAL_JGE7YE3C/model.cpp /home/spi085/Documents/_Projects/EMs-with-LLMs/POPULATIONS/POPULATION_0019/INDIVIDUAL_JGE7YE3C/intention.txt
+  stderr: 'error: pathspec '/home/spi085/Documents/_Projects/EMs-with-LLMs/POPULATIONS/POPULATION_0019/INDIVIDUAL_JGE7YE3C/parameters.json' did not match any file(s) known to git
+error: pathspec '/home/spi085/Documents/_Projects/EMs-with-LLMs/POPULATIONS/POPULATION_0019/INDIVIDUAL_JGE7YE3C/model.cpp' did not match any file(s) known to git
+error: pathspec '/home/spi085/Documents/_Projects/EMs-with-LLMs/POPULATIONS/POPULATION_0019/INDIVIDUAL_JGE7YE3C/intention.txt' did not match any file(s) known to git'
+Applied edit to POPULATIONS/POPULATION_0019/INDIVIDUAL_JGE7YE3C/parameters.json
+Applied edit to POPULATIONS/POPULATION_0019/INDIVIDUAL_JGE7YE3C/model.cpp
+Applied edit to POPULATIONS/POPULATION_0019/INDIVIDUAL_JGE7YE3C/intention.txt
+Initialized new individual: POPULATIONS/POPULATION_0019/INDIVIDUAL_JGE7YE3C
+Validating model for data leakage...
+Opening file: POPULATIONS/POPULATION_0019/INDIVIDUAL_JGE7YE3C/model.cpp
+File read successfully
+TMB convention check: {'uses_tmb_header': True, 'uses_data_macros': True, 'uses_vector_type': True, 'uses_standard_report': True, 'uses_objective_function': True, 'uses_std_vector': False, 'uses_string_report': False}
+Extracting vectors...
+Found data vectors: {'Time', 'Z_dat', 'N_dat', 'P_dat'}
+Found prediction vectors: {'P_pred', 'N_pred', 'Z_pred'}
+Found reported vectors: {'P_pred', 'N_pred', 'Z_pred'}
+Finding initial conditions...
+Found 3 initial conditions
+Finding time-stepping loop...
+Found loop from line 50 to 103
+Looking for metadata file at: /home/spi085/Documents/_Projects/EMs-with-LLMs/POPULATIONS/POPULATION_0019/population_metadata.json
+Attempting to read CSV file: /home/spi085/Documents/_Projects/EMs-with-LLMs/Data/NPZ_example/npz_model_response.csv
+Successfully read CSV file with 4 columns
+Found response variables from /home/spi085/Documents/_Projects/EMs-with-LLMs/Data/NPZ_example/npz_model_response.csv: {'Z_dat', 'N_dat', 'P_dat'}
+[93m[PID 1508628] Running model for individual...[0m
+[0m[PID 1508628] Individual directory: POPULATIONS/POPULATION_0019/INDIVIDUAL_JGE7YE3C[0m
+[96m[PID 1508628] Launching Rscript... (timeout=none)[0m
+[93m[PID 1508628] R script stdout BEGIN >>>[0m
+[0mg++ -std=gnu++17 -I"/usr/share/R/include" -DNDEBUG -I"/home/spi085/R/x86_64-pc-linux-gnu-library/4.4/TMB/include" -I"/home/spi085/R/x86_64-pc-linux-gnu-library/4.4/RcppEigen/include"   -DTMB_EIGEN_DISABLE_WARNINGS   -DTMB_LIB_INIT=R_init_model  -DCPPAD_FRAMEWORK      -fpic  -O2  -c POPULATIONS/POPULATION_0019/INDIVIDUAL_JGE7YE3C/model.cpp -o POPULATIONS/POPULATION_0019/INDIVIDUAL_JGE7YE3C/model.o[0m
+[93m[PID 1508628] R script stdout END <<<[0m
+[93m[PID 1508628] R script stderr BEGIN >>>[0m
+[0mLoading required package: TMB
+Loading required package: jsonlite
+using C++ compiler: ‘g++ (Ubuntu 13.3.0-6ubuntu2~24.04) 13.3.0’
+POPULATIONS/POPULATION_0019/INDIVIDUAL_JGE7YE3C/model.cpp: In instantiation of ‘Type objective_function<Type>::operator()() [with Type = CppAD::AD<double>]’:
+/home/spi085/R/x86_64-pc-linux-gnu-library/4.4/TMB/include/tmb_core.hpp:1312:6:   required from here
+POPULATIONS/POPULATION_0019/INDIVIDUAL_JGE7YE3C/model.cpp:59:19: error: cannot convert ‘CppAD::AD<double>’ to ‘double’
+   59 |     N_prev = fmax(N_prev, Type(0.0));  // Prevent negative nutrients (g C m^-3)
+      |                   ^~~~~~
+      |                   |
+      |                   CppAD::AD<double>
+In file included from /usr/include/c++/13/cmath:47,
+                 from /home/spi085/R/x86_64-pc-linux-gnu-library/4.4/RcppEigen/include/Eigen/src/Core/util/Macros.h:679,
+                 from /home/spi085/R/x86_64-pc-linux-gnu-library/4.4/RcppEigen/include/Eigen/Core:19,
+                 from /home/spi085/R/x86_64-pc-linux-gnu-library/4.4/RcppEigen/include/Eigen/Dense:1,
+                 from /home/spi085/R/x86_64-pc-linux-gnu-library/4.4/TMB/include/TMB.hpp:92,
+                 from POPULATIONS/POPULATION_0019/INDIVIDUAL_JGE7YE3C/model.cpp:1:
+/usr/include/x86_64-linux-gnu/bits/mathcalls.h:333:1: note:   initializing argument 1 of ‘double fmax(double, double)’
+  333 | __MATHCALLX (fmax,, (_Mdouble_ __x, _Mdouble_ __y), (__const__));
+      | ^
+POPULATIONS/POPULATION_0019/INDIVIDUAL_JGE7YE3C/model.cpp:60:19: error: cannot convert ‘CppAD::AD<double>’ to ‘double’
+   60 |     P_prev = fmax(P_prev, Type(0.0));  // Prevent negative phytoplankton (g C m^-3)
+      |                   ^~~~~~
+      |                   |
+      |                   CppAD::AD<double>
+/usr/include/x86_64-linux-gnu/bits/mathcalls.h:333:1: note:   initializing argument 1 of ‘double fmax(double, double)’
+  333 | __MATHCALLX (fmax,, (_Mdouble_ __x, _Mdouble_ __y), (__const__));
+      | ^
+POPULATIONS/POPULATION_0019/INDIVIDUAL_JGE7YE3C/model.cpp:61:19: error: cannot convert ‘CppAD::AD<double>’ to ‘double’
+   61 |     Z_prev = fmax(Z_prev, Type(0.0));  // Prevent negative zooplankton (g C m^-3)
+      |                   ^~~~~~
+      |                   |
+      |                   CppAD::AD<double>
+/usr/include/x86_64-linux-gnu/bits/mathcalls.h:333:1: note:   initializing argument 1 of ‘double fmax(double, double)’
+  333 | __MATHCALLX (fmax,, (_Mdouble_ __x, _Mdouble_ __y), (__const__));
+      | ^
+POPULATIONS/POPULATION_0019/INDIVIDUAL_JGE7YE3C/model.cpp:100:21: error: cannot convert ‘Eigen::DenseCoeffsBase<Eigen::Array<CppAD::AD<double>, -1, 1, 0, -1, 1>, 1>::Scalar’ {aka ‘CppAD::AD<double>’} to ‘double’
+  100 |     N_pred(i) = fmax(N_pred(i), Type(0.0));  // Prevent negative nutrients (g C m^-3)
+      |                 ~~~~^~~~~~~~~~~~~~~~~~~~~~
+      |                     |
+      |                     Eigen::DenseCoeffsBase<Eigen::Array<CppAD::AD<double>, -1, 1, 0, -1, 1>, 1>::Scalar {aka CppAD::AD<double>}
+/usr/include/x86_64-linux-gnu/bits/mathcalls.h:333:1: note:   initializing argument 1 of ‘double fmax(double, double)’
+  333 | __MATHCALLX (fmax,, (_Mdouble_ __x, _Mdouble_ __y), (__const__));
+      | ^
+POPULATIONS/POPULATION_0019/INDIVIDUAL_JGE7YE3C/model.cpp:101:21: error: cannot convert ‘Eigen::DenseCoeffsBase<Eigen::Array<CppAD::AD<double>, -1, 1, 0, -1, 1>, 1>::Scalar’ {aka ‘CppAD::AD<double>’} to ‘double’
+  101 |     P_pred(i) = fmax(P_pred(i), Type(0.0));  // Prevent negative phytoplankton (g C m^-3)
+      |                 ~~~~^~~~~~~~~~~~~~~~~~~~~~
+      |                     |
+      |                     Eigen::DenseCoeffsBase<Eigen::Array<CppAD::AD<double>, -1, 1, 0, -1, 1>, 1>::Scalar {aka CppAD::AD<double>}
+/usr/include/x86_64-linux-gnu/bits/mathcalls.h:333:1: note:   initializing argument 1 of ‘double fmax(double, double)’
+  333 | __MATHCALLX (fmax,, (_Mdouble_ __x, _Mdouble_ __y), (__const__));
+      | ^
+POPULATIONS/POPULATION_0019/INDIVIDUAL_JGE7YE3C/model.cpp:102:21: error: cannot convert ‘Eigen::DenseCoeffsBase<Eigen::Array<CppAD::AD<double>, -1, 1, 0, -1, 1>, 1>::Scalar’ {aka ‘CppAD::AD<double>’} to ‘double’
+  102 |     Z_pred(i) = fmax(Z_pred(i), Type(0.0));  // Prevent negative zooplankton (g C m^-3)
+      |                 ~~~~^~~~~~~~~~~~~~~~~~~~~~
+      |                     |
+      |                     Eigen::DenseCoeffsBase<Eigen::Array<CppAD::AD<double>, -1, 1, 0, -1, 1>, 1>::Scalar {aka CppAD::AD<double>}
+/usr/include/x86_64-linux-gnu/bits/mathcalls.h:333:1: note:   initializing argument 1 of ‘double fmax(double, double)’
+  333 | __MATHCALLX (fmax,, (_Mdouble_ __x, _Mdouble_ __y), (__const__));
+      | ^
+POPULATIONS/POPULATION_0019/INDIVIDUAL_JGE7YE3C/model.cpp: In instantiation of ‘Type objective_function<Type>::operator()() [with Type = CppAD::AD<CppAD::AD<double> >]’:
+/home/spi085/R/x86_64-pc-linux-gnu-library/4.4/TMB/include/tmb_core.hpp:917:29:   required from ‘Type objective_function<Type>::evalUserTemplate() [with Type = CppAD::AD<CppAD::AD<double> >]’
+/home/spi085/R/x86_64-pc-linux-gnu-library/4.4/TMB/include/tmb_core.hpp:2116:26:   required from here
+POPULATIONS/POPULATION_0019/INDIVIDUAL_JGE7YE3C/model.cpp:59:19: error: cannot convert ‘CppAD::AD<CppAD::AD<double> >’ to ‘double’
+   59 |     N_prev = fmax(N_prev, Type(0.0));  // Prevent negative nutrients (g C m^-3)
+      |                   ^~~~~~
+      |                   |
+      |                   CppAD::AD<CppAD::AD<double> >
+/usr/include/x86_64-linux-gnu/bits/mathcalls.h:333:1: note:   initializing argument 1 of ‘double fmax(double, double)’
+  333 | __MATHCALLX (fmax,, (_Mdouble_ __x, _Mdouble_ __y), (__const__));
+      | ^
+POPULATIONS/POPULATION_0019/INDIVIDUAL_JGE7YE3C/model.cpp:60:19: error: cannot convert ‘CppAD::AD<CppAD::AD<double> >’ to ‘double’
+   60 |     P_prev = fmax(P_prev, Type(0.0));  // Prevent negative phytoplankton (g C m^-3)
+      |                   ^~~~~~
+      |                   |
+      |                   CppAD::AD<CppAD::AD<double> >
+/usr/include/x86_64-linux-gnu/bits/mathcalls.h:333:1: note:   initializing argument 1 of ‘double fmax(double, double)’
+  333 | __MATHCALLX (fmax,, (_Mdouble_ __x, _Mdouble_ __y), (__const__));
+      | ^
+POPULATIONS/POPULATION_0019/INDIVIDUAL_JGE7YE3C/model.cpp:61:19: error: cannot convert ‘CppAD::AD<CppAD::AD<double> >’ to ‘double’
+   61 |     Z_prev = fmax(Z_prev, Type(0.0));  // Prevent negative zooplankton (g C m^-3)
+      |                   ^~~~~~
+      |                   |
+      |                   CppAD::AD<CppAD::AD<double> >
+/usr/include/x86_64-linux-gnu/bits/mathcalls.h:333:1: note:   initializing argument 1 of ‘double fmax(double, double)’
+  333 | __MATHCALLX (fmax,, (_Mdouble_ __x, _Mdouble_ __y), (__const__));
+      | ^
+POPULATIONS/POPULATION_0019/INDIVIDUAL_JGE7YE3C/model.cpp:100:21: error: cannot convert ‘Eigen::DenseCoeffsBase<Eigen::Array<CppAD::AD<CppAD::AD<double> >, -1, 1, 0, -1, 1>, 1>::Scalar’ {aka ‘CppAD::AD<CppAD::AD<double> >’} to ‘double’
+  100 |     N_pred(i) = fmax(N_pred(i), Type(0.0));  // Prevent negative nutrients (g C m^-3)
+      |                 ~~~~^~~~~~~~~~~~~~~~~~~~~~
+      |                     |
+      |                     Eigen::DenseCoeffsBase<Eigen::Array<CppAD::AD<CppAD::AD<double> >, -1, 1, 0, -1, 1>, 1>::Scalar {aka CppAD::AD<CppAD::AD<double> >}
+/usr/include/x86_64-linux-gnu/bits/mathcalls.h:333:1: note:   initializing argument 1 of ‘double fmax(double, double)’
+  333 | __MATHCALLX (fmax,, (_Mdouble_ __x, _Mdouble_ __y), (__const__));
+      | ^
+POPULATIONS/POPULATION_0019/INDIVIDUAL_JGE7YE3C/model.cpp:101:21: error: cannot convert ‘Eigen::DenseCoeffsBase<Eigen::Array<CppAD::AD<CppAD::AD<double> >, -1, 1, 0, -1, 1>, 1>::Scalar’ {aka ‘CppAD::AD<CppAD::AD<double> >’} to ‘double’
+  101 |     P_pred(i) = fmax(P_pred(i), Type(0.0));  // Prevent negative phytoplankton (g C m^-3)
+      |                 ~~~~^~~~~~~~~~~~~~~~~~~~~~
+      |                     |
+      |                     Eigen::DenseCoeffsBase<Eigen::Array<CppAD::AD<CppAD::AD<double> >, -1, 1, 0, -1, 1>, 1>::Scalar {aka CppAD::AD<CppAD::AD<double> >}
+/usr/include/x86_64-linux-gnu/bits/mathcalls.h:333:1: note:   initializing argument 1 of ‘double fmax(double, double)’
+  333 | __MATHCALLX (fmax,, (_Mdouble_ __x, _Mdouble_ __y), (__const__));
+      | ^
+POPULATIONS/POPULATION_0019/INDIVIDUAL_JGE7YE3C/model.cpp:102:21: error: cannot convert ‘Eigen::DenseCoeffsBase<Eigen::Array<CppAD::AD<CppAD::AD<double> >, -1, 1, 0, -1, 1>, 1>::Scalar’ {aka ‘CppAD::AD<CppAD::AD<double> >’} to ‘double’
+  102 |     Z_pred(i) = fmax(Z_pred(i), Type(0.0));  // Prevent negative zooplankton (g C m^-3)
+      |                 ~~~~^~~~~~~~~~~~~~~~~~~~~~
+      |                     |
+      |                     Eigen::DenseCoeffsBase<Eigen::Array<CppAD::AD<CppAD::AD<double> >, -1, 1, 0, -1, 1>, 1>::Scalar {aka CppAD::AD<CppAD::AD<double> >}
+/usr/include/x86_64-linux-gnu/bits/mathcalls.h:333:1: note:   initializing argument 1 of ‘double fmax(double, double)’
+  333 | __MATHCALLX (fmax,, (_Mdouble_ __x, _Mdouble_ __y), (__const__));
+      | ^
+POPULATIONS/POPULATION_0019/INDIVIDUAL_JGE7YE3C/model.cpp: In instantiation of ‘Type objective_function<Type>::operator()() [with Type = CppAD::AD<CppAD::AD<CppAD::AD<double> > >]’:
+/home/spi085/R/x86_64-pc-linux-gnu-library/4.4/TMB/include/tmb_core.hpp:917:29:   required from ‘Type objective_function<Type>::evalUserTemplate() [with Type = CppAD::AD<CppAD::AD<CppAD::AD<double> > >]’
+/home/spi085/R/x86_64-pc-linux-gnu-library/4.4/TMB/include/tmb_core.hpp:2365:28:   required from here
+POPULATIONS/POPULATION_0019/INDIVIDUAL_JGE7YE3C/model.cpp:59:19: error: cannot convert ‘CppAD::AD<CppAD::AD<CppAD::AD<double> > >’ to ‘double’
+   59 |     N_prev = fmax(N_prev, Type(0.0));  // Prevent negative nutrients (g C m^-3)
+      |                   ^~~~~~
+      |                   |
+      |                   CppAD::AD<CppAD::AD<CppAD::AD<double> > >
+/usr/include/x86_64-linux-gnu/bits/mathcalls.h:333:1: note:   initializing argument 1 of ‘double fmax(double, double)’
+  333 | __MATHCALLX (fmax,, (_Mdouble_ __x, _Mdouble_ __y), (__const__));
+      | ^
+POPULATIONS/POPULATION_0019/INDIVIDUAL_JGE7YE3C/model.cpp:60:19: error: cannot convert ‘CppAD::AD<CppAD::AD<CppAD::AD<double> > >’ to ‘double’
+   60 |     P_prev = fmax(P_prev, Type(0.0));  // Prevent negative phytoplankton (g C m^-3)
+      |                   ^~~~~~
+      |                   |
+      |                   CppAD::AD<CppAD::AD<CppAD::AD<double> > >
+/usr/include/x86_64-linux-gnu/bits/mathcalls.h:333:1: note:   initializing argument 1 of ‘double fmax(double, double)’
+  333 | __MATHCALLX (fmax,, (_Mdouble_ __x, _Mdouble_ __y), (__const__));
+      | ^
+POPULATIONS/POPULATION_0019/INDIVIDUAL_JGE7YE3C/model.cpp:61:19: error: cannot convert ‘CppAD::AD<CppAD::AD<CppAD::AD<double> > >’ to ‘double’
+   61 |     Z_prev = fmax(Z_prev, Type(0.0));  // Prevent negative zooplankton (g C m^-3)
+      |                   ^~~~~~
+      |                   |
+      |                   CppAD::AD<CppAD::AD<CppAD::AD<double> > >
+/usr/include/x86_64-linux-gnu/bits/mathcalls.h:333:1: note:   initializing argument 1 of ‘double fmax(double, double)’
+  333 | __MATHCALLX (fmax,, (_Mdouble_ __x, _Mdouble_ __y), (__const__));
+      | ^
+POPULATIONS/POPULATION_0019/INDIVIDUAL_JGE7YE3C/model.cpp:100:21: error: cannot convert ‘Eigen::DenseCoeffsBase<Eigen::Array<CppAD::AD<CppAD::AD<CppAD::AD<double> > >, -1, 1, 0, -1, 1>, 1>::Scalar’ {aka ‘CppAD::AD<CppAD::AD<CppAD::AD<double> > >’} to ‘double’
+  100 |     N_pred(i) = fmax(N_pred(i), Type(0.0));  // Prevent negative nutrients (g C m^-3)
+      |                 ~~~~^~~~~~~~~~~~~~~~~~~~~~
+      |                     |
+      |                     Eigen::DenseCoeffsBase<Eigen::Array<CppAD::AD<CppAD::AD<CppAD::AD<double> > >, -1, 1, 0, -1, 1>, 1>::Scalar {aka CppAD::AD<CppAD::AD<CppAD::AD<double> > >}
+/usr/include/x86_64-linux-gnu/bits/mathcalls.h:333:1: note:   initializing argument 1 of ‘double fmax(double, double)’
+  333 | __MATHCALLX (fmax,, (_Mdouble_ __x, _Mdouble_ __y), (__const__));
+      | ^
+POPULATIONS/POPULATION_0019/INDIVIDUAL_JGE7YE3C/model.cpp:101:21: error: cannot convert ‘Eigen::DenseCoeffsBase<Eigen::Array<CppAD::AD<CppAD::AD<CppAD::AD<double> > >, -1, 1, 0, -1, 1>, 1>::Scalar’ {aka ‘CppAD::AD<CppAD::AD<CppAD::AD<double> > >’} to ‘double’
+  101 |     P_pred(i) = fmax(P_pred(i), Type(0.0));  // Prevent negative phytoplankton (g C m^-3)
+      |                 ~~~~^~~~~~~~~~~~~~~~~~~~~~
+      |                     |
+      |                     Eigen::DenseCoeffsBase<Eigen::Array<CppAD::AD<CppAD::AD<CppAD::AD<double> > >, -1, 1, 0, -1, 1>, 1>::Scalar {aka CppAD::AD<CppAD::AD<CppAD::AD<double> > >}
+/usr/include/x86_64-linux-gnu/bits/mathcalls.h:333:1: note:   initializing argument 1 of ‘double fmax(double, double)’
+  333 | __MATHCALLX (fmax,, (_Mdouble_ __x, _Mdouble_ __y), (__const__));
+      | ^
+POPULATIONS/POPULATION_0019/INDIVIDUAL_JGE7YE3C/model.cpp:102:21: error: cannot convert ‘Eigen::DenseCoeffsBase<Eigen::Array<CppAD::AD<CppAD::AD<CppAD::AD<double> > >, -1, 1, 0, -1, 1>, 1>::Scalar’ {aka ‘CppAD::AD<CppAD::AD<CppAD::AD<double> > >’} to ‘double’
+  102 |     Z_pred(i) = fmax(Z_pred(i), Type(0.0));  // Prevent negative zooplankton (g C m^-3)
+      |                 ~~~~^~~~~~~~~~~~~~~~~~~~~~
+      |                     |
+      |                     Eigen::DenseCoeffsBase<Eigen::Array<CppAD::AD<CppAD::AD<CppAD::AD<double> > >, -1, 1, 0, -1, 1>, 1>::Scalar {aka CppAD::AD<CppAD::AD<CppAD::AD<double> > >}
+/usr/include/x86_64-linux-gnu/bits/mathcalls.h:333:1: note:   initializing argument 1 of ‘double fmax(double, double)’
+  333 | __MATHCALLX (fmax,, (_Mdouble_ __x, _Mdouble_ __y), (__const__));
+      | ^
+make: *** [/usr/lib/R/etc/Makeconf:204: POPULATIONS/POPULATION_0019/INDIVIDUAL_JGE7YE3C/model.o] Error 1
+Error in TMB::compile(file.path(individual_dir, model_file), flags = flags,  : 
+  Compilation failed
+Error: Compilation failed
+Execution halted[0m
+[93m[PID 1508628] R script stderr END <<<[0m
+[91mModel failed to compile.[0m
+MODEL RUN FINISHED
+Error: Objective value is None
+Initial run failed. Attempting to fix...
+Fixing broken model iteration: 0
+The compilation error is occurring because fmax() is not compatible with TMB's automatic differentiation types. In TMB, we need to use CppAD::CondExpGe() for conditional operations or use smooth approximations instead of
+hard cutoffs.                                                                                                                                                                                                               
+
+I'll fix this by replacing fmax() calls with CppAD::CondExpGe() which is the TMB-compatible way to handle conditional expressions.                                                                                          
+
+POPULATIONS/POPULATION_0019/INDIVIDUAL_JGE7YE3C/model.cpp                                                                                                                                                                   
+
+                                                                                                                                                                                                                            
+ @@ -1,4 +1,5 @@                                                                                                                                                                                                            
+  #include <TMB.hpp>                                                                                                                                                                                                        
+      Type N_prev = N_pred(i-1);  // Nutrient at previous time step (g C m^-3)                                                                                                                                              
+      Type P_prev = P_pred(i-1);  // Phytoplankton at previous time step (g C m^-3)                                                                                                                                         
+      Type Z_prev = Z_pred(i-1);  // Zooplankton at previous time step (g C m^-3)                                                                                                                                           
+                                                                                                                                                                                                                            
+ -    // Ensure non-negative concentrations                                                                                                                                                                                 
+ -    N_prev = fmax(N_prev, Type(0.0));  // Prevent negative nutrients (g C m^-3)                                                                                                                                           
+ -    P_prev = fmax(P_prev, Type(0.0));  // Prevent negative phytoplankton (g C m^-3)                                                                                                                                       
+ -    Z_prev = fmax(Z_prev, Type(0.0));  // Prevent negative zooplankton (g C m^-3)                                                                                                                                         
+ +    // Ensure non-negative concentrations using CppAD::CondExpGe (TMB-compatible)                                                                                                                                         
+ +    N_prev = CppAD::CondExpGe(N_prev, Type(0.0), N_prev, Type(0.0));  // Prevent negative nutrients (g C m^-3)                                                                                                            
+ +    P_prev = CppAD::CondExpGe(P_prev, Type(0.0), P_prev, Type(0.0));  // Prevent negative phytoplankton (g C m^-3)                                                                                                        
+ +    Z_prev = CppAD::CondExpGe(Z_prev, Type(0.0), Z_prev, Type(0.0));  // Prevent negative zooplankton (g C m^-3)                                                                                                          
+                                                                                                                                                                                                                            
+      // EQUATION 1: Nutrient uptake by phytoplankton (Monod/Michaelis-Menten kinetics)                                                                                                                                     
+      Type nutrient_limitation = N_prev / (K_N + N_prev + eps);  // Dimensionless (0-1), nutrient limitation factor                                                                                                         
+                                                                                                                                                                                                                            
+      // EQUATION 2: Phytoplankton growth rate                                                                                                                                                                              
+      Type phyto_growth = r * nutrient_limitation * P_prev;  // g C m^-3 day^-1, nutrient-limited growth                                                                                                                    
+                                                                                                                                                                                                                            
+      N_pred(i) = N_prev + dN_dt * dt;  // Nutrient at current time step (g C m^-3)                                                                                                                                         
+      P_pred(i) = P_prev + dP_dt * dt;  // Phytoplankton at current time step (g C m^-3)                                                                                                                                    
+      Z_pred(i) = Z_prev + dZ_dt * dt;  // Zooplankton at current time step (g C m^-3)                                                                                                                                      
+                                                                                                                                                                                                                            
+ -    // Ensure non-negative predictions                                                                                                                                                                                    
+ -    N_pred(i) = fmax(N_pred(i), Type(0.0));  // Prevent negative nutrients (g C m^-3)                                                                                                                                     
+ -    P_pred(i) = fmax(P_pred(i), Type(0.0));  // Prevent negative phytoplankton (g C m^-3)                                                                                                                                 
+ -    Z_pred(i) = fmax(Z_pred(i), Type(0.0));  // Prevent negative zooplankton (g C m^-3)                                                                                                                                   
+ +    // Ensure non-negative predictions using CppAD::CondExpGe (TMB-compatible)                                                                                                                                            
+ +    N_pred(i) = CppAD::CondExpGe(N_pred(i), Type(0.0), N_pred(i), Type(0.0));  // Prevent negative nutrients (g C m^-3)                                                                                                   
+ +    P_pred(i) = CppAD::CondExpGe(P_pred(i), Type(0.0), P_pred(i), Type(0.0));  // Prevent negative phytoplankton (g C m^-3)                                                                                               
+ +    Z_pred(i) = CppAD::CondExpGe(Z_pred(i), Type(0.0), Z_pred(i), Type(0.0));  // Prevent negative zooplankton (g C m^-3)                                                                                                 
+    }                                                                                                                                                                                                                       
+                                                                                                                                                                                                                            
+    // CALCULATE NEGATIVE LOG-LIKELIHOOD                                                                                                                                                                                    
+    Type nll = 0.0;  // Initialize negative log-likelihood                                                                                                                                                                  
+                                                                                                                                                                                                                            
+ @@ -110,5 +110,6 @@                                                                                                                                                                                                        
+      nll -= dnorm(N_dat(i), N_pred(i), sigma_N, true);  // Nutrient observation likelihood                                                                                                                                 
+      nll -= dnorm(P_dat(i), P_pred(i), sigma_P, true);  // Phytoplankton observation likelihood                                                                                                                            
+      nll -= dnorm(Z_dat(i), Z_pred(i), sigma_Z, true);  // Zooplankton observation likelihood                                                                                                                              
+    }                                                                                                                                                                                                                       
+                                                                                                                                                                                                                            
+ + 114 / 146 lines [███████████████████████░░░░░░░]  78%                                                                                                                                                                    
+                                                                                                                                                                                                                            
+Tokens: 19k sent, 2.8k received.
+Committing POPULATIONS/POPULATION_0019/INDIVIDUAL_JGE7YE3C/model.cpp before applying edits.
+Unable to add /home/spi085/Documents/_Projects/EMs-with-LLMs/POPULATIONS/POPULATION_0019/INDIVIDUAL_JGE7YE3C/model.cpp: Cmd('git') failed due to: exit code(1)
+  cmdline: git add /home/spi085/Documents/_Projects/EMs-with-LLMs/POPULATIONS/POPULATION_0019/INDIVIDUAL_JGE7YE3C/model.cpp
+  stderr: 'The following paths are ignored by one of your .gitignore files:
+POPULATIONS
+hint: Use -f if you really want to add them.
+hint: Turn this message off by running
+hint: "git config advice.addIgnoredFile false"'
+Unable to commit: Cmd('git') failed due to: exit code(1)
+  cmdline: git commit -m feat: add model implementation for individual JGE7YE3C in population 0019 --no-verify -- /home/spi085/Documents/_Projects/EMs-with-LLMs/POPULATIONS/POPULATION_0019/INDIVIDUAL_JGE7YE3C/model.cpp
+  stderr: 'error: pathspec '/home/spi085/Documents/_Projects/EMs-with-LLMs/POPULATIONS/POPULATION_0019/INDIVIDUAL_JGE7YE3C/model.cpp' did not match any file(s) known to git'
+Applied edit to POPULATIONS/POPULATION_0019/INDIVIDUAL_JGE7YE3C/model.cpp
+Validating fixed model for data leakage...
+Opening file: POPULATIONS/POPULATION_0019/INDIVIDUAL_JGE7YE3C/model.cpp
+File read successfully
+TMB convention check: {'uses_tmb_header': True, 'uses_data_macros': True, 'uses_vector_type': True, 'uses_standard_report': True, 'uses_objective_function': True, 'uses_std_vector': False, 'uses_string_report': False}
+Extracting vectors...
+Found data vectors: {'Time', 'Z_dat', 'N_dat', 'P_dat'}
+Found prediction vectors: {'P_pred', 'N_pred', 'Z_pred'}
+Found reported vectors: {'P_pred', 'N_pred', 'Z_pred'}
+Finding initial conditions...
+Found 3 initial conditions
+Finding time-stepping loop...
+Found loop from line 50 to 103
+Looking for metadata file at: /home/spi085/Documents/_Projects/EMs-with-LLMs/POPULATIONS/POPULATION_0019/population_metadata.json
+Attempting to read CSV file: /home/spi085/Documents/_Projects/EMs-with-LLMs/Data/NPZ_example/npz_model_response.csv
+Successfully read CSV file with 4 columns
+Found response variables from /home/spi085/Documents/_Projects/EMs-with-LLMs/Data/NPZ_example/npz_model_response.csv: {'Z_dat', 'N_dat', 'P_dat'}
+[93m[PID 1508628] Running model for individual...[0m
+[0m[PID 1508628] Individual directory: POPULATIONS/POPULATION_0019/INDIVIDUAL_JGE7YE3C[0m
+[96m[PID 1508628] Launching Rscript... (timeout=none)[0m
+[93m[PID 1508628] R script stdout BEGIN >>>[0m
+[0mg++ -std=gnu++17 -I"/usr/share/R/include" -DNDEBUG -I"/home/spi085/R/x86_64-pc-linux-gnu-library/4.4/TMB/include" -I"/home/spi085/R/x86_64-pc-linux-gnu-library/4.4/RcppEigen/include"   -DTMB_EIGEN_DISABLE_WARNINGS   -DTMB_LIB_INIT=R_init_model  -DCPPAD_FRAMEWORK      -fpic  -O2  -c POPULATIONS/POPULATION_0019/INDIVIDUAL_JGE7YE3C/model.cpp -o POPULATIONS/POPULATION_0019/INDIVIDUAL_JGE7YE3C/model.o
+g++ -std=gnu++17 -shared -L/usr/lib/R/lib -Wl,-Bsymbolic-functions -flto=auto -ffat-lto-objects -Wl,-z,relro -o POPULATIONS/POPULATION_0019/INDIVIDUAL_JGE7YE3C/model.so POPULATIONS/POPULATION_0019/INDIVIDUAL_JGE7YE3C/model.o -L/usr/lib/R/lib -lR
+
+NA counts per required column:
+ Time N_dat P_dat Z_dat 
+    0     0     0     0 
+
+NA counts per required column:
+ Time N_dat P_dat Z_dat 
+    0     0     0     0 
+
+PARAMETER starts (first few):
+          r         K_N         m_P       g_max         K_P           e 
+       0.80        0.10        0.10        0.50        0.20        0.30 
+        m_Z log_sigma_N log_sigma_P log_sigma_Z 
+       0.05       -3.00       -3.00       -3.00 
+Starting model phases
+Number of phases: 3 
+Phase 1 
+Initial parameter values for phase 1 :
+    r g_max 
+  0.8   0.5 
+Final parameter values for phase 1 :
+        r     g_max 
+0.2320699 0.4620931 
+Convergence message: both X-convergence and relative convergence (5) 
+Number of iterations: 26 
+Objective function value: 220.498 
+Gradient at solution for phase 1 :
+             [,1]          [,2]
+[1,] 7.569959e-07 -3.466571e-07
+Phase 2 
+Initial parameter values for phase 2 :
+ K_N  m_P  K_P    e  m_Z 
+0.10 0.10 0.20 0.30 0.05 
+Final parameter values for phase 2 :
+       K_N        m_P        K_P          e        m_Z 
+0.12175854 0.09966482 0.28750401 0.28092657 0.03356129 
+Convergence message: iteration limit reached without convergence (10) 
+Number of iterations: 150 
+Objective function value: 128.5205 
+Gradient at solution for phase 2 :
+          [,1]      [,2]      [,3]    [,4]     [,5]
+[1,] -169.9013 -25.47997 -748.0973 105.691 763.6278
+Phase 3 
+Initial parameter values for phase 3 :
+log_sigma_N log_sigma_P log_sigma_Z 
+         -3          -3          -3 
+Final parameter values for phase 3 :
+log_sigma_N log_sigma_P log_sigma_Z 
+  -1.876236   -2.307193   -3.585319 
+Convergence message: relative convergence (4) 
+Number of iterations: 10 
+Objective function value: -702.3755 
+Gradient at solution for phase 3 :
+              [,1]          [,2]          [,3]
+[1,] -0.0001936929 -0.0006337457 -0.0001263987
+Final Phase
+Initial parameter values for final phase:
+          r         K_N         m_P       g_max         K_P           e 
+ 0.23206991  0.12175854  0.09966482  0.46209308  0.28750401  0.28092657 
+        m_Z log_sigma_N log_sigma_P log_sigma_Z 
+ 0.03356129 -1.87623604 -2.30719303 -3.58531922 
+Final parameter values for final phase:
+          r         K_N         m_P       g_max         K_P           e 
+ 3.85552271  0.62332332  0.71082891  4.57575731  0.43915699  0.07325048 
+        m_Z log_sigma_N log_sigma_P log_sigma_Z 
+ 0.04175087 -1.82315744 -3.23575472 -4.33281479 
+Convergence message: function evaluation limit reached without convergence (9) 
+Number of iterations: 123 
+Objective function value: -1031.343 
+Gradient at solution for final phase:
+          [,1]      [,2]    [,3]      [,4]     [,5]      [,6]     [,7]     [,8]
+[1,] -2.972913 -1.478763 11.8382 -7.966293 15.52346 -16.15034 40.95262 8.630717
+          [,9]    [,10]
+[1,] -4.129248 4.261913
+All phases completed
+Successfully updated parameters_metadata.json with optimized values
+[1] "Train test split:"
+[1] 1
+
+Running model validation...
+No test data available (train_test_split >= 1.0)
+NULL
+
+DEBUG: Report contents:
+List of 3
+ $ N_pred: num [1:200] 0.4 0.381 0.36 0.338 0.317 ...
+ $ Z_pred: num [1:200] 0.05 0.0505 0.0513 0.0523 0.0535 ...
+ $ P_pred: num [1:200] 0.1 0.119 0.139 0.159 0.179 ...
+NULL
+
+DEBUG: Available variables in report:
+[1] "N_pred" "Z_pred" "P_pred"
+
+Checking predictions and calculating objective function...
+
+DEBUG: Processing N_pred 
+DEBUG: First few predictions: 0.4 0.3807806 0.3599517 0.3383794 0.3174379 0.2984691 
+DEBUG: Summary statistics:
+   Min. 1st Qu.  Median    Mean 3rd Qu.    Max. 
+ 0.2580  0.3753  0.4016  0.3894  0.4168  0.4394 
+DEBUG: All zeros? FALSE 
+DEBUG: Any infinities? FALSE 
+
+DEBUG: Processing P_pred 
+DEBUG: First few predictions: 0.1 0.1187059 0.138785 0.1593584 0.179054 0.1965337 
+DEBUG: Summary statistics:
+   Min. 1st Qu.  Median    Mean 3rd Qu.    Max. 
+0.02526 0.04599 0.05997 0.07514 0.08846 0.22790 
+DEBUG: All zeros? FALSE 
+DEBUG: Any infinities? FALSE 
+
+DEBUG: Processing Z_pred 
+DEBUG: First few predictions: 0.05 0.05051346 0.0512633 0.05226215 0.05350813 0.05499724 
+DEBUG: Summary statistics:
+   Min. 1st Qu.  Median    Mean 3rd Qu.    Max. 
+0.05000 0.08086 0.08651 0.08550 0.09232 0.10162 
+DEBUG: All zeros? FALSE 
+DEBUG: Any infinities? FALSE 
+
+DEBUG: Using the following variables for objective function:
+N_dat -> N_pred
+P_dat -> P_pred
+Z_dat -> Z_pred
+
+DEBUG: Calculating MSE for prediction variables only:
+
+DEBUG: N_pred 
+Observed: 0.4 0.375 0.346 0.314 0.278 0.239 ...
+Predicted: 0.4 0.3807806 0.3599517 0.3383794 0.3174379 0.2984691 ...
+MSE (normalized): 3.535293 
+
+DEBUG: P_pred 
+Observed: 0.1 0.117 0.138 0.161 0.187 0.215 ...
+Predicted: 0.1 0.1187059 0.138785 0.1593584 0.179054 0.1965337 ...
+MSE (normalized): 0.2878214 
+
+DEBUG: Z_pred 
+Observed: 0.05 0.052 0.053 0.055 0.057 0.059 ...
+Predicted: 0.05 0.05051346 0.0512633 0.05226215 0.05350813 0.05499724 ...
+MSE (normalized): 0.5861883 
+
+DEBUG: MSE values:
+    N_dat     P_dat     Z_dat 
+3.5352925 0.2878214 0.5861883 
+
+DEBUG: Final objective value (mean of MSEs): 1.469767 
+
+Final objective function value: 1.469767 
+
+JSON_REPORT_START
+{
+  "status": "SUCCESS",
+  "objective_value": 1.4698,
+  "model_summary": ["            Length Class  Mode     ", "par         10     -none- numeric  ", "objective    1     -none- numeric  ", "convergence  1     -none- numeric  ", "iterations   1     -none- numeric  ", "evaluations  2     -none- numeric  ", "message      1     -none- character"],
+  "model_report": {
+    "N_pred": [0.4, 0.3808, 0.36, 0.3384, 0.3174, 0.2985, 0.2828, 0.271, 0.2633, 0.2592, 0.258, 0.2591, 0.2617, 0.2656, 0.2704, 0.2758, 0.2817, 0.2881, 0.2947, 0.3016, 0.3086, 0.3158, 0.3231, 0.3304, 0.3376, 0.3447, 0.3517, 0.3585, 0.365, 0.3713, 0.3772, 0.3829, 0.3882, 0.3932, 0.3978, 0.4022, 0.4062, 0.4099, 0.4133, 0.4164, 0.4193, 0.422, 0.4244, 0.4266, 0.4287, 0.4305, 0.4322, 0.4337, 0.4351, 0.4362, 0.4372, 0.438, 0.4387, 0.4391, 0.4394, 0.4394, 0.4393, 0.4389, 0.4383, 0.4374, 0.4362, 0.4348, 0.433, 0.4309, 0.4285, 0.4257, 0.4225, 0.419, 0.4151, 0.4109, 0.4064, 0.4017, 0.3967, 0.3917, 0.3866, 0.3816, 0.3767, 0.3721, 0.3679, 0.3642, 0.361, 0.3584, 0.3565, 0.3552, 0.3546, 0.3545, 0.3551, 0.3562, 0.3577, 0.3597, 0.362, 0.3647, 0.3675, 0.3705, 0.3737, 0.3769, 0.3802, 0.3834, 0.3867, 0.3898, 0.3929, 0.3959, 0.3988, 0.4015, 0.4041, 0.4066, 0.4089, 0.411, 0.413, 0.4149, 0.4166, 0.4182, 0.4196, 0.4208, 0.4219, 0.4229, 0.4237, 0.4244, 0.4249, 0.4252, 0.4254, 0.4254, 0.4252, 0.4249, 0.4244, 0.4237, 0.4228, 0.4217, 0.4204, 0.4189, 0.4173, 0.4154, 0.4134, 0.4112, 0.4088, 0.4063, 0.4037, 0.4011, 0.3983, 0.3956, 0.3928, 0.3901, 0.3876, 0.3851, 0.3829, 0.3808, 0.379, 0.3775, 0.3763, 0.3754, 0.3748, 0.3745, 0.3745, 0.3748, 0.3754, 0.3762, 0.3773, 0.3786, 0.38, 0.3816, 0.3833, 0.3851, 0.387, 0.3889, 0.3908, 0.3928, 0.3947, 0.3966, 0.3985, 0.4003, 0.4021, 0.4038, 0.4054, 0.4069, 0.4083, 0.4096, 0.4108, 0.4119, 0.413, 0.4138, 0.4146, 0.4153, 0.4158, 0.4163, 0.4166, 0.4168, 0.4168, 0.4168, 0.4166, 0.4163, 0.4158, 0.4152, 0.4145, 0.4137, 0.4127, 0.4117, 0.4105, 0.4092, 0.4078, 0.4064],
+    "Z_pred": [0.05, 0.0505, 0.0513, 0.0523, 0.0535, 0.055, 0.0567, 0.0586, 0.0607, 0.0629, 0.0652, 0.0676, 0.07, 0.0724, 0.0749, 0.0773, 0.0797, 0.0821, 0.0844, 0.0866, 0.0887, 0.0907, 0.0925, 0.0943, 0.0958, 0.0972, 0.0984, 0.0994, 0.1002, 0.1008, 0.1013, 0.1015, 0.1016, 0.1016, 0.1013, 0.101, 0.1005, 0.0999, 0.0992, 0.0985, 0.0976, 0.0967, 0.0958, 0.0948, 0.0938, 0.0927, 0.0917, 0.0906, 0.0896, 0.0885, 0.0875, 0.0864, 0.0854, 0.0844, 0.0835, 0.0825, 0.0816, 0.0808, 0.08, 0.0792, 0.0785, 0.0778, 0.0772, 0.0767, 0.0762, 0.0758, 0.0755, 0.0752, 0.0751, 0.075, 0.0751, 0.0752, 0.0754, 0.0758, 0.0762, 0.0767, 0.0773, 0.0781, 0.0789, 0.0797, 0.0807, 0.0817, 0.0827, 0.0838, 0.0849, 0.086, 0.087, 0.0881, 0.0891, 0.0901, 0.0911, 0.0919, 0.0927, 0.0934, 0.094, 0.0946, 0.095, 0.0953, 0.0956, 0.0957, 0.0958, 0.0957, 0.0956, 0.0954, 0.0951, 0.0948, 0.0944, 0.094, 0.0935, 0.0929, 0.0923, 0.0917, 0.0911, 0.0905, 0.0898, 0.0891, 0.0884, 0.0878, 0.0871, 0.0864, 0.0858, 0.0852, 0.0846, 0.084, 0.0834, 0.0829, 0.0824, 0.082, 0.0816, 0.0812, 0.0809, 0.0807, 0.0805, 0.0803, 0.0802, 0.0802, 0.0802, 0.0803, 0.0804, 0.0806, 0.0809, 0.0812, 0.0816, 0.082, 0.0825, 0.083, 0.0835, 0.0841, 0.0847, 0.0854, 0.086, 0.0866, 0.0873, 0.0879, 0.0885, 0.0891, 0.0897, 0.0902, 0.0907, 0.0911, 0.0915, 0.0918, 0.0921, 0.0923, 0.0925, 0.0926, 0.0927, 0.0927, 0.0926, 0.0925, 0.0924, 0.0922, 0.0919, 0.0917, 0.0914, 0.091, 0.0907, 0.0903, 0.0899, 0.0895, 0.089, 0.0886, 0.0882, 0.0877, 0.0873, 0.0868, 0.0864, 0.086, 0.0856, 0.0852, 0.0849, 0.0845, 0.0842, 0.0839, 0.0837, 0.0835, 0.0833, 0.0831, 0.083, 0.0829],
+    "P_pred": [0.1, 0.1187, 0.1388, 0.1594, 0.1791, 0.1965, 0.2105, 0.2204, 0.226, 0.2279, 0.2268, 0.2234, 0.2183, 0.212, 0.2048, 0.1969, 0.1886, 0.1799, 0.1709, 0.1618, 0.1527, 0.1435, 0.1344, 0.1254, 0.1166, 0.1081, 0.1, 0.0922, 0.0848, 0.0779, 0.0715, 0.0656, 0.0602, 0.0553, 0.0508, 0.0469, 0.0433, 0.0402, 0.0375, 0.0351, 0.0331, 0.0313, 0.0298, 0.0286, 0.0275, 0.0267, 0.0261, 0.0256, 0.0254, 0.0253, 0.0253, 0.0255, 0.0259, 0.0264, 0.0271, 0.028, 0.0291, 0.0303, 0.0318, 0.0334, 0.0353, 0.0374, 0.0398, 0.0424, 0.0453, 0.0485, 0.052, 0.0558, 0.0598, 0.064, 0.0685, 0.0731, 0.0778, 0.0826, 0.0872, 0.0917, 0.096, 0.0998, 0.1032, 0.1061, 0.1083, 0.1099, 0.1108, 0.111, 0.1106, 0.1095, 0.1079, 0.1057, 0.1031, 0.1002, 0.0969, 0.0934, 0.0898, 0.0861, 0.0823, 0.0785, 0.0748, 0.0712, 0.0678, 0.0644, 0.0613, 0.0584, 0.0556, 0.0531, 0.0508, 0.0486, 0.0467, 0.045, 0.0435, 0.0422, 0.0411, 0.0401, 0.0393, 0.0387, 0.0383, 0.038, 0.0378, 0.0379, 0.038, 0.0383, 0.0388, 0.0394, 0.0402, 0.0411, 0.0422, 0.0434, 0.0448, 0.0463, 0.048, 0.0498, 0.0518, 0.0539, 0.0562, 0.0585, 0.061, 0.0635, 0.0661, 0.0687, 0.0713, 0.0738, 0.0763, 0.0787, 0.0809, 0.0829, 0.0847, 0.0862, 0.0874, 0.0883, 0.0889, 0.0892, 0.0892, 0.0888, 0.0882, 0.0873, 0.0861, 0.0847, 0.083, 0.0813, 0.0793, 0.0773, 0.0752, 0.0731, 0.0709, 0.0688, 0.0667, 0.0646, 0.0626, 0.0607, 0.0589, 0.0572, 0.0556, 0.0541, 0.0527, 0.0515, 0.0503, 0.0494, 0.0485, 0.0478, 0.0472, 0.0467, 0.0463, 0.0461, 0.046, 0.046, 0.0461, 0.0464, 0.0467, 0.0472, 0.0478, 0.0485, 0.0493, 0.0502, 0.0513, 0.0524, 0.0536, 0.0549, 0.0562, 0.0577, 0.0592, 0.0607]
+  },
+  "plot_data": {
+    "N_pred": {
+      "Time": [0, 0.503, 1.005, 1.508, 2.01, 2.513, 3.015, 3.518, 4.02, 4.523, 5.025, 5.528, 6.03, 6.533, 7.035, 7.538, 8.04, 8.543, 9.045, 9.548, 10.05, 10.553, 11.055, 11.558, 12.06, 12.563, 13.065, 13.568, 14.07, 14.573, 15.075, 15.578, 16.08, 16.583, 17.085, 17.588, 18.09, 18.593, 19.095, 19.598, 20.101, 20.603, 21.106, 21.608, 22.111, 22.613, 23.116, 23.618, 24.121, 24.623, 25.126, 25.628, 26.131, 26.633, 27.136, 27.638, 28.141, 28.643, 29.146, 29.648, 30.151, 30.653, 31.156, 31.658, 32.161, 32.663, 33.166, 33.668, 34.171, 34.673, 35.176, 35.678, 36.181, 36.683, 37.186, 37.688, 38.191, 38.693, 39.196, 39.698, 40.201, 40.704, 41.206, 41.709, 42.211, 42.714, 43.216, 43.719, 44.221, 44.724, 45.226, 45.729, 46.231, 46.734, 47.236, 47.739, 48.241, 48.744, 49.246, 49.749, 50.251, 50.754, 51.256, 51.759, 52.261, 52.764, 53.266, 53.769, 54.271, 54.774, 55.276, 55.779, 56.281, 56.784, 57.286, 57.789, 58.291, 58.794, 59.296, 59.799, 60.302, 60.804, 61.307, 61.809, 62.312, 62.814, 63.317, 63.819, 64.322, 64.824, 65.327, 65.829, 66.332, 66.834, 67.337, 67.839, 68.342, 68.844, 69.347, 69.849, 70.352, 70.854, 71.357, 71.859, 72.362, 72.864, 73.367, 73.869, 74.372, 74.874, 75.377, 75.879, 76.382, 76.884, 77.387, 77.889, 78.392, 78.894, 79.397, 79.899, 80.402, 80.905, 81.407, 81.91, 82.412, 82.915, 83.417, 83.92, 84.422, 84.925, 85.427, 85.93, 86.432, 86.935, 87.437, 87.94, 88.442, 88.945, 89.447, 89.95, 90.452, 90.955, 91.457, 91.96, 92.462, 92.965, 93.467, 93.97, 94.472, 94.975, 95.477, 95.98, 96.482, 96.985, 97.487, 97.99, 98.492, 98.995, 99.497, 100],
+      "Modeled": [0.4, 0.3808, 0.36, 0.3384, 0.3174, 0.2985, 0.2828, 0.271, 0.2633, 0.2592, 0.258, 0.2591, 0.2617, 0.2656, 0.2704, 0.2758, 0.2817, 0.2881, 0.2947, 0.3016, 0.3086, 0.3158, 0.3231, 0.3304, 0.3376, 0.3447, 0.3517, 0.3585, 0.365, 0.3713, 0.3772, 0.3829, 0.3882, 0.3932, 0.3978, 0.4022, 0.4062, 0.4099, 0.4133, 0.4164, 0.4193, 0.422, 0.4244, 0.4266, 0.4287, 0.4305, 0.4322, 0.4337, 0.4351, 0.4362, 0.4372, 0.438, 0.4387, 0.4391, 0.4394, 0.4394, 0.4393, 0.4389, 0.4383, 0.4374, 0.4362, 0.4348, 0.433, 0.4309, 0.4285, 0.4257, 0.4225, 0.419, 0.4151, 0.4109, 0.4064, 0.4017, 0.3967, 0.3917, 0.3866, 0.3816, 0.3767, 0.3721, 0.3679, 0.3642, 0.361, 0.3584, 0.3565, 0.3552, 0.3546, 0.3545, 0.3551, 0.3562, 0.3577, 0.3597, 0.362, 0.3647, 0.3675, 0.3705, 0.3737, 0.3769, 0.3802, 0.3834, 0.3867, 0.3898, 0.3929, 0.3959, 0.3988, 0.4015, 0.4041, 0.4066, 0.4089, 0.411, 0.413, 0.4149, 0.4166, 0.4182, 0.4196, 0.4208, 0.4219, 0.4229, 0.4237, 0.4244, 0.4249, 0.4252, 0.4254, 0.4254, 0.4252, 0.4249, 0.4244, 0.4237, 0.4228, 0.4217, 0.4204, 0.4189, 0.4173, 0.4154, 0.4134, 0.4112, 0.4088, 0.4063, 0.4037, 0.4011, 0.3983, 0.3956, 0.3928, 0.3901, 0.3876, 0.3851, 0.3829, 0.3808, 0.379, 0.3775, 0.3763, 0.3754, 0.3748, 0.3745, 0.3745, 0.3748, 0.3754, 0.3762, 0.3773, 0.3786, 0.38, 0.3816, 0.3833, 0.3851, 0.387, 0.3889, 0.3908, 0.3928, 0.3947, 0.3966, 0.3985, 0.4003, 0.4021, 0.4038, 0.4054, 0.4069, 0.4083, 0.4096, 0.4108, 0.4119, 0.413, 0.4138, 0.4146, 0.4153, 0.4158, 0.4163, 0.4166, 0.4168, 0.4168, 0.4168, 0.4166, 0.4163, 0.4158, 0.4152, 0.4145, 0.4137, 0.4127, 0.4117, 0.4105, 0.4092, 0.4078, 0.4064],
+      "Observed": [0.4, 0.375, 0.346, 0.314, 0.278, 0.239, 0.197, 0.155, 0.114, 0.076, 0.048, 0.031, 0.023, 0.021, 0.021, 0.021, 0.022, 0.023, 0.024, 0.025, 0.026, 0.028, 0.03, 0.032, 0.035, 0.038, 0.043, 0.048, 0.055, 0.064, 0.075, 0.086, 0.098, 0.11, 0.122, 0.133, 0.144, 0.154, 0.165, 0.174, 0.184, 0.193, 0.201, 0.21, 0.217, 0.225, 0.232, 0.238, 0.245, 0.251, 0.256, 0.261, 0.266, 0.27, 0.274, 0.278, 0.281, 0.284, 0.287, 0.289, 0.291, 0.293, 0.295, 0.296, 0.296, 0.297, 0.297, 0.297, 0.297, 0.296, 0.295, 0.294, 0.293, 0.292, 0.29, 0.288, 0.286, 0.284, 0.282, 0.279, 0.277, 0.275, 0.272, 0.27, 0.268, 0.266, 0.264, 0.262, 0.261, 0.26, 0.259, 0.258, 0.258, 0.258, 0.259, 0.259, 0.26, 0.261, 0.263, 0.265, 0.266, 0.268, 0.27, 0.272, 0.274, 0.276, 0.278, 0.28, 0.282, 0.284, 0.285, 0.287, 0.288, 0.289, 0.29, 0.291, 0.292, 0.293, 0.293, 0.294, 0.294, 0.294, 0.294, 0.294, 0.293, 0.293, 0.292, 0.292, 0.291, 0.29, 0.289, 0.288, 0.287, 0.286, 0.285, 0.284, 0.283, 0.282, 0.281, 0.281, 0.28, 0.279, 0.278, 0.278, 0.278, 0.277, 0.277, 0.277, 0.277, 0.277, 0.277, 0.278, 0.278, 0.279, 0.279, 0.28, 0.281, 0.281, 0.282, 0.283, 0.284, 0.285, 0.285, 0.286, 0.287, 0.288, 0.289, 0.289, 0.29, 0.29, 0.291, 0.291, 0.291, 0.291, 0.291, 0.291, 0.291, 0.291, 0.291, 0.291, 0.29, 0.29, 0.29, 0.289, 0.289, 0.288, 0.288, 0.287, 0.287, 0.286, 0.286, 0.285, 0.285, 0.284, 0.284, 0.284, 0.283, 0.283, 0.283, 0.283]
+    },
+    "P_pred": {
+      "Time": [0, 0.503, 1.005, 1.508, 2.01, 2.513, 3.015, 3.518, 4.02, 4.523, 5.025, 5.528, 6.03, 6.533, 7.035, 7.538, 8.04, 8.543, 9.045, 9.548, 10.05, 10.553, 11.055, 11.558, 12.06, 12.563, 13.065, 13.568, 14.07, 14.573, 15.075, 15.578, 16.08, 16.583, 17.085, 17.588, 18.09, 18.593, 19.095, 19.598, 20.101, 20.603, 21.106, 21.608, 22.111, 22.613, 23.116, 23.618, 24.121, 24.623, 25.126, 25.628, 26.131, 26.633, 27.136, 27.638, 28.141, 28.643, 29.146, 29.648, 30.151, 30.653, 31.156, 31.658, 32.161, 32.663, 33.166, 33.668, 34.171, 34.673, 35.176, 35.678, 36.181, 36.683, 37.186, 37.688, 38.191, 38.693, 39.196, 39.698, 40.201, 40.704, 41.206, 41.709, 42.211, 42.714, 43.216, 43.719, 44.221, 44.724, 45.226, 45.729, 46.231, 46.734, 47.236, 47.739, 48.241, 48.744, 49.246, 49.749, 50.251, 50.754, 51.256, 51.759, 52.261, 52.764, 53.266, 53.769, 54.271, 54.774, 55.276, 55.779, 56.281, 56.784, 57.286, 57.789, 58.291, 58.794, 59.296, 59.799, 60.302, 60.804, 61.307, 61.809, 62.312, 62.814, 63.317, 63.819, 64.322, 64.824, 65.327, 65.829, 66.332, 66.834, 67.337, 67.839, 68.342, 68.844, 69.347, 69.849, 70.352, 70.854, 71.357, 71.859, 72.362, 72.864, 73.367, 73.869, 74.372, 74.874, 75.377, 75.879, 76.382, 76.884, 77.387, 77.889, 78.392, 78.894, 79.397, 79.899, 80.402, 80.905, 81.407, 81.91, 82.412, 82.915, 83.417, 83.92, 84.422, 84.925, 85.427, 85.93, 86.432, 86.935, 87.437, 87.94, 88.442, 88.945, 89.447, 89.95, 90.452, 90.955, 91.457, 91.96, 92.462, 92.965, 93.467, 93.97, 94.472, 94.975, 95.477, 95.98, 96.482, 96.985, 97.487, 97.99, 98.492, 98.995, 99.497, 100],
+      "Modeled": [0.1, 0.1187, 0.1388, 0.1594, 0.1791, 0.1965, 0.2105, 0.2204, 0.226, 0.2279, 0.2268, 0.2234, 0.2183, 0.212, 0.2048, 0.1969, 0.1886, 0.1799, 0.1709, 0.1618, 0.1527, 0.1435, 0.1344, 0.1254, 0.1166, 0.1081, 0.1, 0.0922, 0.0848, 0.0779, 0.0715, 0.0656, 0.0602, 0.0553, 0.0508, 0.0469, 0.0433, 0.0402, 0.0375, 0.0351, 0.0331, 0.0313, 0.0298, 0.0286, 0.0275, 0.0267, 0.0261, 0.0256, 0.0254, 0.0253, 0.0253, 0.0255, 0.0259, 0.0264, 0.0271, 0.028, 0.0291, 0.0303, 0.0318, 0.0334, 0.0353, 0.0374, 0.0398, 0.0424, 0.0453, 0.0485, 0.052, 0.0558, 0.0598, 0.064, 0.0685, 0.0731, 0.0778, 0.0826, 0.0872, 0.0917, 0.096, 0.0998, 0.1032, 0.1061, 0.1083, 0.1099, 0.1108, 0.111, 0.1106, 0.1095, 0.1079, 0.1057, 0.1031, 0.1002, 0.0969, 0.0934, 0.0898, 0.0861, 0.0823, 0.0785, 0.0748, 0.0712, 0.0678, 0.0644, 0.0613, 0.0584, 0.0556, 0.0531, 0.0508, 0.0486, 0.0467, 0.045, 0.0435, 0.0422, 0.0411, 0.0401, 0.0393, 0.0387, 0.0383, 0.038, 0.0378, 0.0379, 0.038, 0.0383, 0.0388, 0.0394, 0.0402, 0.0411, 0.0422, 0.0434, 0.0448, 0.0463, 0.048, 0.0498, 0.0518, 0.0539, 0.0562, 0.0585, 0.061, 0.0635, 0.0661, 0.0687, 0.0713, 0.0738, 0.0763, 0.0787, 0.0809, 0.0829, 0.0847, 0.0862, 0.0874, 0.0883, 0.0889, 0.0892, 0.0892, 0.0888, 0.0882, 0.0873, 0.0861, 0.0847, 0.083, 0.0813, 0.0793, 0.0773, 0.0752, 0.0731, 0.0709, 0.0688, 0.0667, 0.0646, 0.0626, 0.0607, 0.0589, 0.0572, 0.0556, 0.0541, 0.0527, 0.0515, 0.0503, 0.0494, 0.0485, 0.0478, 0.0472, 0.0467, 0.0463, 0.0461, 0.046, 0.046, 0.0461, 0.0464, 0.0467, 0.0472, 0.0478, 0.0485, 0.0493, 0.0502, 0.0513, 0.0524, 0.0536, 0.0549, 0.0562, 0.0577, 0.0592, 0.0607],
+      "Observed": [0.1, 0.117, 0.138, 0.161, 0.187, 0.215, 0.245, 0.275, 0.303, 0.327, 0.341, 0.344, 0.336, 0.324, 0.31, 0.295, 0.28, 0.266, 0.251, 0.236, 0.22, 0.205, 0.19, 0.174, 0.157, 0.141, 0.123, 0.106, 0.087, 0.068, 0.05, 0.036, 0.025, 0.02, 0.016, 0.014, 0.013, 0.013, 0.013, 0.013, 0.013, 0.013, 0.013, 0.014, 0.014, 0.014, 0.015, 0.016, 0.016, 0.017, 0.017, 0.018, 0.019, 0.02, 0.02, 0.021, 0.022, 0.023, 0.024, 0.025, 0.026, 0.027, 0.027, 0.029, 0.03, 0.031, 0.032, 0.033, 0.034, 0.035, 0.036, 0.037, 0.038, 0.039, 0.04, 0.041, 0.042, 0.043, 0.044, 0.044, 0.045, 0.045, 0.046, 0.046, 0.046, 0.046, 0.046, 0.045, 0.045, 0.044, 0.043, 0.042, 0.041, 0.04, 0.038, 0.037, 0.036, 0.035, 0.033, 0.032, 0.031, 0.031, 0.03, 0.029, 0.029, 0.029, 0.029, 0.029, 0.029, 0.029, 0.029, 0.029, 0.029, 0.03, 0.03, 0.03, 0.031, 0.031, 0.032, 0.032, 0.033, 0.033, 0.034, 0.034, 0.035, 0.035, 0.036, 0.036, 0.037, 0.037, 0.038, 0.038, 0.038, 0.039, 0.039, 0.039, 0.039, 0.039, 0.039, 0.039, 0.039, 0.039, 0.039, 0.038, 0.038, 0.038, 0.037, 0.037, 0.036, 0.036, 0.036, 0.035, 0.035, 0.034, 0.034, 0.034, 0.033, 0.033, 0.033, 0.032, 0.032, 0.032, 0.032, 0.032, 0.032, 0.032, 0.032, 0.032, 0.032, 0.033, 0.033, 0.033, 0.033, 0.034, 0.034, 0.034, 0.034, 0.035, 0.035, 0.035, 0.035, 0.036, 0.036, 0.036, 0.036, 0.037, 0.037, 0.037, 0.037, 0.037, 0.037, 0.037, 0.037, 0.037, 0.037, 0.037, 0.037, 0.037, 0.036, 0.036]
+    },
+    "Z_pred": {
+      "Time": [0, 0.503, 1.005, 1.508, 2.01, 2.513, 3.015, 3.518, 4.02, 4.523, 5.025, 5.528, 6.03, 6.533, 7.035, 7.538, 8.04, 8.543, 9.045, 9.548, 10.05, 10.553, 11.055, 11.558, 12.06, 12.563, 13.065, 13.568, 14.07, 14.573, 15.075, 15.578, 16.08, 16.583, 17.085, 17.588, 18.09, 18.593, 19.095, 19.598, 20.101, 20.603, 21.106, 21.608, 22.111, 22.613, 23.116, 23.618, 24.121, 24.623, 25.126, 25.628, 26.131, 26.633, 27.136, 27.638, 28.141, 28.643, 29.146, 29.648, 30.151, 30.653, 31.156, 31.658, 32.161, 32.663, 33.166, 33.668, 34.171, 34.673, 35.176, 35.678, 36.181, 36.683, 37.186, 37.688, 38.191, 38.693, 39.196, 39.698, 40.201, 40.704, 41.206, 41.709, 42.211, 42.714, 43.216, 43.719, 44.221, 44.724, 45.226, 45.729, 46.231, 46.734, 47.236, 47.739, 48.241, 48.744, 49.246, 49.749, 50.251, 50.754, 51.256, 51.759, 52.261, 52.764, 53.266, 53.769, 54.271, 54.774, 55.276, 55.779, 56.281, 56.784, 57.286, 57.789, 58.291, 58.794, 59.296, 59.799, 60.302, 60.804, 61.307, 61.809, 62.312, 62.814, 63.317, 63.819, 64.322, 64.824, 65.327, 65.829, 66.332, 66.834, 67.337, 67.839, 68.342, 68.844, 69.347, 69.849, 70.352, 70.854, 71.357, 71.859, 72.362, 72.864, 73.367, 73.869, 74.372, 74.874, 75.377, 75.879, 76.382, 76.884, 77.387, 77.889, 78.392, 78.894, 79.397, 79.899, 80.402, 80.905, 81.407, 81.91, 82.412, 82.915, 83.417, 83.92, 84.422, 84.925, 85.427, 85.93, 86.432, 86.935, 87.437, 87.94, 88.442, 88.945, 89.447, 89.95, 90.452, 90.955, 91.457, 91.96, 92.462, 92.965, 93.467, 93.97, 94.472, 94.975, 95.477, 95.98, 96.482, 96.985, 97.487, 97.99, 98.492, 98.995, 99.497, 100],
+      "Modeled": [0.05, 0.0505, 0.0513, 0.0523, 0.0535, 0.055, 0.0567, 0.0586, 0.0607, 0.0629, 0.0652, 0.0676, 0.07, 0.0724, 0.0749, 0.0773, 0.0797, 0.0821, 0.0844, 0.0866, 0.0887, 0.0907, 0.0925, 0.0943, 0.0958, 0.0972, 0.0984, 0.0994, 0.1002, 0.1008, 0.1013, 0.1015, 0.1016, 0.1016, 0.1013, 0.101, 0.1005, 0.0999, 0.0992, 0.0985, 0.0976, 0.0967, 0.0958, 0.0948, 0.0938, 0.0927, 0.0917, 0.0906, 0.0896, 0.0885, 0.0875, 0.0864, 0.0854, 0.0844, 0.0835, 0.0825, 0.0816, 0.0808, 0.08, 0.0792, 0.0785, 0.0778, 0.0772, 0.0767, 0.0762, 0.0758, 0.0755, 0.0752, 0.0751, 0.075, 0.0751, 0.0752, 0.0754, 0.0758, 0.0762, 0.0767, 0.0773, 0.0781, 0.0789, 0.0797, 0.0807, 0.0817, 0.0827, 0.0838, 0.0849, 0.086, 0.087, 0.0881, 0.0891, 0.0901, 0.0911, 0.0919, 0.0927, 0.0934, 0.094, 0.0946, 0.095, 0.0953, 0.0956, 0.0957, 0.0958, 0.0957, 0.0956, 0.0954, 0.0951, 0.0948, 0.0944, 0.094, 0.0935, 0.0929, 0.0923, 0.0917, 0.0911, 0.0905, 0.0898, 0.0891, 0.0884, 0.0878, 0.0871, 0.0864, 0.0858, 0.0852, 0.0846, 0.084, 0.0834, 0.0829, 0.0824, 0.082, 0.0816, 0.0812, 0.0809, 0.0807, 0.0805, 0.0803, 0.0802, 0.0802, 0.0802, 0.0803, 0.0804, 0.0806, 0.0809, 0.0812, 0.0816, 0.082, 0.0825, 0.083, 0.0835, 0.0841, 0.0847, 0.0854, 0.086, 0.0866, 0.0873, 0.0879, 0.0885, 0.0891, 0.0897, 0.0902, 0.0907, 0.0911, 0.0915, 0.0918, 0.0921, 0.0923, 0.0925, 0.0926, 0.0927, 0.0927, 0.0926, 0.0925, 0.0924, 0.0922, 0.0919, 0.0917, 0.0914, 0.091, 0.0907, 0.0903, 0.0899, 0.0895, 0.089, 0.0886, 0.0882, 0.0877, 0.0873, 0.0868, 0.0864, 0.086, 0.0856, 0.0852, 0.0849, 0.0845, 0.0842, 0.0839, 0.0837, 0.0835, 0.0833, 0.0831, 0.083, 0.0829],
+      "Observed": [0.05, 0.052, 0.053, 0.055, 0.057, 0.059, 0.061, 0.064, 0.066, 0.068, 0.071, 0.074, 0.076, 0.079, 0.082, 0.085, 0.088, 0.092, 0.095, 0.099, 0.102, 0.106, 0.11, 0.114, 0.118, 0.122, 0.126, 0.13, 0.134, 0.137, 0.139, 0.14, 0.14, 0.137, 0.134, 0.131, 0.127, 0.124, 0.12, 0.117, 0.113, 0.11, 0.107, 0.104, 0.101, 0.099, 0.096, 0.094, 0.091, 0.089, 0.087, 0.085, 0.083, 0.082, 0.08, 0.079, 0.078, 0.076, 0.075, 0.074, 0.073, 0.073, 0.072, 0.071, 0.071, 0.07, 0.07, 0.07, 0.07, 0.07, 0.07, 0.07, 0.07, 0.07, 0.071, 0.071, 0.071, 0.072, 0.072, 0.073, 0.074, 0.074, 0.075, 0.076, 0.077, 0.077, 0.078, 0.079, 0.08, 0.08, 0.081, 0.082, 0.082, 0.083, 0.083, 0.083, 0.083, 0.083, 0.083, 0.083, 0.083, 0.082, 0.082, 0.082, 0.081, 0.08, 0.08, 0.079, 0.079, 0.078, 0.078, 0.077, 0.076, 0.076, 0.076, 0.075, 0.075, 0.074, 0.074, 0.074, 0.074, 0.074, 0.073, 0.073, 0.073, 0.073, 0.073, 0.073, 0.074, 0.074, 0.074, 0.074, 0.074, 0.075, 0.075, 0.075, 0.076, 0.076, 0.076, 0.077, 0.077, 0.077, 0.077, 0.078, 0.078, 0.078, 0.078, 0.079, 0.079, 0.079, 0.079, 0.079, 0.079, 0.079, 0.079, 0.079, 0.079, 0.079, 0.078, 0.078, 0.078, 0.078, 0.078, 0.077, 0.077, 0.077, 0.076, 0.076, 0.076, 0.076, 0.076, 0.075, 0.075, 0.075, 0.075, 0.075, 0.075, 0.075, 0.075, 0.075, 0.075, 0.075, 0.075, 0.075, 0.075, 0.075, 0.075, 0.076, 0.076, 0.076, 0.076, 0.076, 0.076, 0.077, 0.077, 0.077, 0.077, 0.077, 0.077, 0.077]
+    }
+  }
+}
+JSON_REPORT_END[0m
+[93m[PID 1508628] R script stdout END <<<[0m
+[93m[PID 1508628] R script stderr BEGIN >>>[0m
+[0mLoading required package: TMB
+Loading required package: jsonlite
+using C++ compiler: ‘g++ (Ubuntu 13.3.0-6ubuntu2~24.04) 13.3.0’
+Warning message:
+`aes_string()` was deprecated in ggplot2 3.0.0.
+ℹ Please use tidy evaluation idioms with `aes()`.
+ℹ See also `vignette("ggplot2-in-packages")` for more information.[0m
+[93m[PID 1508628] R script stderr END <<<[0m
+[96m[PID 1508628] JSON detected, parsing...[0m
+[96m[PID 1508628] Writing model report...[0m
+[94m[PID 1508628] Objective value: 1.4698[0m
+[96m[PID 1508628] Generating plots...[0m
+[94m[PID 1508628] Objective Value: 1.4698[0m
+[92m[PID 1508628] Successful model run[0m
+[0m----------------------------------------------[0m
+MODEL RUN COMPLETED
+Model run successful. Objective value: 1.4698
+Model ran successful and returned meaningful objective value... enhancing parameter descriptions.
+Enhancing parameter descriptions...
+Asking gpt-4.1-mini
+Parameter descriptions enhanced successfully.
+Running parameter processing...
+DEBUG: get_params() called with directory_path: POPULATIONS/POPULATION_0019/INDIVIDUAL_JGE7YE3C
+DEBUG: population_dir: POPULATIONS/POPULATION_0019
+DEBUG: meta_file path: POPULATIONS/POPULATION_0019/population_metadata.json
+DEBUG: Checking if meta_file exists...
+DEBUG: meta_file exists, attempting to read...
+DEBUG: Successfully read meta_file
+DEBUG: rag_choice: gpt-4.1-mini, doc_store_dir: doc_store
+DEBUG: About to resolve model name...
+[get_params] Using model from rag_choice: 'gpt-4.1-mini' -> 'gpt-4.1-mini'
+[get_params] Using doc_store_dir: 'doc_store'
+Processing literature parameter: r
+Searching for r with query: Maximum phytoplankton growth rate (day^-1)
+Engine order for r: ['semantic_scholar', 'rag']
+S2 Response Status Code: 200
+S2 Query: Maximum phytoplankton growth rate (day^-1)
+S2 Total results: 37636
+No search results for r (engine=semantic_scholar, attempt=1)
+S2 Response Status Code: 200
+S2 Query: Maximum phytoplankton growth rate (day^-1)
+S2 Total results: 37636
+No search results for r (engine=semantic_scholar, attempt=2)
+S2 Response Status Code: 200
+S2 Query: Maximum phytoplankton growth rate (day^-1)
+S2 Total results: 37636
+No search results for r (engine=semantic_scholar, attempt=3)
+Loading llama_index.core.storage.kvstore.simple_kvstore from /home/spi085/Documents/_Projects/EMs-with-LLMs/storage_chroma_doc_store/docstore.json.
+Loading llama_index.core.storage.kvstore.simple_kvstore from /home/spi085/Documents/_Projects/EMs-with-LLMs/storage_chroma_doc_store/index_store.json.
+Search results found for r (engine=rag, attempt=1)
+DEBUG: Aggregated 3 total source chunks for r:
+ Source [1]: s10811-014-0370-y.pdf
+ Source [2]: Oca et al. - 2019 - Culture of the seaweed Ulva ohnoi integrated in a .pdf
+ Source [3]: C:\Users\spi085\OneDrive - CSIRO\Documents\_Projects\SCCP-QuantModelling\doc_store\Pratchett-2017-Thirty years of research on cro.pdf
+Asking gpt-4.1-mini
+DEBUG: LLM response for r: No relevant values found
+Processing literature parameter: K_N
+Searching for K_N with query: Half-saturation nutrient uptake constant (g C m^-3)
+Engine order for K_N: ['rag', 'semantic_scholar']
+Search results found for K_N (engine=rag, attempt=1)
+S2 Response Status Code: 200
+S2 Query: Half-saturation nutrient uptake constant (g C m^-3)
+S2 Total results: 168
+Search results found for K_N (engine=semantic_scholar, attempt=1)
+DEBUG: Aggregated 6 total source chunks for K_N:
+ Source [1]: s10811-014-0370-y.pdf
+ Source [2]: Oca et al. - 2019 - Culture of the seaweed Ulva ohnoi integrated in a .pdf
+ Source [3]: https://www.semanticscholar.org/paper/d22f8601bb6e19558cc08b2c7c98377c825753e1
+ Source [4]: https://www.semanticscholar.org/paper/22c48316a97197bc551c3a11dc3b3e2579cdcadd
+ Source [5]: https://www.semanticscholar.org/paper/e6db6891995d2a6bd8c1bc38e14ad6f495a28d78
+ Source [6]: https://www.semanticscholar.org/paper/938e53856ad04e4a3d591ec46824977e5f0a48b1
+Asking gpt-4.1-mini
+DEBUG: LLM response for K_N: No relevant values found
+Processing literature parameter: m_P
+Searching for m_P with query: Phytoplankton mortality rate (day^-1)
+Engine order for m_P: ['rag', 'semantic_scholar']
+Search results found for m_P (engine=rag, attempt=1)
+S2 Response Status Code: 200
+S2 Query: Phytoplankton mortality rate (day^-1)
+S2 Total results: 4955
+Search results found for m_P (engine=semantic_scholar, attempt=1)
+DEBUG: Aggregated 6 total source chunks for m_P:
+ Source [1]: C:\Users\spi085\OneDrive - CSIRO\Documents\_Projects\SCCP-QuantModelling\doc_store\Pratchett-2017-Thirty years of research on cro.pdf
+ Source [2]: C:\Users\spi085\OneDrive - CSIRO\Documents\_Projects\SCCP-QuantModelling\doc_store\Plaganyi (2007) - Ecosystemmodellingfullversion.pdf
+ Source [3]: Oca et al. - 2019 - Culture of the seaweed Ulva ohnoi integrated in a .pdf
+ Source [4]: https://www.semanticscholar.org/paper/e3ac998d87ecac036135b5a5d330568fa853fa6f
+ Source [5]: https://www.semanticscholar.org/paper/3e8ac192cd09f8ebb911e66f9884491a12f1ddc5
+ Source [6]: https://www.semanticscholar.org/paper/c755dc658a3c55723f1d5a51903a477c492dbe74
+Asking gpt-4.1-mini
+DEBUG: LLM response for m_P: No relevant values found
+Processing literature parameter: g_max
+Searching for g_max with query: Maximum zooplankton grazing rate (day^-1)
+Engine order for g_max: ['rag', 'semantic_scholar']
+Search results found for g_max (engine=rag, attempt=1)
+S2 Response Status Code: 200
+S2 Query: Maximum zooplankton grazing rate (day^-1)
+S2 Total results: 8098
+Search results found for g_max (engine=semantic_scholar, attempt=1)
+DEBUG: Aggregated 7 total source chunks for g_max:
+ Source [1]: Oca et al. - 2019 - Culture of the seaweed Ulva ohnoi integrated in a .pdf
+ Source [2]: C:\Users\spi085\OneDrive - CSIRO\Documents\_Projects\SCCP-QuantModelling\doc_store\Pratchett-2017-Thirty years of research on cro.pdf
+ Source [3]: s10811-014-0370-y.pdf
+ Source [4]: C:\Users\spi085\OneDrive - CSIRO\Documents\_Projects\SCCP-QuantModelling\doc_store\Plaganyi (2007) - Ecosystemmodellingfullversion.pdf
+ Source [5]: https://www.semanticscholar.org/paper/8ea365142531f4a023125091aa691b23f47cf7a5
+ Source [6]: https://www.semanticscholar.org/paper/22663ebc36ce9985a428bb0d959618c42ae424be
+ Source [7]: https://www.semanticscholar.org/paper/9333bd802686960ea4dba028970246f1e3fe36e4
+Asking gpt-4.1-mini
+DEBUG: LLM response for g_max: No relevant values found
+Processing literature parameter: K_P
+Searching for K_P with query: Half-saturation grazing constant (g C m^-3)
+Engine order for K_P: ['rag', 'semantic_scholar']
+Search results found for K_P (engine=rag, attempt=1)
+S2 Response Status Code: 200
+S2 Query: Half-saturation grazing constant (g C m^-3)
+S2 Total results: 531
+Search results found for K_P (engine=semantic_scholar, attempt=1)
+DEBUG: Aggregated 8 total source chunks for K_P:
+ Source [1]: C:\Users\spi085\OneDrive - CSIRO\Documents\_Projects\SCCP-QuantModelling\doc_store\Rogers-2022-Culling corallivores improves shor.pdf
+ Source [2]: C:\Users\spi085\OneDrive - CSIRO\Documents\_Projects\SCCP-QuantModelling\doc_store\Plaganyi (2007) - Ecosystemmodellingfullversion.pdf
+ Source [3]: C:\Users\spi085\OneDrive - CSIRO\Documents\_Projects\SCCP-QuantModelling\doc_store\Gamble & Link (2009) - Multispecies fisheries production models.pdf
+ Source [4]: s10811-014-0370-y.pdf
+ Source [5]: https://www.semanticscholar.org/paper/d22f8601bb6e19558cc08b2c7c98377c825753e1
+ Source [6]: https://www.semanticscholar.org/paper/73c435e86fafa438fa2500343b5a9c8b0513a558
+ Source [7]: https://www.semanticscholar.org/paper/9c44f075a10a6c94439de6836ed4f255e40a1633
+ Source [8]: https://www.semanticscholar.org/paper/198bf82b05e6aa4384bc45c7d99bb2d3f9bbbfec
+Asking gpt-4.1-mini
+DEBUG: LLM response for K_P: No relevant values found
+Processing literature parameter: e
+Searching for e with query: Zooplankton assimilation efficiency (dimensionless fraction)
+Engine order for e: ['rag', 'semantic_scholar']
+Search results found for e (engine=rag, attempt=1)
+S2 Response Status Code: 200
+S2 Query: Zooplankton assimilation efficiency (dimensionless fraction)
+S2 Total results: 14
+No search results for e (engine=semantic_scholar, attempt=1)
+S2 Response Status Code: 200
+S2 Query: Zooplankton assimilation efficiency (dimensionless fraction)
+S2 Total results: 14
+No search results for e (engine=semantic_scholar, attempt=2)
+S2 Response Status Code: 200
+S2 Query: Zooplankton assimilation efficiency (dimensionless fraction)
+S2 Total results: 14
+No search results for e (engine=semantic_scholar, attempt=3)
+DEBUG: Aggregated 2 total source chunks for e:
+ Source [1]: C:\Users\spi085\OneDrive - CSIRO\Documents\_Projects\SCCP-QuantModelling\doc_store\Plaganyi (2007) - Ecosystemmodellingfullversion.pdf
+ Source [2]: Oca et al. - 2019 - Culture of the seaweed Ulva ohnoi integrated in a .pdf
+Asking gpt-4.1-mini
+DEBUG: LLM response for e: No relevant values found
+Processing literature parameter: m_Z
+Searching for m_Z with query: Zooplankton mortality rate (day^-1)
+Engine order for m_Z: ['rag', 'semantic_scholar']
+Search results found for m_Z (engine=rag, attempt=1)
+S2 Response Status Code: 200
+S2 Query: Zooplankton mortality rate (day^-1)
+S2 Total results: 4776
+Search results found for m_Z (engine=semantic_scholar, attempt=1)
+DEBUG: Aggregated 10 total source chunks for m_Z:
+ Source [1]: C:\Users\spi085\OneDrive - CSIRO\Documents\_Projects\SCCP-QuantModelling\doc_store\Plaganyi (2007) - Ecosystemmodellingfullversion.pdf
+ Source [2]: C:\Users\spi085\OneDrive - CSIRO\Documents\_Projects\SCCP-QuantModelling\doc_store\Pratchett-2017-Thirty years of research on cro.pdf
+ Source [3]: C:\Users\spi085\OneDrive - CSIRO\Documents\_Projects\SCCP-QuantModelling\doc_store\Plagányi-2014-Ecosystem modelling provides clu.pdf
+ Source [4]: https://www.semanticscholar.org/paper/14ab444500dda17d3be704737f88613e25834b98
+ Source [5]: https://www.semanticscholar.org/paper/b45e1aa78f2818afde65e256abf9d27c25c7392d
+ Source [6]: https://www.semanticscholar.org/paper/33224c4299d663f3eb4ba360ebe64c86772eec79
+ Source [7]: https://www.semanticscholar.org/paper/3e8ac192cd09f8ebb911e66f9884491a12f1ddc5
+ Source [8]: https://www.semanticscholar.org/paper/f4e301760e5fb5fedd1366166c3600dbfc59b770
+ Source [9]: https://www.semanticscholar.org/paper/0a51f9458d93a8bd4e92a92dfb01b8f118ebf43b
+ Source [10]: https://www.semanticscholar.org/paper/1c38da4764b834164902e7ab9aa249745ecf8b28
+Asking gpt-4.1-mini
+DEBUG: LLM response for m_Z: No relevant values found
+Parameter processing completed successfully.
+Re-running model after parameter processing...
+[93m[PID 1508628] Running model for individual...[0m
+[0m[PID 1508628] Individual directory: POPULATIONS/POPULATION_0019/INDIVIDUAL_JGE7YE3C[0m
+[93m[PID 1508628] Removed old compilation: model.o[0m
+[96m[PID 1508628] Launching Rscript... (timeout=none)[0m
+[93m[PID 1508628] R script stdout BEGIN >>>[0m
+[0mg++ -std=gnu++17 -I"/usr/share/R/include" -DNDEBUG -I"/home/spi085/R/x86_64-pc-linux-gnu-library/4.4/TMB/include" -I"/home/spi085/R/x86_64-pc-linux-gnu-library/4.4/RcppEigen/include"   -DTMB_EIGEN_DISABLE_WARNINGS   -DTMB_LIB_INIT=R_init_model  -DCPPAD_FRAMEWORK      -fpic  -O2  -c POPULATIONS/POPULATION_0019/INDIVIDUAL_JGE7YE3C/model.cpp -o POPULATIONS/POPULATION_0019/INDIVIDUAL_JGE7YE3C/model.o
+g++ -std=gnu++17 -shared -L/usr/lib/R/lib -Wl,-Bsymbolic-functions -flto=auto -ffat-lto-objects -Wl,-z,relro -o POPULATIONS/POPULATION_0019/INDIVIDUAL_JGE7YE3C/model.so POPULATIONS/POPULATION_0019/INDIVIDUAL_JGE7YE3C/model.o -L/usr/lib/R/lib -lR
+
+NA counts per required column:
+ Time N_dat P_dat Z_dat 
+    0     0     0     0 
+
+NA counts per required column:
+ Time N_dat P_dat Z_dat 
+    0     0     0     0 
+
+PARAMETER starts (first few):
+          r         K_N         m_P       g_max         K_P           e 
+       0.80        0.10        0.10        0.50        0.20        0.30 
+        m_Z log_sigma_N log_sigma_P log_sigma_Z 
+       0.05       -3.00       -3.00       -3.00 
+Starting model phases
+Number of phases: 3 
+Phase 1 
+Initial parameter values for phase 1 :
+    r g_max 
+  0.8   0.5 
+Final parameter values for phase 1 :
+        r     g_max 
+0.2320699 0.4620931 
+Convergence message: both X-convergence and relative convergence (5) 
+Number of iterations: 26 
+Objective function value: 220.498 
+Gradient at solution for phase 1 :
+             [,1]          [,2]
+[1,] 7.569959e-07 -3.466571e-07
+Phase 2 
+Initial parameter values for phase 2 :
+ K_N  m_P  K_P    e  m_Z 
+0.10 0.10 0.20 0.30 0.05 
+Final parameter values for phase 2 :
+       K_N        m_P        K_P          e        m_Z 
+0.12175854 0.09966482 0.28750401 0.28092657 0.03356129 
+Convergence message: iteration limit reached without convergence (10) 
+Number of iterations: 150 
+Objective function value: 128.5205 
+Gradient at solution for phase 2 :
+          [,1]      [,2]      [,3]    [,4]     [,5]
+[1,] -169.9013 -25.47997 -748.0973 105.691 763.6278
+Phase 3 
+Initial parameter values for phase 3 :
+log_sigma_N log_sigma_P log_sigma_Z 
+         -3          -3          -3 
+Final parameter values for phase 3 :
+log_sigma_N log_sigma_P log_sigma_Z 
+  -1.876236   -2.307193   -3.585319 
+Convergence message: relative convergence (4) 
+Number of iterations: 10 
+Objective function value: -702.3755 
+Gradient at solution for phase 3 :
+              [,1]          [,2]          [,3]
+[1,] -0.0001936929 -0.0006337457 -0.0001263987
+Final Phase
+Initial parameter values for final phase:
+          r         K_N         m_P       g_max         K_P           e 
+ 0.23206991  0.12175854  0.09966482  0.46209308  0.28750401  0.28092657 
+        m_Z log_sigma_N log_sigma_P log_sigma_Z 
+ 0.03356129 -1.87623604 -2.30719303 -3.58531922 
+Final parameter values for final phase:
+          r         K_N         m_P       g_max         K_P           e 
+ 3.85552271  0.62332332  0.71082891  4.57575731  0.43915699  0.07325048 
+        m_Z log_sigma_N log_sigma_P log_sigma_Z 
+ 0.04175087 -1.82315744 -3.23575472 -4.33281479 
+Convergence message: function evaluation limit reached without convergence (9) 
+Number of iterations: 123 
+Objective function value: -1031.343 
+Gradient at solution for final phase:
+          [,1]      [,2]    [,3]      [,4]     [,5]      [,6]     [,7]     [,8]
+[1,] -2.972913 -1.478763 11.8382 -7.966293 15.52346 -16.15034 40.95262 8.630717
+          [,9]    [,10]
+[1,] -4.129248 4.261913
+All phases completed
+Successfully updated parameters_metadata.json with optimized values
+[1] "Train test split:"
+[1] 1
+
+Running model validation...
+No test data available (train_test_split >= 1.0)
+NULL
+
+DEBUG: Report contents:
+List of 3
+ $ N_pred: num [1:200] 0.4 0.381 0.36 0.338 0.317 ...
+ $ Z_pred: num [1:200] 0.05 0.0505 0.0513 0.0523 0.0535 ...
+ $ P_pred: num [1:200] 0.1 0.119 0.139 0.159 0.179 ...
+NULL
+
+DEBUG: Available variables in report:
+[1] "N_pred" "Z_pred" "P_pred"
+
+Checking predictions and calculating objective function...
+
+DEBUG: Processing N_pred 
+DEBUG: First few predictions: 0.4 0.3807806 0.3599517 0.3383794 0.3174379 0.2984691 
+DEBUG: Summary statistics:
+   Min. 1st Qu.  Median    Mean 3rd Qu.    Max. 
+ 0.2580  0.3753  0.4016  0.3894  0.4168  0.4394 
+DEBUG: All zeros? FALSE 
+DEBUG: Any infinities? FALSE 
+
+DEBUG: Processing P_pred 
+DEBUG: First few predictions: 0.1 0.1187059 0.138785 0.1593584 0.179054 0.1965337 
+DEBUG: Summary statistics:
+   Min. 1st Qu.  Median    Mean 3rd Qu.    Max. 
+0.02526 0.04599 0.05997 0.07514 0.08846 0.22790 
+DEBUG: All zeros? FALSE 
+DEBUG: Any infinities? FALSE 
+
+DEBUG: Processing Z_pred 
+DEBUG: First few predictions: 0.05 0.05051346 0.0512633 0.05226215 0.05350813 0.05499724 
+DEBUG: Summary statistics:
+   Min. 1st Qu.  Median    Mean 3rd Qu.    Max. 
+0.05000 0.08086 0.08651 0.08550 0.09232 0.10162 
+DEBUG: All zeros? FALSE 
+DEBUG: Any infinities? FALSE 
+
+DEBUG: Using the following variables for objective function:
+N_dat -> N_pred
+P_dat -> P_pred
+Z_dat -> Z_pred
+
+DEBUG: Calculating MSE for prediction variables only:
+
+DEBUG: N_pred 
+Observed: 0.4 0.375 0.346 0.314 0.278 0.239 ...
+Predicted: 0.4 0.3807806 0.3599517 0.3383794 0.3174379 0.2984691 ...
+MSE (normalized): 3.535293 
+
+DEBUG: P_pred 
+Observed: 0.1 0.117 0.138 0.161 0.187 0.215 ...
+Predicted: 0.1 0.1187059 0.138785 0.1593584 0.179054 0.1965337 ...
+MSE (normalized): 0.2878214 
+
+DEBUG: Z_pred 
+Observed: 0.05 0.052 0.053 0.055 0.057 0.059 ...
+Predicted: 0.05 0.05051346 0.0512633 0.05226215 0.05350813 0.05499724 ...
+MSE (normalized): 0.5861883 
+
+DEBUG: MSE values:
+    N_dat     P_dat     Z_dat 
+3.5352925 0.2878214 0.5861883 
+
+DEBUG: Final objective value (mean of MSEs): 1.469767 
+
+Final objective function value: 1.469767 
+
+JSON_REPORT_START
+{
+  "status": "SUCCESS",
+  "objective_value": 1.4698,
+  "model_summary": ["            Length Class  Mode     ", "par         10     -none- numeric  ", "objective    1     -none- numeric  ", "convergence  1     -none- numeric  ", "iterations   1     -none- numeric  ", "evaluations  2     -none- numeric  ", "message      1     -none- character"],
+  "model_report": {
+    "N_pred": [0.4, 0.3808, 0.36, 0.3384, 0.3174, 0.2985, 0.2828, 0.271, 0.2633, 0.2592, 0.258, 0.2591, 0.2617, 0.2656, 0.2704, 0.2758, 0.2817, 0.2881, 0.2947, 0.3016, 0.3086, 0.3158, 0.3231, 0.3304, 0.3376, 0.3447, 0.3517, 0.3585, 0.365, 0.3713, 0.3772, 0.3829, 0.3882, 0.3932, 0.3978, 0.4022, 0.4062, 0.4099, 0.4133, 0.4164, 0.4193, 0.422, 0.4244, 0.4266, 0.4287, 0.4305, 0.4322, 0.4337, 0.4351, 0.4362, 0.4372, 0.438, 0.4387, 0.4391, 0.4394, 0.4394, 0.4393, 0.4389, 0.4383, 0.4374, 0.4362, 0.4348, 0.433, 0.4309, 0.4285, 0.4257, 0.4225, 0.419, 0.4151, 0.4109, 0.4064, 0.4017, 0.3967, 0.3917, 0.3866, 0.3816, 0.3767, 0.3721, 0.3679, 0.3642, 0.361, 0.3584, 0.3565, 0.3552, 0.3546, 0.3545, 0.3551, 0.3562, 0.3577, 0.3597, 0.362, 0.3647, 0.3675, 0.3705, 0.3737, 0.3769, 0.3802, 0.3834, 0.3867, 0.3898, 0.3929, 0.3959, 0.3988, 0.4015, 0.4041, 0.4066, 0.4089, 0.411, 0.413, 0.4149, 0.4166, 0.4182, 0.4196, 0.4208, 0.4219, 0.4229, 0.4237, 0.4244, 0.4249, 0.4252, 0.4254, 0.4254, 0.4252, 0.4249, 0.4244, 0.4237, 0.4228, 0.4217, 0.4204, 0.4189, 0.4173, 0.4154, 0.4134, 0.4112, 0.4088, 0.4063, 0.4037, 0.4011, 0.3983, 0.3956, 0.3928, 0.3901, 0.3876, 0.3851, 0.3829, 0.3808, 0.379, 0.3775, 0.3763, 0.3754, 0.3748, 0.3745, 0.3745, 0.3748, 0.3754, 0.3762, 0.3773, 0.3786, 0.38, 0.3816, 0.3833, 0.3851, 0.387, 0.3889, 0.3908, 0.3928, 0.3947, 0.3966, 0.3985, 0.4003, 0.4021, 0.4038, 0.4054, 0.4069, 0.4083, 0.4096, 0.4108, 0.4119, 0.413, 0.4138, 0.4146, 0.4153, 0.4158, 0.4163, 0.4166, 0.4168, 0.4168, 0.4168, 0.4166, 0.4163, 0.4158, 0.4152, 0.4145, 0.4137, 0.4127, 0.4117, 0.4105, 0.4092, 0.4078, 0.4064],
+    "Z_pred": [0.05, 0.0505, 0.0513, 0.0523, 0.0535, 0.055, 0.0567, 0.0586, 0.0607, 0.0629, 0.0652, 0.0676, 0.07, 0.0724, 0.0749, 0.0773, 0.0797, 0.0821, 0.0844, 0.0866, 0.0887, 0.0907, 0.0925, 0.0943, 0.0958, 0.0972, 0.0984, 0.0994, 0.1002, 0.1008, 0.1013, 0.1015, 0.1016, 0.1016, 0.1013, 0.101, 0.1005, 0.0999, 0.0992, 0.0985, 0.0976, 0.0967, 0.0958, 0.0948, 0.0938, 0.0927, 0.0917, 0.0906, 0.0896, 0.0885, 0.0875, 0.0864, 0.0854, 0.0844, 0.0835, 0.0825, 0.0816, 0.0808, 0.08, 0.0792, 0.0785, 0.0778, 0.0772, 0.0767, 0.0762, 0.0758, 0.0755, 0.0752, 0.0751, 0.075, 0.0751, 0.0752, 0.0754, 0.0758, 0.0762, 0.0767, 0.0773, 0.0781, 0.0789, 0.0797, 0.0807, 0.0817, 0.0827, 0.0838, 0.0849, 0.086, 0.087, 0.0881, 0.0891, 0.0901, 0.0911, 0.0919, 0.0927, 0.0934, 0.094, 0.0946, 0.095, 0.0953, 0.0956, 0.0957, 0.0958, 0.0957, 0.0956, 0.0954, 0.0951, 0.0948, 0.0944, 0.094, 0.0935, 0.0929, 0.0923, 0.0917, 0.0911, 0.0905, 0.0898, 0.0891, 0.0884, 0.0878, 0.0871, 0.0864, 0.0858, 0.0852, 0.0846, 0.084, 0.0834, 0.0829, 0.0824, 0.082, 0.0816, 0.0812, 0.0809, 0.0807, 0.0805, 0.0803, 0.0802, 0.0802, 0.0802, 0.0803, 0.0804, 0.0806, 0.0809, 0.0812, 0.0816, 0.082, 0.0825, 0.083, 0.0835, 0.0841, 0.0847, 0.0854, 0.086, 0.0866, 0.0873, 0.0879, 0.0885, 0.0891, 0.0897, 0.0902, 0.0907, 0.0911, 0.0915, 0.0918, 0.0921, 0.0923, 0.0925, 0.0926, 0.0927, 0.0927, 0.0926, 0.0925, 0.0924, 0.0922, 0.0919, 0.0917, 0.0914, 0.091, 0.0907, 0.0903, 0.0899, 0.0895, 0.089, 0.0886, 0.0882, 0.0877, 0.0873, 0.0868, 0.0864, 0.086, 0.0856, 0.0852, 0.0849, 0.0845, 0.0842, 0.0839, 0.0837, 0.0835, 0.0833, 0.0831, 0.083, 0.0829],
+    "P_pred": [0.1, 0.1187, 0.1388, 0.1594, 0.1791, 0.1965, 0.2105, 0.2204, 0.226, 0.2279, 0.2268, 0.2234, 0.2183, 0.212, 0.2048, 0.1969, 0.1886, 0.1799, 0.1709, 0.1618, 0.1527, 0.1435, 0.1344, 0.1254, 0.1166, 0.1081, 0.1, 0.0922, 0.0848, 0.0779, 0.0715, 0.0656, 0.0602, 0.0553, 0.0508, 0.0469, 0.0433, 0.0402, 0.0375, 0.0351, 0.0331, 0.0313, 0.0298, 0.0286, 0.0275, 0.0267, 0.0261, 0.0256, 0.0254, 0.0253, 0.0253, 0.0255, 0.0259, 0.0264, 0.0271, 0.028, 0.0291, 0.0303, 0.0318, 0.0334, 0.0353, 0.0374, 0.0398, 0.0424, 0.0453, 0.0485, 0.052, 0.0558, 0.0598, 0.064, 0.0685, 0.0731, 0.0778, 0.0826, 0.0872, 0.0917, 0.096, 0.0998, 0.1032, 0.1061, 0.1083, 0.1099, 0.1108, 0.111, 0.1106, 0.1095, 0.1079, 0.1057, 0.1031, 0.1002, 0.0969, 0.0934, 0.0898, 0.0861, 0.0823, 0.0785, 0.0748, 0.0712, 0.0678, 0.0644, 0.0613, 0.0584, 0.0556, 0.0531, 0.0508, 0.0486, 0.0467, 0.045, 0.0435, 0.0422, 0.0411, 0.0401, 0.0393, 0.0387, 0.0383, 0.038, 0.0378, 0.0379, 0.038, 0.0383, 0.0388, 0.0394, 0.0402, 0.0411, 0.0422, 0.0434, 0.0448, 0.0463, 0.048, 0.0498, 0.0518, 0.0539, 0.0562, 0.0585, 0.061, 0.0635, 0.0661, 0.0687, 0.0713, 0.0738, 0.0763, 0.0787, 0.0809, 0.0829, 0.0847, 0.0862, 0.0874, 0.0883, 0.0889, 0.0892, 0.0892, 0.0888, 0.0882, 0.0873, 0.0861, 0.0847, 0.083, 0.0813, 0.0793, 0.0773, 0.0752, 0.0731, 0.0709, 0.0688, 0.0667, 0.0646, 0.0626, 0.0607, 0.0589, 0.0572, 0.0556, 0.0541, 0.0527, 0.0515, 0.0503, 0.0494, 0.0485, 0.0478, 0.0472, 0.0467, 0.0463, 0.0461, 0.046, 0.046, 0.0461, 0.0464, 0.0467, 0.0472, 0.0478, 0.0485, 0.0493, 0.0502, 0.0513, 0.0524, 0.0536, 0.0549, 0.0562, 0.0577, 0.0592, 0.0607]
+  },
+  "plot_data": {
+    "N_pred": {
+      "Time": [0, 0.503, 1.005, 1.508, 2.01, 2.513, 3.015, 3.518, 4.02, 4.523, 5.025, 5.528, 6.03, 6.533, 7.035, 7.538, 8.04, 8.543, 9.045, 9.548, 10.05, 10.553, 11.055, 11.558, 12.06, 12.563, 13.065, 13.568, 14.07, 14.573, 15.075, 15.578, 16.08, 16.583, 17.085, 17.588, 18.09, 18.593, 19.095, 19.598, 20.101, 20.603, 21.106, 21.608, 22.111, 22.613, 23.116, 23.618, 24.121, 24.623, 25.126, 25.628, 26.131, 26.633, 27.136, 27.638, 28.141, 28.643, 29.146, 29.648, 30.151, 30.653, 31.156, 31.658, 32.161, 32.663, 33.166, 33.668, 34.171, 34.673, 35.176, 35.678, 36.181, 36.683, 37.186, 37.688, 38.191, 38.693, 39.196, 39.698, 40.201, 40.704, 41.206, 41.709, 42.211, 42.714, 43.216, 43.719, 44.221, 44.724, 45.226, 45.729, 46.231, 46.734, 47.236, 47.739, 48.241, 48.744, 49.246, 49.749, 50.251, 50.754, 51.256, 51.759, 52.261, 52.764, 53.266, 53.769, 54.271, 54.774, 55.276, 55.779, 56.281, 56.784, 57.286, 57.789, 58.291, 58.794, 59.296, 59.799, 60.302, 60.804, 61.307, 61.809, 62.312, 62.814, 63.317, 63.819, 64.322, 64.824, 65.327, 65.829, 66.332, 66.834, 67.337, 67.839, 68.342, 68.844, 69.347, 69.849, 70.352, 70.854, 71.357, 71.859, 72.362, 72.864, 73.367, 73.869, 74.372, 74.874, 75.377, 75.879, 76.382, 76.884, 77.387, 77.889, 78.392, 78.894, 79.397, 79.899, 80.402, 80.905, 81.407, 81.91, 82.412, 82.915, 83.417, 83.92, 84.422, 84.925, 85.427, 85.93, 86.432, 86.935, 87.437, 87.94, 88.442, 88.945, 89.447, 89.95, 90.452, 90.955, 91.457, 91.96, 92.462, 92.965, 93.467, 93.97, 94.472, 94.975, 95.477, 95.98, 96.482, 96.985, 97.487, 97.99, 98.492, 98.995, 99.497, 100],
+      "Modeled": [0.4, 0.3808, 0.36, 0.3384, 0.3174, 0.2985, 0.2828, 0.271, 0.2633, 0.2592, 0.258, 0.2591, 0.2617, 0.2656, 0.2704, 0.2758, 0.2817, 0.2881, 0.2947, 0.3016, 0.3086, 0.3158, 0.3231, 0.3304, 0.3376, 0.3447, 0.3517, 0.3585, 0.365, 0.3713, 0.3772, 0.3829, 0.3882, 0.3932, 0.3978, 0.4022, 0.4062, 0.4099, 0.4133, 0.4164, 0.4193, 0.422, 0.4244, 0.4266, 0.4287, 0.4305, 0.4322, 0.4337, 0.4351, 0.4362, 0.4372, 0.438, 0.4387, 0.4391, 0.4394, 0.4394, 0.4393, 0.4389, 0.4383, 0.4374, 0.4362, 0.4348, 0.433, 0.4309, 0.4285, 0.4257, 0.4225, 0.419, 0.4151, 0.4109, 0.4064, 0.4017, 0.3967, 0.3917, 0.3866, 0.3816, 0.3767, 0.3721, 0.3679, 0.3642, 0.361, 0.3584, 0.3565, 0.3552, 0.3546, 0.3545, 0.3551, 0.3562, 0.3577, 0.3597, 0.362, 0.3647, 0.3675, 0.3705, 0.3737, 0.3769, 0.3802, 0.3834, 0.3867, 0.3898, 0.3929, 0.3959, 0.3988, 0.4015, 0.4041, 0.4066, 0.4089, 0.411, 0.413, 0.4149, 0.4166, 0.4182, 0.4196, 0.4208, 0.4219, 0.4229, 0.4237, 0.4244, 0.4249, 0.4252, 0.4254, 0.4254, 0.4252, 0.4249, 0.4244, 0.4237, 0.4228, 0.4217, 0.4204, 0.4189, 0.4173, 0.4154, 0.4134, 0.4112, 0.4088, 0.4063, 0.4037, 0.4011, 0.3983, 0.3956, 0.3928, 0.3901, 0.3876, 0.3851, 0.3829, 0.3808, 0.379, 0.3775, 0.3763, 0.3754, 0.3748, 0.3745, 0.3745, 0.3748, 0.3754, 0.3762, 0.3773, 0.3786, 0.38, 0.3816, 0.3833, 0.3851, 0.387, 0.3889, 0.3908, 0.3928, 0.3947, 0.3966, 0.3985, 0.4003, 0.4021, 0.4038, 0.4054, 0.4069, 0.4083, 0.4096, 0.4108, 0.4119, 0.413, 0.4138, 0.4146, 0.4153, 0.4158, 0.4163, 0.4166, 0.4168, 0.4168, 0.4168, 0.4166, 0.4163, 0.4158, 0.4152, 0.4145, 0.4137, 0.4127, 0.4117, 0.4105, 0.4092, 0.4078, 0.4064],
+      "Observed": [0.4, 0.375, 0.346, 0.314, 0.278, 0.239, 0.197, 0.155, 0.114, 0.076, 0.048, 0.031, 0.023, 0.021, 0.021, 0.021, 0.022, 0.023, 0.024, 0.025, 0.026, 0.028, 0.03, 0.032, 0.035, 0.038, 0.043, 0.048, 0.055, 0.064, 0.075, 0.086, 0.098, 0.11, 0.122, 0.133, 0.144, 0.154, 0.165, 0.174, 0.184, 0.193, 0.201, 0.21, 0.217, 0.225, 0.232, 0.238, 0.245, 0.251, 0.256, 0.261, 0.266, 0.27, 0.274, 0.278, 0.281, 0.284, 0.287, 0.289, 0.291, 0.293, 0.295, 0.296, 0.296, 0.297, 0.297, 0.297, 0.297, 0.296, 0.295, 0.294, 0.293, 0.292, 0.29, 0.288, 0.286, 0.284, 0.282, 0.279, 0.277, 0.275, 0.272, 0.27, 0.268, 0.266, 0.264, 0.262, 0.261, 0.26, 0.259, 0.258, 0.258, 0.258, 0.259, 0.259, 0.26, 0.261, 0.263, 0.265, 0.266, 0.268, 0.27, 0.272, 0.274, 0.276, 0.278, 0.28, 0.282, 0.284, 0.285, 0.287, 0.288, 0.289, 0.29, 0.291, 0.292, 0.293, 0.293, 0.294, 0.294, 0.294, 0.294, 0.294, 0.293, 0.293, 0.292, 0.292, 0.291, 0.29, 0.289, 0.288, 0.287, 0.286, 0.285, 0.284, 0.283, 0.282, 0.281, 0.281, 0.28, 0.279, 0.278, 0.278, 0.278, 0.277, 0.277, 0.277, 0.277, 0.277, 0.277, 0.278, 0.278, 0.279, 0.279, 0.28, 0.281, 0.281, 0.282, 0.283, 0.284, 0.285, 0.285, 0.286, 0.287, 0.288, 0.289, 0.289, 0.29, 0.29, 0.291, 0.291, 0.291, 0.291, 0.291, 0.291, 0.291, 0.291, 0.291, 0.291, 0.29, 0.29, 0.29, 0.289, 0.289, 0.288, 0.288, 0.287, 0.287, 0.286, 0.286, 0.285, 0.285, 0.284, 0.284, 0.284, 0.283, 0.283, 0.283, 0.283]
+    },
+    "P_pred": {
+      "Time": [0, 0.503, 1.005, 1.508, 2.01, 2.513, 3.015, 3.518, 4.02, 4.523, 5.025, 5.528, 6.03, 6.533, 7.035, 7.538, 8.04, 8.543, 9.045, 9.548, 10.05, 10.553, 11.055, 11.558, 12.06, 12.563, 13.065, 13.568, 14.07, 14.573, 15.075, 15.578, 16.08, 16.583, 17.085, 17.588, 18.09, 18.593, 19.095, 19.598, 20.101, 20.603, 21.106, 21.608, 22.111, 22.613, 23.116, 23.618, 24.121, 24.623, 25.126, 25.628, 26.131, 26.633, 27.136, 27.638, 28.141, 28.643, 29.146, 29.648, 30.151, 30.653, 31.156, 31.658, 32.161, 32.663, 33.166, 33.668, 34.171, 34.673, 35.176, 35.678, 36.181, 36.683, 37.186, 37.688, 38.191, 38.693, 39.196, 39.698, 40.201, 40.704, 41.206, 41.709, 42.211, 42.714, 43.216, 43.719, 44.221, 44.724, 45.226, 45.729, 46.231, 46.734, 47.236, 47.739, 48.241, 48.744, 49.246, 49.749, 50.251, 50.754, 51.256, 51.759, 52.261, 52.764, 53.266, 53.769, 54.271, 54.774, 55.276, 55.779, 56.281, 56.784, 57.286, 57.789, 58.291, 58.794, 59.296, 59.799, 60.302, 60.804, 61.307, 61.809, 62.312, 62.814, 63.317, 63.819, 64.322, 64.824, 65.327, 65.829, 66.332, 66.834, 67.337, 67.839, 68.342, 68.844, 69.347, 69.849, 70.352, 70.854, 71.357, 71.859, 72.362, 72.864, 73.367, 73.869, 74.372, 74.874, 75.377, 75.879, 76.382, 76.884, 77.387, 77.889, 78.392, 78.894, 79.397, 79.899, 80.402, 80.905, 81.407, 81.91, 82.412, 82.915, 83.417, 83.92, 84.422, 84.925, 85.427, 85.93, 86.432, 86.935, 87.437, 87.94, 88.442, 88.945, 89.447, 89.95, 90.452, 90.955, 91.457, 91.96, 92.462, 92.965, 93.467, 93.97, 94.472, 94.975, 95.477, 95.98, 96.482, 96.985, 97.487, 97.99, 98.492, 98.995, 99.497, 100],
+      "Modeled": [0.1, 0.1187, 0.1388, 0.1594, 0.1791, 0.1965, 0.2105, 0.2204, 0.226, 0.2279, 0.2268, 0.2234, 0.2183, 0.212, 0.2048, 0.1969, 0.1886, 0.1799, 0.1709, 0.1618, 0.1527, 0.1435, 0.1344, 0.1254, 0.1166, 0.1081, 0.1, 0.0922, 0.0848, 0.0779, 0.0715, 0.0656, 0.0602, 0.0553, 0.0508, 0.0469, 0.0433, 0.0402, 0.0375, 0.0351, 0.0331, 0.0313, 0.0298, 0.0286, 0.0275, 0.0267, 0.0261, 0.0256, 0.0254, 0.0253, 0.0253, 0.0255, 0.0259, 0.0264, 0.0271, 0.028, 0.0291, 0.0303, 0.0318, 0.0334, 0.0353, 0.0374, 0.0398, 0.0424, 0.0453, 0.0485, 0.052, 0.0558, 0.0598, 0.064, 0.0685, 0.0731, 0.0778, 0.0826, 0.0872, 0.0917, 0.096, 0.0998, 0.1032, 0.1061, 0.1083, 0.1099, 0.1108, 0.111, 0.1106, 0.1095, 0.1079, 0.1057, 0.1031, 0.1002, 0.0969, 0.0934, 0.0898, 0.0861, 0.0823, 0.0785, 0.0748, 0.0712, 0.0678, 0.0644, 0.0613, 0.0584, 0.0556, 0.0531, 0.0508, 0.0486, 0.0467, 0.045, 0.0435, 0.0422, 0.0411, 0.0401, 0.0393, 0.0387, 0.0383, 0.038, 0.0378, 0.0379, 0.038, 0.0383, 0.0388, 0.0394, 0.0402, 0.0411, 0.0422, 0.0434, 0.0448, 0.0463, 0.048, 0.0498, 0.0518, 0.0539, 0.0562, 0.0585, 0.061, 0.0635, 0.0661, 0.0687, 0.0713, 0.0738, 0.0763, 0.0787, 0.0809, 0.0829, 0.0847, 0.0862, 0.0874, 0.0883, 0.0889, 0.0892, 0.0892, 0.0888, 0.0882, 0.0873, 0.0861, 0.0847, 0.083, 0.0813, 0.0793, 0.0773, 0.0752, 0.0731, 0.0709, 0.0688, 0.0667, 0.0646, 0.0626, 0.0607, 0.0589, 0.0572, 0.0556, 0.0541, 0.0527, 0.0515, 0.0503, 0.0494, 0.0485, 0.0478, 0.0472, 0.0467, 0.0463, 0.0461, 0.046, 0.046, 0.0461, 0.0464, 0.0467, 0.0472, 0.0478, 0.0485, 0.0493, 0.0502, 0.0513, 0.0524, 0.0536, 0.0549, 0.0562, 0.0577, 0.0592, 0.0607],
+      "Observed": [0.1, 0.117, 0.138, 0.161, 0.187, 0.215, 0.245, 0.275, 0.303, 0.327, 0.341, 0.344, 0.336, 0.324, 0.31, 0.295, 0.28, 0.266, 0.251, 0.236, 0.22, 0.205, 0.19, 0.174, 0.157, 0.141, 0.123, 0.106, 0.087, 0.068, 0.05, 0.036, 0.025, 0.02, 0.016, 0.014, 0.013, 0.013, 0.013, 0.013, 0.013, 0.013, 0.013, 0.014, 0.014, 0.014, 0.015, 0.016, 0.016, 0.017, 0.017, 0.018, 0.019, 0.02, 0.02, 0.021, 0.022, 0.023, 0.024, 0.025, 0.026, 0.027, 0.027, 0.029, 0.03, 0.031, 0.032, 0.033, 0.034, 0.035, 0.036, 0.037, 0.038, 0.039, 0.04, 0.041, 0.042, 0.043, 0.044, 0.044, 0.045, 0.045, 0.046, 0.046, 0.046, 0.046, 0.046, 0.045, 0.045, 0.044, 0.043, 0.042, 0.041, 0.04, 0.038, 0.037, 0.036, 0.035, 0.033, 0.032, 0.031, 0.031, 0.03, 0.029, 0.029, 0.029, 0.029, 0.029, 0.029, 0.029, 0.029, 0.029, 0.029, 0.03, 0.03, 0.03, 0.031, 0.031, 0.032, 0.032, 0.033, 0.033, 0.034, 0.034, 0.035, 0.035, 0.036, 0.036, 0.037, 0.037, 0.038, 0.038, 0.038, 0.039, 0.039, 0.039, 0.039, 0.039, 0.039, 0.039, 0.039, 0.039, 0.039, 0.038, 0.038, 0.038, 0.037, 0.037, 0.036, 0.036, 0.036, 0.035, 0.035, 0.034, 0.034, 0.034, 0.033, 0.033, 0.033, 0.032, 0.032, 0.032, 0.032, 0.032, 0.032, 0.032, 0.032, 0.032, 0.032, 0.033, 0.033, 0.033, 0.033, 0.034, 0.034, 0.034, 0.034, 0.035, 0.035, 0.035, 0.035, 0.036, 0.036, 0.036, 0.036, 0.037, 0.037, 0.037, 0.037, 0.037, 0.037, 0.037, 0.037, 0.037, 0.037, 0.037, 0.037, 0.037, 0.036, 0.036]
+    },
+    "Z_pred": {
+      "Time": [0, 0.503, 1.005, 1.508, 2.01, 2.513, 3.015, 3.518, 4.02, 4.523, 5.025, 5.528, 6.03, 6.533, 7.035, 7.538, 8.04, 8.543, 9.045, 9.548, 10.05, 10.553, 11.055, 11.558, 12.06, 12.563, 13.065, 13.568, 14.07, 14.573, 15.075, 15.578, 16.08, 16.583, 17.085, 17.588, 18.09, 18.593, 19.095, 19.598, 20.101, 20.603, 21.106, 21.608, 22.111, 22.613, 23.116, 23.618, 24.121, 24.623, 25.126, 25.628, 26.131, 26.633, 27.136, 27.638, 28.141, 28.643, 29.146, 29.648, 30.151, 30.653, 31.156, 31.658, 32.161, 32.663, 33.166, 33.668, 34.171, 34.673, 35.176, 35.678, 36.181, 36.683, 37.186, 37.688, 38.191, 38.693, 39.196, 39.698, 40.201, 40.704, 41.206, 41.709, 42.211, 42.714, 43.216, 43.719, 44.221, 44.724, 45.226, 45.729, 46.231, 46.734, 47.236, 47.739, 48.241, 48.744, 49.246, 49.749, 50.251, 50.754, 51.256, 51.759, 52.261, 52.764, 53.266, 53.769, 54.271, 54.774, 55.276, 55.779, 56.281, 56.784, 57.286, 57.789, 58.291, 58.794, 59.296, 59.799, 60.302, 60.804, 61.307, 61.809, 62.312, 62.814, 63.317, 63.819, 64.322, 64.824, 65.327, 65.829, 66.332, 66.834, 67.337, 67.839, 68.342, 68.844, 69.347, 69.849, 70.352, 70.854, 71.357, 71.859, 72.362, 72.864, 73.367, 73.869, 74.372, 74.874, 75.377, 75.879, 76.382, 76.884, 77.387, 77.889, 78.392, 78.894, 79.397, 79.899, 80.402, 80.905, 81.407, 81.91, 82.412, 82.915, 83.417, 83.92, 84.422, 84.925, 85.427, 85.93, 86.432, 86.935, 87.437, 87.94, 88.442, 88.945, 89.447, 89.95, 90.452, 90.955, 91.457, 91.96, 92.462, 92.965, 93.467, 93.97, 94.472, 94.975, 95.477, 95.98, 96.482, 96.985, 97.487, 97.99, 98.492, 98.995, 99.497, 100],
+      "Modeled": [0.05, 0.0505, 0.0513, 0.0523, 0.0535, 0.055, 0.0567, 0.0586, 0.0607, 0.0629, 0.0652, 0.0676, 0.07, 0.0724, 0.0749, 0.0773, 0.0797, 0.0821, 0.0844, 0.0866, 0.0887, 0.0907, 0.0925, 0.0943, 0.0958, 0.0972, 0.0984, 0.0994, 0.1002, 0.1008, 0.1013, 0.1015, 0.1016, 0.1016, 0.1013, 0.101, 0.1005, 0.0999, 0.0992, 0.0985, 0.0976, 0.0967, 0.0958, 0.0948, 0.0938, 0.0927, 0.0917, 0.0906, 0.0896, 0.0885, 0.0875, 0.0864, 0.0854, 0.0844, 0.0835, 0.0825, 0.0816, 0.0808, 0.08, 0.0792, 0.0785, 0.0778, 0.0772, 0.0767, 0.0762, 0.0758, 0.0755, 0.0752, 0.0751, 0.075, 0.0751, 0.0752, 0.0754, 0.0758, 0.0762, 0.0767, 0.0773, 0.0781, 0.0789, 0.0797, 0.0807, 0.0817, 0.0827, 0.0838, 0.0849, 0.086, 0.087, 0.0881, 0.0891, 0.0901, 0.0911, 0.0919, 0.0927, 0.0934, 0.094, 0.0946, 0.095, 0.0953, 0.0956, 0.0957, 0.0958, 0.0957, 0.0956, 0.0954, 0.0951, 0.0948, 0.0944, 0.094, 0.0935, 0.0929, 0.0923, 0.0917, 0.0911, 0.0905, 0.0898, 0.0891, 0.0884, 0.0878, 0.0871, 0.0864, 0.0858, 0.0852, 0.0846, 0.084, 0.0834, 0.0829, 0.0824, 0.082, 0.0816, 0.0812, 0.0809, 0.0807, 0.0805, 0.0803, 0.0802, 0.0802, 0.0802, 0.0803, 0.0804, 0.0806, 0.0809, 0.0812, 0.0816, 0.082, 0.0825, 0.083, 0.0835, 0.0841, 0.0847, 0.0854, 0.086, 0.0866, 0.0873, 0.0879, 0.0885, 0.0891, 0.0897, 0.0902, 0.0907, 0.0911, 0.0915, 0.0918, 0.0921, 0.0923, 0.0925, 0.0926, 0.0927, 0.0927, 0.0926, 0.0925, 0.0924, 0.0922, 0.0919, 0.0917, 0.0914, 0.091, 0.0907, 0.0903, 0.0899, 0.0895, 0.089, 0.0886, 0.0882, 0.0877, 0.0873, 0.0868, 0.0864, 0.086, 0.0856, 0.0852, 0.0849, 0.0845, 0.0842, 0.0839, 0.0837, 0.0835, 0.0833, 0.0831, 0.083, 0.0829],
+      "Observed": [0.05, 0.052, 0.053, 0.055, 0.057, 0.059, 0.061, 0.064, 0.066, 0.068, 0.071, 0.074, 0.076, 0.079, 0.082, 0.085, 0.088, 0.092, 0.095, 0.099, 0.102, 0.106, 0.11, 0.114, 0.118, 0.122, 0.126, 0.13, 0.134, 0.137, 0.139, 0.14, 0.14, 0.137, 0.134, 0.131, 0.127, 0.124, 0.12, 0.117, 0.113, 0.11, 0.107, 0.104, 0.101, 0.099, 0.096, 0.094, 0.091, 0.089, 0.087, 0.085, 0.083, 0.082, 0.08, 0.079, 0.078, 0.076, 0.075, 0.074, 0.073, 0.073, 0.072, 0.071, 0.071, 0.07, 0.07, 0.07, 0.07, 0.07, 0.07, 0.07, 0.07, 0.07, 0.071, 0.071, 0.071, 0.072, 0.072, 0.073, 0.074, 0.074, 0.075, 0.076, 0.077, 0.077, 0.078, 0.079, 0.08, 0.08, 0.081, 0.082, 0.082, 0.083, 0.083, 0.083, 0.083, 0.083, 0.083, 0.083, 0.083, 0.082, 0.082, 0.082, 0.081, 0.08, 0.08, 0.079, 0.079, 0.078, 0.078, 0.077, 0.076, 0.076, 0.076, 0.075, 0.075, 0.074, 0.074, 0.074, 0.074, 0.074, 0.073, 0.073, 0.073, 0.073, 0.073, 0.073, 0.074, 0.074, 0.074, 0.074, 0.074, 0.075, 0.075, 0.075, 0.076, 0.076, 0.076, 0.077, 0.077, 0.077, 0.077, 0.078, 0.078, 0.078, 0.078, 0.079, 0.079, 0.079, 0.079, 0.079, 0.079, 0.079, 0.079, 0.079, 0.079, 0.079, 0.078, 0.078, 0.078, 0.078, 0.078, 0.077, 0.077, 0.077, 0.076, 0.076, 0.076, 0.076, 0.076, 0.075, 0.075, 0.075, 0.075, 0.075, 0.075, 0.075, 0.075, 0.075, 0.075, 0.075, 0.075, 0.075, 0.075, 0.075, 0.075, 0.076, 0.076, 0.076, 0.076, 0.076, 0.076, 0.077, 0.077, 0.077, 0.077, 0.077, 0.077, 0.077]
+    }
+  }
+}
+JSON_REPORT_END[0m
+[93m[PID 1508628] R script stdout END <<<[0m
+[93m[PID 1508628] R script stderr BEGIN >>>[0m
+[0mLoading required package: TMB
+Loading required package: jsonlite
+using C++ compiler: ‘g++ (Ubuntu 13.3.0-6ubuntu2~24.04) 13.3.0’
+Warning message:
+`aes_string()` was deprecated in ggplot2 3.0.0.
+ℹ Please use tidy evaluation idioms with `aes()`.
+ℹ See also `vignette("ggplot2-in-packages")` for more information.[0m
+[93m[PID 1508628] R script stderr END <<<[0m
+[96m[PID 1508628] JSON detected, parsing...[0m
+[96m[PID 1508628] Writing model report...[0m
+[94m[PID 1508628] Objective value: 1.4698[0m
+[96m[PID 1508628] Generating plots...[0m
+[94m[PID 1508628] Objective Value: 1.4698[0m
+[92m[PID 1508628] Successful model run[0m
+[0m----------------------------------------------[0m
+FINAL MODEL RUN FINISHED
+Final model run successful. Objective value: 1.4698

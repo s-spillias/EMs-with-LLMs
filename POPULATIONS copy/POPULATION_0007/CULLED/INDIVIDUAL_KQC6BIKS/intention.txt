@@ -1,0 +1,43 @@
+Assessment of current model vs data
+- Residuals: The referenced residuals file is not available in the provided files, so a quantitative assessment (e.g., mean bias, serial autocorrelation, variance structure) cannot be completed here. Please supply the residuals file to enable a direct evaluation.
+- Structural fit expectations: For COTS–coral systems, we expect lagged, environmentally forced recruitment variability (temperature, productivity), density-dependent mortality causing busts, and coral cover responding to COTS predation and heat stress. The current observation models (lognormal for COTS density and normal on logit scale for coral%) are appropriate with SD floors for stability.
+
+Alignment with the PROJECT CONTEXT (NPZ)
+- The PROJECT CONTEXT emphasizes NPZ (nutrient–phytoplankton–zooplankton) dynamics. While the present model is COTS–coral, incorporating bottom-up control on larval survival connects the system to NPZ by tying recruitment to productivity.
+- Initially, we planned to drive resource limitation with an exogenous phytoplankton time series food_dat. However, the current data interface does not provide food_dat, causing a compile-time data read failure. To maintain the intended ecological mechanism without additional data dependencies, we implemented a productivity proxy derived from SST at t-1.
+
+Key ecological processes possibly missing or oversimplified
+- Bottom-up resource limitation of recruitment: Previously neutralized; now activated via a saturating Monod term based on an SST-derived proxy.
+- Explicit NPZ compartments (N, P, Z): Not present. A full NPZ state-space integration would be a major refactor beyond the “one improvement” scope.
+- Temperature–recruitment link (Gaussian) and Allee effects are present; adult density-dependent mortality is present. Coral dynamics include space limitation, bleaching growth reductions, and a multi-prey functional response.
+
+Parameter review and potential placeholders
+- K_food existed as a placeholder tied to an external NPZ proxy. Given the missing food_dat input, we repurposed K_food to half-saturation on an SST-derived productivity proxy: food_proxy = pospart(T_opt_rec - SST). Cooler-than-optimal SST implies stronger mixing and higher nutrient supply, which supports phytoplankton and larval food.
+- Other parameters remain consistent with prior structure. No evidence provided that current values necessitate changing functional forms elsewhere.
+
+Chosen ecological improvement
+- Approach: Resource limitation mechanism with environmental modifier.
+- Change: Introduce a Monod-type food limitation term using a t-1 SST-based productivity proxy:
+    food_proxy = pospart(T_opt_rec - sst(t-1))
+    f_food = food_proxy / (K_food + food_proxy)
+    Rec = alpha_rec * [C^phi / (1 + C / C_sat_rec)] * f_Allee * f_Trec * f_food + cotsimm
+- Rationale: Ecologically, cooler-than-optimal SST often corresponds to enhanced mixing and nutrient supply, promoting phytoplankton blooms and larval food. A saturating response avoids runaway recruitment under favorable conditions and better aligns the model with bottom-up NPZ considerations without requiring additional data.
+
+Mathematical implementation details
+- Data: No new data fields required. All drivers (SST, immigration) are used at t-1, ensuring no data leakage.
+- Smoothness and stability: pospart keeps the proxy nonnegative and is AD-friendly; an epsilon prevents division by zero.
+
+Data needs and validation
+- Please provide the residuals file to evaluate:
+  - Bias in COTS residuals across cool vs warm regimes (to assess K_food scaling and the proxy choice).
+  - Residual autocorrelation (to test for missing lags or maturation structure).
+  - Coral residual behavior during heat extremes (to refine beta_bleach and m_bleachF/S).
+- If lack of fit persists, consider alternative or additional proxies (e.g., wind/mixing indices) or adding a curvature exponent on f_food, pending data support.
+
+Non-leakage guarantee
+- Only t-1 values of exogenous drivers (sst_dat, cotsimm_dat) are used to compute t; response variables are not used in prediction calculations at the same time step.
+
+Summary of changes
+- Activated bottom-up resource limitation on COTS recruitment using an SST-based productivity proxy at t-1 within a Monod function controlled by K_food.
+- model.cpp updated to remove the unused DATA_VECTOR(food_dat) and implement the proxy-based f_food.
+- parameters.json updated to reflect the repurposed meaning of K_food for the SST proxy.

@@ -18,28 +18,67 @@ The model implementation can be compared to the original NPZ equations from \cit
                    - \underbrace{S P}_{\text{mixing}} \\[6pt]
     \frac{dZ}{dt} &= \underbrace{\alpha\frac{g P^2 Z}{k_g + P^2}}_{\text{growth (assimilation)}}
                    - \underbrace{\mu_Z Z^2}_{\text{mortality}}
-                   - \underbrace{S Z}_{\text{mixing}}
     \end{align*}
 
-Our generated model captures several key ecological processes from the original system:
-\begin{enumerate}
-\item Nutrient uptake by phytoplankton following Michaelis-Menten kinetics
-\item Quadratic zooplankton mortality
-\item Nutrient recycling through zooplankton excretion
-\item Environmental mixing effects
-\end{enumerate}
 
-For evaluating the ecological characteristics of generated models against the NPZ reference model, the system employed a 4-level ordinal scoring system that compares each model component to both the ground truth equations and recognized alternate formulations from the ecological literature. The evaluation system assessed nine ecological characteristics organized by equation: nutrient uptake, recycling, and mixing (dN/dt); phytoplankton growth, grazing loss, mortality, and mixing (dP/dt); and zooplankton growth and mortality (dZ/dt).
+For evaluating the ecological characteristics of LEMMA-generated models against the NPZ reference model, we employed a 4-level ordinal scoring system that compares each model component to both the ground truth equations and recognized alternate formulations based on a published catalogue of commonly used NPZ-model formulations \citep{franks2002npz}. The evaluation system assessed nine ecological characteristics organized by equation: nutrient uptake, recycling, and mixing (dN/dt); phytoplankton growth, grazing loss, mortality, and mixing (dP/dt); and zooplankton growth and mortality (dZ/dt).
 
-The scoring rubric used for all evaluations was:
 
-\begin{lstlisting}
+The complete LLM evaluation prompt used for assessing ecological characteristics was:
+
+\begin{lstlisting}[basicstyle=\tiny\ttfamily, breaklines=true]
+You are assessing whether a C++ NPZ model implements canonical ecological components
+when compared to a TRUTH NPZ model ("human model") and to alternate formulations.
+
+TRUTH NPZ (ground truth reference):
+{truth_content}
+
+Candidate model to evaluate (C++):
+{model_content}
+
+Canonical components to check (by equation dN/dt, dP/dt, dZ/dt):
+- nutrient_equation_uptake: In dN/dt: Nutrient uptake by phytoplankton (Michaelis-Menten or alternates). (weight: 0.333)
+- nutrient_equation_recycling: In dN/dt: Nutrient recycling from zooplankton (predation losses, excretion). (weight: 0.333)
+- nutrient_equation_mixing: In dN/dt: Environmental mixing term (entrainment/dilution). (weight: 0.333)
+- phytoplankton_equation_growth: In dP/dt: Growth via nutrient + light limitation (Michaelis-Menten, Droop, f(I)). (weight: 0.25)
+- phytoplankton_equation_grazing_loss: In dP/dt: Loss to zooplankton grazing (Ivlev/Holling/threshold/acclimation). (weight: 0.25)
+- phytoplankton_equation_mortality: In dP/dt: Non-grazing mortality (linear or quadratic). (weight: 0.25)
+- phytoplankton_equation_mixing: In dP/dt: Physical loss via mixing/entrainment. (weight: 0.25)
+- zooplankton_equation_growth: In dZ/dt: Growth through grazing on phytoplankton (with assimilation efficiency). (weight: 0.5)
+- zooplankton_equation_mortality: In dZ/dt: Zooplankton mortality (linear or density-dependent). (weight: 0.5)
+
+Relevant alternates from the literature:
+
+Catalog of alternate formulations (examples, non-exhaustive):
+
+1) Phytoplankton response to irradiance f(I):
+   - Linear: f(I) = a * I
+   - Saturating hyperbolae / exponentials / tanh:
+       I/(I + I_s),  1 - exp(-I/I0),  tanh(I/I0)
+   - Photo-inhibiting forms (increase then decline at high I)
+
+2) Nutrient uptake g(N):
+   - Michaelis-Menten: V_max * N/(k + N)
+   - Liebig minimum limitation: growth = min( light_limit , nutrient_limit )
+   - Droop (cell quota): internal quota Q with dQ/dt = uptake - use; growth ∝ (1 - Q0/Q)
+
+3) Zooplankton grazing h(P):
+   - Linear or bilinear with saturation at R_m
+   - Saturating with threshold P0: R_m * (P - P0)/(λ + P - P0)
+   - Holling-/Ivlev-type saturating: R_m * [1 - exp(-A P)] ; variants with threshold
+   - Acclimating forms: near-linear at high P due to grazing acclimation
+
+4) Loss/closure terms i(P), j(Z):
+   - Linear mortality: ω * P  (for phytoplankton),  ε * Z (for zooplankton)
+   - Quadratic (density-dependent) mortality: m * P^2,  μ * Z^2
+   - Saturating density-dependence for zooplankton: ε Z^2 / (b + Z)
+
 Scoring rubric per characteristic (choose exactly one category):
 - 3 = TRUTH_MATCH
     The mathematical structure is equivalent to the TRUTH model (modulo variable names,
     syntax, factor grouping, and coefficient naming). Quote the exact snippet that matches.
 - 2 = ALTERNATE
-    The implementation matches one of the alternates enumerated in the literature catalog,
+    The implementation matches one of the alternates enumerated above,
     even if not identical to TRUTH. Name the family (e.g., "Michaelis-Menten uptake",
     "Ivlev grazing with threshold", "linear mortality", "Droop quota").
 - 1 = SIMILAR_NOT_LISTED
@@ -48,16 +87,35 @@ Scoring rubric per characteristic (choose exactly one category):
     or alternates list.
 - 0 = NOT_PRESENT_OR_INCORRECT
     The ecological component is missing or cannot be identified.
+
+Important:
+• Always justify the category selection and reference the concrete term(s) or code lines.
+• Accept differences in variable names, code organization, and equivalent algebra.
+• If multiple terms exist for the same component, grade the best-matching one.
+
+Additionally, identify any EXTRA ECOLOGICAL COMPONENTS present in the candidate that are NOT present in the TRUTH NPZ.
+Definition and guidance:
+- Consider an "extra component" as a distinct ecological process, state variable, or source/sink term (e.g., added detritus pool, temperature/Q10 modifier on rates, extra mortality/closure terms, explicit exudation, DOM remineralization, etc.) that does not exist in the TRUTH equations.
+- Parameter renaming, algebraic regrouping, or purely notational changes are NOT extra components.
+- If components are merged/split relative to TRUTH, only count them as "extra" if a truly new process/term is introduced, not merely a refactor.
+- Briefly list each extra component and its role so a human can verify.
+
+OUTPUT STRICTLY AS JSON with this schema (types shown as choices/labels; your actual output must be valid JSON without comments):
+{
+  "qualitative_description": "Overall narrative comparing the candidate to TRUTH and literature alternates",
+  "extra_components_count": 0 | 1 | 2 | 3 | ...,
+  "extra_components_description": "Short list-style description naming each extra component and its role (or empty if none)",
+  "characteristic_scores": {
+    "characteristic_name": {
+      "score": 0 | 1 | 2 | 3,
+      "category": "TRUTH_MATCH" | "ALTERNATE" | "SIMILAR_NOT_LISTED" | "NOT_PRESENT_OR_INCORRECT",
+      "matched_form": "e.g., Michaelis-Menten uptake / Ivlev grazing / linear mortality / Droop quota / (or empty)",
+      "explanation": "Short rationale quoting the exact term(s) or code line(s)"
+    }
+  },
+  "notes": "any caveats or ambiguities"
+}
 \end{lstlisting}
-
-The alternate formulations catalog was based on \cite{franks2002npz} and included:
-
-\begin{itemize}
-    \item Phytoplankton light response: linear, saturating (Michaelis-Menten, exponential, tanh), and photo-inhibiting forms
-    \item Nutrient uptake: Michaelis-Menten, Liebig minimum limitation, Droop quota models
-    \item Zooplankton grazing: linear, saturating with threshold, Holling/Ivlev type, acclimating forms
-    \item Mortality terms: linear and quadratic (density-dependent) for both phytoplankton and zooplankton
-\end{itemize}
 
 Each characteristic was assigned a weight based on its contribution to its parent equation: the three nutrient equation components each had weight 0.333, the four phytoplankton components each had weight 0.25, and the two zooplankton components each had weight 0.5. The aggregate ecological score was calculated as the weighted sum of individual scores, then normalized to a 0-1 scale by dividing by the maximum possible score.
 
@@ -108,4 +166,3 @@ Figure \ref{fig:iterations_by_llm} illustrates the distribution of iteration cou
 
 % \input{best_models_read.tex}
 \input{best_models/oos_best_read.tex}
-

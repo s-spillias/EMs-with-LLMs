@@ -1,0 +1,48 @@
+Assessment and rationale for model update
+
+Summary
+- Data fit: A quantitative assessment of fit (e.g., bias, autocorrelation, heteroskedasticity in residuals) cannot be completed here because the residuals file was not provided. Once available, we will inspect:
+  - COTS residuals (log-space) for clustered positive errors prior to outbreak peaks (suggesting missing outbreak triggers) and negative errors post-peak (suggesting missing bust mechanisms).
+  - Coral residuals (logit-space) for systematically positive errors during bleaching heatwaves (suggesting underestimation of heat impacts) or during predator outbreaks (suggesting underestimation of consumption).
+- Project-context alignment: The current model includes key ingredients for boom-bust cycles—Allee effect and superlinear fecundity (C^phi), density-dependent adult mortality, a juvenile stage, a multi-prey functional response on corals, temperature-modulated coral growth and bleaching, and an exogenous larval immigration input. This is a strong foundation for outbreak dynamics.
+- Missing/oversimplified processes (key points):
+  1) Food-limited reproduction/condition: COTS fecundity and condition should decline as preferred coral prey (especially Acropora/fast coral) is depleted during/after outbreaks. Current recruitment is independent of coral prey, aside from open-substrate effects; this can allow sustained high recruitment even after severe coral loss, dampening busts.
+  2) Environmental pulses other than temperature: Runoff/nutrient pulses that increase larval survival (via plankton/food) are not represented unless captured by cotsimm_dat. If cotsimm_dat lacks these signals, recruitment pulses may be under-driven.
+  3) Starvation mortality: Adult mortality likely rises when food is scarce; currently mortality is only baseline + density-dependent in COTS abundance, not food-limited.
+  4) Predator control (e.g., Triton’s trumpet, fishes) and their dependence on reef state are not explicitly modeled.
+  5) Spatial propagation is out of scope here but is a known driver of wave-like outbreaks.
+
+Parameter review
+- T_opt_bleach was updated from literature (value 32.4 °C; lower bound 30.5 °C). The current coral heat-stress structure uses:
+  - Growth multiplier exp(-beta_bleach * max(0, SST - T_opt_bleach))
+  - Additional linear proportional loss m_bleach{F,S} * max(0, SST - T_opt_bleach)
+  This remains ecologically reasonable with the updated threshold; no structural change required solely due to the updated value.
+- Other parameters appear as initial estimates with broad bounds; observation error forms (lognormal for COTS; logit-normal for corals) are appropriate.
+
+Chosen single improvement
+Add a prey-availability (coral) limitation on COTS recruitment
+- Ecological motivation: Outbreaks should depend on abundant coral prey (especially Acropora). As COTS deplete corals during an outbreak, fecundity and juvenile survival should fall, helping trigger/maintain busts. This adds a key negative feedback missing from the current structure.
+- Mathematical form added to recruitment:
+  Let P_t-1 = wF_rec * F_{t-1} + wS_rec * S_{t-1}  (weighted % cover proxy of preferred prey)
+  f_food = P_t-1 / (K_food + P_t-1)
+  Revised recruitment (at time t using only t-1 states):
+    Rec_t = alpha_rec * C_{t-1}^phi * f_Allee(C_{t-1}) * f_sub(F_{t-1}, S_{t-1}) * f_Trec(SST_{t-1}) * f_food(F_{t-1}, S_{t-1}) + cotsimm_{t-1}
+  - wF_rec, wS_rec >= 0 capture prey preference (expect wF_rec > wS_rec).
+  - K_food > 0 is a half-saturation constant in % cover units.
+- Expected effect on dynamics and residuals:
+  - Produces higher recruitment when coral is abundant, facilitating the boom.
+  - As coral declines from predation/bleaching, f_food decreases, reducing recruitment and accelerating the bust.
+  - Should reduce positive COTS residuals in the growth phase following coral loss and reduce negative residuals in post-peak years if recruitment was previously over-predicted.
+- Identifiability considerations:
+  - f_food interacts with existing f_sub and alpha_rec. To mitigate confounding, we suggest informative but broad bounds and keep the form simple (single Michaelis-Menten term). Weights allow preferential emphasis on fast coral without hard-coding it.
+
+Implementation notes
+- Added new parameters: wF_rec, wS_rec (dimensionless prey preference weights for fast and slow coral), and K_food (half-saturation for prey availability in % cover).
+- Incorporated f_food into Rec using only previous-step state variables (no data leakage).
+- Added diagnostic report food_mod_vec for f_food over time to support model checking.
+- Retained all other process and observation structures unchanged.
+
+Next steps once residuals are available
+- Verify whether boom initiation is still delayed or muted (suggest need for environmental pulse covariates in recruitment or immigration if necessary).
+- Check for over-dispersion in peak years; consider time-varying process noise or state noise if needed.
+- If busts remain insufficiently rapid, consider adding a food-limited component to adult mortality (starvation) as a next incremental change.

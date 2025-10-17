@@ -1,0 +1,1614 @@
+Warning: Input is not a terminal (fd=4).
+Skipping POPULATIONS/POPULATION_0074/INDIVIDUAL_Y8C4XVI5/model.cpp that matches gitignore spec.
+Skipping POPULATIONS/POPULATION_0074/INDIVIDUAL_Y8C4XVI5/parameters.json that matches gitignore spec.
+Skipping POPULATIONS/POPULATION_0074/INDIVIDUAL_Y8C4XVI5/intention.txt that matches gitignore spec.
+Creating empty file POPULATIONS/POPULATION_0074/INDIVIDUAL_Y8C4XVI5/intention.txt
+I have a couple of clarifying questions before final calibration:                                                                                                       
+
+ • The residuals file was not included in this chat. Could you share it (path and format)? I can then quantify fit, diagnose bias, and verify the improvement targets   
+   the observed errors.                                                                                                                                                 
+
+That said, here’s my assessment and one targeted ecological improvement implemented:                                                                                    
+
+ 1 Do we need code changes?                                                                                                                                             
+
+ • Yes. To better capture outbreak timing and duration without using current-time observations, I added an explicit cryptic juvenile stage (J) with survival and        
+   maturation into adults. Both adult-produced larvae and the exogenous larval-immigration time series now feed into the juvenile pool. Adults are then increased by    
+   matured juveniles with density-dependent transition that depends on adult carrying capacity via coral.                                                               
+ • This captures multi-year buildup and delayed recruitment, which is a key mechanism for COTS outbreak dynamics.                                                       
+
+ 2 What changed and why                                                                                                                                                 
+
+ • Added a juvenile state J with parameters: sJ (larval-to-juvenile survival), mJ (juvenile mortality), phiJ (juvenile maturation rate), and initial condition J0.      
+ • Shifted exogenous larval immigration to add to J (not directly to adults).                                                                                           
+ • Adult reproduction now creates larvae that enter J after survival sJ; maturation from J to adults is reduced by adult density via a Beverton-Holt factor using K_A,  
+   preserving density dependence but at the correct life stage.                                                                                                         
+ • Kept all constraints about not using current-time observations.                                                                                                      
+ • Updated parameters.json with the new parameters and clarified gamma_I’s role.                                                                                        
+
+ 3 Files updated                                                                                                                                                        
+
+ • intention.txt: full assessment, justification, and expected impacts.                                                                                                 
+ • model.cpp: implemented the juvenile stage and updated adult update equations.                                                                                        
+ • parameters.json: added sJ, mJ, phiJ, J0 with bounds/units and updated gamma_I description.                                                                           
+
+POPULATIONS/POPULATION_0074/INDIVIDUAL_Y8C4XVI5/intention.txt                                                                                                           
+
+                                                                                                                                                                        
+ @@ -0,0 +1,78 @@                                                                                                                                                       
+ +Assessment and targeted improvement for COTS outbreak modeling                                                                                                        
+ +                                                                                                                                                                      
+ +A) Current model structure and intended dynamics                                                                                                                      
+ +- The model includes:                                                                                                                                                 
+ +  - Coral guilds (fast/slow) with space-limited growth, SST-driven bleaching mortality and growth suppression.                                                        
+ +  - COTS adults with Allee effect, an SST Gaussian modifier, carrying capacity linked to coral cover, a Type II/III multi-prey functional response, and a fecundity   
+ boost from per-capita feeding.                                                                                                                                         
+ +  - Exogenous larval immigration (cotsimm_dat) currently influencing adults (before this change).                                                                     
+ +  - One-year lag on immigration and soft-clipped, differentiable transitions for numerical stability.                                                                 
+ +                                                                                                                                                                      
+ +- Observation models:                                                                                                                                                 
+ +  - COTS: log-normal                                                                                                                                                  
+ +  - Coral: logit-normal (on percentage-scaled to [0,1])                                                                                                               
+ +                                                                                                                                                                      
+ +B) Fit to data                                                                                                                                                        
+ +- The residuals file was not included in this chat, so I cannot quantify fit, bias, autocorrelation, or out-of-phase behavior at this time. Please share the residual 
+ file to complete this section. Typical issues for this class of model include:                                                                                         
+ +  - Mis-timed outbreak peaks (phase error), with residuals showing positive/negative runs around outbreaks.                                                           
+ +  - Too-short or too-long outbreak duration (serial correlation in residuals).                                                                                        
+ +  - Amplitude mismatch for outbreaks (heavy-tailed residuals during peaks).                                                                                           
+ +                                                                                                                                                                      
+ +C) Alignment with project context (episodic outbreaks, boom-bust)                                                                                                     
+ +- Strengths:                                                                                                                                                          
+ +  - The model has key feedbacks (resource limitation via coral, SST modifiers, Allee effect) that can generate non-linear boom-bust behavior.                         
+ +  - Feeding saturation and prey preference are represented, which supports selective predation impacts on guilds.                                                     
+ +- Limitations relative to outbreak timing and duration:                                                                                                               
+ +  - Adult recruitment is immediate (in the prior version): adult fecundity created new adults within one time step, and immigration added directly to adults. This    
+ reduces the natural multi-year buildup and juvenile cryptic phase known for COTS, which is crucial to outbreak persistence and timing.                                 
+ +  - Immigration lags are limited to a single extra year; observed dynamics often imply multi-year contributions from juvenile cohorts.                                
+ +                                                                                                                                                                      
+ +D) Missing or oversimplified ecological processes                                                                                                                     
+ +- Cryptic juvenile stage: Juveniles are unobserved for ~1–2 years and later contribute to adult pulses. Without this, models often produce outbreaks that are too     
+ “impulsive” and poorly phased with observed peaks.                                                                                                                     
+ +- Stage-specific density dependence: The Beverton–Holt term previously acted at the adult recruitment step. Evidence suggests much of the regulation occurs during    
+ juvenile stages (settlement/survival to adulthood).                                                                                                                    
+ +- Exogenous larval supply already exists (cotsimm_dat), but sending it directly to adults conflates larval supply with adult recruitment timing.                      
+ +                                                                                                                                                                      
+ +E) Chosen improvement (one meaningful change)                                                                                                                         
+ +- Approach: Introduce an explicit juvenile state (J) with survival and maturation, and route both adult-produced larvae and exogenous larval supply into this juvenil 
+ pool. Adults increase from the prior-year juvenile pool via maturation, subject to density dependence set by adult carrying capacity (via coral).                      
+ +- Rationale:                                                                                                                                                          
+ +  - Captures multi-year lags, enables outbreak persistence and realistic boom-bust timing.                                                                            
+ +  - Keeps environmental drivers and feeding feedbacks, but positions density dependence at the life stage where it plausibly acts strongest.                          
+ +  - Does not use current-time observations in predictions (no data leakage).                                                                                          
+ +- Mathematical summary (at time t, using states at t-1):                                                                                                              
+ +  - Adult-produced larvae: L = rA * f_SST_A * Phi_A * fecundity_boost * A(t-1)                                                                                        
+ +  - Juvenile pool update:                                                                                                                                             
+ +      J(t) = softclip( (1 - mJ) * J(t-1) + sJ * L + gamma_I * I_lag(t-1), tiny, +infty )                                                                              
+ +      where I_lag(t-1) = (1 - rho_lag_I) * cotsimm(t-1) + rho_lag_I * cotsimm(t-2) [for t=1, use t-1 only]                                                            
+ +  - Adult update:                                                                                                                                                     
+ +      A(t) = softclip( A(t-1) + [phiJ * J(t-1)] / [1 + A(t-1)/(K_A(t-1)+tiny)] - mA * A(t-1), tiny, +infty )                                                          
+ +  - All other processes unchanged (coral dynamics, feeding, SST/bleaching effects).                                                                                   
+ +- Expected effects on fit:                                                                                                                                            
+ +  - Better timing (phase) of adult peaks due to maturation delay.                                                                                                     
+ +  - More realistic outbreak duration (longer persistence via juvenile reservoir).                                                                                     
+ +  - Potential reduction in residual autocorrelation across outbreak windows.                                                                                          
+ +                                                                                                                                                                      
+ +F) Parameter updates                                                                                                                                                  
+ +- Added:                                                                                                                                                              
+ +  - sJ (dimensionless): larval-to-juvenile survival/settlement fraction from adult-produced larvae.                                                                   
+ +  - mJ (yr^-1): juvenile mortality rate.                                                                                                                              
+ +  - phiJ (yr^-1): juvenile maturation rate to adults (≈ 1 / mean maturation time).                                                                                    
+ +  - J0 (ind m^-2): initial juvenile density.                                                                                                                          
+ +- Clarified:                                                                                                                                                          
+ +  - gamma_I now represents addition into the juvenile pool (not directly to adults).                                                                                  
+ +                                                                                                                                                                      
+ +Suggested bounds (in parameters.json):                                                                                                                                
+ +  - sJ: [0.0, 0.5] (low survival from larva to juvenile is expected)                                                                                                  
+ +  - mJ: [0.0, 3.0]                                                                                                                                                    
+ +  - phiJ: [0.0, 1.0] (0.5 ≈ 2-year maturation; 0.33 ≈ 3 years)                                                                                                        
+ +  - J0: [0.0, 50.0]                                                                                                                                                   
+ +                                                                                                                                                                      
+ +G) Notes on identifiability and calibration                                                                                                                           
+ +- sJ and rA both scale juvenile inputs; their product largely determines juvenile production. Prior information or fixing one can help identifiability. The exogenous 
+ cotsimm_dat pathway (gamma_I) provides an orthogonal source of variation to help separate effects.                                                                     
+ +- If residuals show over-persistence of outbreaks after calibration, consider:                                                                                        
+ +  - increasing mJ or reducing phiJ,                                                                                                                                   
+ +  - or decreasing sJ.                                                                                                                                                 
+ +- If peaks are still early, reduce phiJ; if too late, increase phiJ.                                                                                                  
+ +                                                                                                                                                                      
+ +H) Next steps requested                                                                                                                                               
+ +- Please share the residuals file so I can:                                                                                                                           
+ +  - quantify fit (RMSE/MAE), check bias,                                                                                                                              
+ +  - inspect autocorrelation and phase errors,                                                                                                                         
+ +  - confirm that the juvenile reservoir addresses the observed misfit during outbreak windows.                                                                        
+                                                                                                                                                                        
+
+POPULATIONS/POPULATION_0074/INDIVIDUAL_Y8C4XVI5/model.cpp                                                                                                               
+
+                                                                                                                                                                        
+ @@ -1,4 +1,5 @@                                                                                                                                                        
+  #include <TMB.hpp>                                                                                                                                                    
+  //     growth_i = r_i * X_{t-1} * (1 - (F_{t-1}+S_{t-1})/100) * (1 - alpha_bleach_growth_i * invlogit((sst - sst_bleach)/sst_scale_bleach))                           
+  //     mort_i   = (m_i_base + m_i_bleach * invlogit((sst - sst_bleach)/sst_scale_bleach)) * X_{t-1}                                                                   
+  //     pred_i   = kappa_pred_i * C_i                                                                                                                                  
+  //     X_t      = clip( X_{t-1} + growth_i - mort_i - pred_i, 0, 100 )                                                                                                
+ +// (6) Juvenile-mediated COTS update (new):                                                                                                                           
+ +//     L_prod   = rA * f_SST_A * Phi_A * fecundity_boost * A_{t-1}                                                                                                    
+ -//     fecundity_boost = 1 + eta_fec * percap_cons                                                                                                                    
+ -//     recruit   = rA * f_SST_A * Phi_A * fecundity_boost * A_{t-1} / (1 + A_{t-1}/(K_A + tiny))                                                                      
+ -//     immig_eff = gamma_I * [ (1 - rho_lag_I) * cotsimm_{t-1} + rho_lag_I * cotsimm_{t-2} ]   (for t=1, use cotsimm_{t-1} for both terms)                            
+ -//     mort      = mA * A_{t-1}                                                                                                                                       
+ -//     A_t       = clip( A_{t-1} + recruit + immig_eff - mort, tiny, +infty )                                                                                         
+ +// (6) Juvenile-mediated COTS update (new):                                                                                                                           
+ +//     L_prod   = rA * f_SST_A * Phi_A * fecundity_boost * A_{t-1}                                                                                                    
+ +//     J_t      = clip( (1 - mJ) * J_{t-1} + sJ * L_prod + gamma_I * I_lag, tiny, +infty )                                                                            
+ +//               where I_lag = (1 - rho_lag_I) * cotsimm_{t-1} + rho_lag_I * cotsimm_{t-2} (for t=1, use t-1 only)                                                    
+ +//     matured  = phiJ * J_{t-1} / (1 + A_{t-1} / (K_A + tiny))                                                                                                       
+ +//     A_t      = clip( A_{t-1} + matured - mA * A_{t-1}, tiny, +infty )                                                                                              
+  // All clips are smooth via softclip to avoid non-differentiabilities.                                                                                                
+                                                                                                                                                                        
+  // Data inputs (time series)                                                                                                                                          
+  // IMPORTANT: Use the exact same names as in the CSV headers.                                                                                                         
+  template<class Type>                                                                                                                                                  
+  Type objective_function<Type>::operator() () {                                                                                                                        
+    const Type tiny = Type(1e-8);    // prevent division by zero                                                                                                        
+    PARAMETER(beta_sst_A);        // SST effect amplitude on COTS growth (dimensionless); initial estimate                                                              
+    PARAMETER(sst_ref);           // Reference SST for COTS response (deg C); literature/initial estimate                                                               
+    PARAMETER(sst_scale_A);       // SST scale for COTS response (deg C); initial estimate                                                                              
+                                                                                                                                                                        
+ -  PARAMETER(gamma_I);           // Conversion from cotsimm_dat to adult addition (ind m^-2 per (ind m^-2 yr^-1 proxy)); initial estimate                              
+ +  PARAMETER(gamma_I);           // Conversion from cotsimm_dat to juvenile addition (ind m^-2 per (ind m^-2 yr^-1 proxy)); initial estimate                           
+    PARAMETER(eta_fec);           // Fecundity boost from per-capita feeding (dimensionless)                                                                            
+    PARAMETER(rho_lag_I);         // Fraction of immigration realized with +1 year delay (dimensionless 0..1)                                                           
+                                                                                                                                                                        
+    // Functional response parameters (COTS feeding on corals)                                                                                                          
+    PARAMETER(q_fr);              // Shape of functional response (q=1 Type II); dimensionless                                                                          
+ @@ -106,5 +105,6 @@                                                                                                                                                    
+    PARAMETER(aS);                // Attack rate on slow coral (yr^-1); initial estimate                                                                                
+    PARAMETER(sst_scale_bleach);  // Scale of bleaching response (deg C); initial estimate                                                                              
+    PARAMETER(alpha_bleach_growthF); // SST suppression amplitude on fast coral growth (0-1); initial estimate                                                          
+    PARAMETER(alpha_bleach_growthS); // SST suppression amplitude on slow coral growth (0-1); initial estimate                                                          
+                                                                                                                                                                        
+ -  // Initial states (estimated to avoid using observations in state recursion)                                                                                        
+ -  PARAMETER(A0);                // initial adult COTS density (ind m^-2)                                                                                              
+ -  PARAMETER(F0);                // initial fast coral cover (%)                                                                                                       
+ -  PARAMETER(S0);                // initial slow coral cover (%)                                                                                                       
+ +  // Juvenile stage parameters (new)                                                                                                                                  
+    // Initial states (estimated to avoid using observations in state recursion)                                                                                        
+    PARAMETER(A0);                // initial adult COTS density (ind m^-2)                                                                                              
+    PARAMETER(F0);                // initial fast coral cover (%)                                                                                                       
+    PARAMETER(S0);                // initial slow coral cover (%)                                                                                                       
+ +  PARAMETER(J0);                // initial juvenile COTS density (ind m^-2) (new)                                                                                     
+                                                                                                                                                                        
+    // Observation model (log/logit-normal)                                                                                                                             
+    PARAMETER(log_sigma_cots);    // log SD for log COTS obs; initial estimate                                                                                          
+    PARAMETER(log_sigma_fast);    // log SD for logit fast coral obs; initial estimate                                                                                  
+    PARAMETER(log_sigma_slow);    // log SD for logit slow coral obs; initial estimate                                                                                  
+                                                                                                                                                                        
+    // Likelihood accumulator                                                                                                                                           
+    nll += pen_bounds(alpha_bleach_growthS, Type(0.0), Type(1.0), Type(0.2));                                                                                           
+                                                                                                                                                                        
+    nll += pen_bounds(rho_lag_I, Type(0.0), Type(1.0), Type(0.5));                                                                                                      
+                                                                                                                                                                        
+ -  // State vectors (named as required prediction vectors)                                                                                                             
+ -  vector<Type> cots_pred(T);                                                                                                                                          
+ -  vector<Type> fast_pred(T);                                                                                                                                          
+ -  vector<Type> slow_pred(T);                                                                                                                                          
+ -                                                                                                                                                                      
+ +  // New juvenile stage penalties                                                                                                                                     
+    vector<Type> cots_pred(T);                                                                                                                                          
+    vector<Type> fast_pred(T);                                                                                                                                          
+    vector<Type> slow_pred(T);                                                                                                                                          
+ +  vector<Type> juv_pred(T); // new juvenile state                                                                                                                     
+                                                                                                                                                                        
+    // Initialize states (do not use observations)                                                                                                                      
+    cots_pred(0) = softclip(A0, tiny, bigA, kSmooth);                                                                                                                   
+    fast_pred(0) = softclip(F0, Type(0.0), Type(100.0), kSmooth);                                                                                                       
+    slow_pred(0) = softclip(S0, Type(0.0), Type(100.0), kSmooth);                                                                                                       
+ +  juv_pred(0)  = softclip(J0, tiny, bigA, kSmooth);                                                                                                                   
+                                                                                                                                                                        
+    // Time recursion (use previous time step states and exogenous inputs only)                                                                                         
+    for(int t = 1; t < T; ++t){                                                                                                                                         
+      // Previous states                                                                                                                                                
+      Type A_prev = cots_pred(t-1);                                                                                                                                     
+      Type F_prev = fast_pred(t-1);                                                                                                                                     
+      Type S_prev = slow_pred(t-1);                                                                                                                                     
+ +    Type J_prev = juv_pred(t-1);                                                                                                                                      
+                                                                                                                                                                        
+      // Scaled coral proportions                                                                                                                                       
+      Type RF = F_prev / Type(100.0);                                                                                                                                   
+      Type RS = S_prev / Type(100.0);                                                                                                                                   
+                                                                                                                                                                        
+      // Multi-prey functional response                                                                                                                                 
+      Type RSq = pow(RS + tiny, q_fr);                                                                                                                                  
+      // COTS carrying capacity from coral cover                                                                                                                        
+      Type K_A = kK0 + kK_perc * (wK_F * F_prev + wK_S * S_prev);                                                                                                       
+      K_A = softclip(K_A, tiny, bigA, kSmooth);                                                                                                                         
+                                                                                                                                                                        
+ -    // Allee effect and SST modifier                                                                                                                                  
+ +    // Allee effect and SST modifier (on larval production)                                                                                                           
+      Type Phi_A   = invlogit_safe(k_allee * (A_prev - A_crit));                                                                                                        
+      Type f_SST_A = Type(1.0) + beta_sst_A * exp(-Type(0.5) * pow((sst_dat(t-1) - sst_ref) / sst_scale_A, 2));                                                         
+                                                                                                                                                                        
+      // Fecundity boost via per-capita feeding                                                                                                                         
+ + 249 / 304 lines [████████████████████████░░░░░░]  82%                                                                                                                
+                                                                                                                                                                        
+
+Tokens: 12k sent, 6.3k received. Cost: $0.08 message, $0.08 session.
+Committing POPULATIONS/POPULATION_0074/INDIVIDUAL_Y8C4XVI5/intention.txt before applying edits.
+Committing POPULATIONS/POPULATION_0074/INDIVIDUAL_Y8C4XVI5/model.cpp before applying edits.
+Unable to add /home/spi085/Documents/_Projects/EMs-with-LLMs/POPULATIONS/POPULATION_0074/INDIVIDUAL_Y8C4XVI5/intention.txt: Cmd('git') failed due to: exit code(1)
+  cmdline: git add /home/spi085/Documents/_Projects/EMs-with-LLMs/POPULATIONS/POPULATION_0074/INDIVIDUAL_Y8C4XVI5/intention.txt
+  stderr: 'The following paths are ignored by one of your .gitignore files:
+POPULATIONS
+hint: Use -f if you really want to add them.
+hint: Turn this message off by running
+hint: "git config advice.addIgnoredFile false"'
+Unable to add /home/spi085/Documents/_Projects/EMs-with-LLMs/POPULATIONS/POPULATION_0074/INDIVIDUAL_Y8C4XVI5/model.cpp: Cmd('git') failed due to: exit code(1)
+  cmdline: git add /home/spi085/Documents/_Projects/EMs-with-LLMs/POPULATIONS/POPULATION_0074/INDIVIDUAL_Y8C4XVI5/model.cpp
+  stderr: 'The following paths are ignored by one of your .gitignore files:
+POPULATIONS
+hint: Use -f if you really want to add them.
+hint: Turn this message off by running
+hint: "git config advice.addIgnoredFile false"'
+Unable to commit: Cmd('git') failed due to: exit code(1)
+  cmdline: git commit -m feat: add individual Y8C4XVI5 model.cpp and intention.txt --no-verify -- 
+/home/spi085/Documents/_Projects/EMs-with-LLMs/POPULATIONS/POPULATION_0074/INDIVIDUAL_Y8C4XVI5/intention.txt 
+/home/spi085/Documents/_Projects/EMs-with-LLMs/POPULATIONS/POPULATION_0074/INDIVIDUAL_Y8C4XVI5/model.cpp
+  stderr: 'error: pathspec '/home/spi085/Documents/_Projects/EMs-with-LLMs/POPULATIONS/POPULATION_0074/INDIVIDUAL_Y8C4XVI5/intention.txt' did not match any file(s) 
+known to git
+error: pathspec '/home/spi085/Documents/_Projects/EMs-with-LLMs/POPULATIONS/POPULATION_0074/INDIVIDUAL_Y8C4XVI5/model.cpp' did not match any file(s) known to git'
+Applied edit to POPULATIONS/POPULATION_0074/INDIVIDUAL_Y8C4XVI5/intention.txt
+Applied edit to POPULATIONS/POPULATION_0074/INDIVIDUAL_Y8C4XVI5/model.cpp
+
+# Fix any errors below, if possible.
+
+
+## See relevant line below marked with █.
+
+POPULATIONS/POPULATION_0074/INDIVIDUAL_Y8C4XVI5/model.cpp:
+  1█#include <TMB.hpp>
+  2│
+  3│using namespace density;
+  4│
+...⋮...
+
+
+POPULATIONS/POPULATION_0074/INDIVIDUAL_Y8C4XVI5/model.cpp                                                                                                               
+
+                                                                                                                                                                        
+ @@ -1,4 +1,5 @@                                                                                                                                                        
+  using namespace density;                                                                                                                                              
+    Type p_clip = softclip(p, eps, Type(1.0) - eps, k);                                                                                                                 
+    return log(p_clip / (Type(1.0) - p_clip));                                                                                                                          
+  }                                                                                                                                                                     
+                                                                                                                                                                        
+ -// Numbered model equations (conceptual):                                                                                                                             
+ -// (1) COTS carrying capacity: K_A(t-1) = kK0 + kK_perc * (wK_F * F_{t-1} + wK_S * S_{t-1})                                                                           
+ -// (2) COTS Allee multiplier: Phi_A(t-1) = invlogit(k_allee * (A_{t-1} - A_crit))                                                                                     
+ -// (3) SST modifier for COTS (hump-shaped): f_SST_A(t-1) = 1 + beta_sst_A * exp(-0.5 * ((sst_{t-1} - sst_ref) / sst_scale_A)^2)                                       
+ -// (4) Multi-prey functional response (Type II/III):                                                                                                                  
+ -//     RF = F_{t-1}/100, RS = S_{t-1}/100                                                                                                                             
+ -//     den = 1 + hF*aF*RF^q + hS*aS*RS^q                                                                                                                              
+ -//     C_F = A_{t-1} * (aF*pref_F*RF^q) / den                                                                                                                         
+ -//     C_S = A_{t-1} * (aS*pref_S*RS^q) / den                                                                                                                         
+ -// (5) Coral updates (fast/slow):                                                                                                                                     
+ -//     growth_i = r_i * X_{t-1} * (1 - (F_{t-1}+S_{t-1})/100) * (1 - alpha_bleach_growth_i * invlogit((sst - sst_bleach)/sst_scale_bleach))                           
+ -//     mort_i   = (m_i_base + m_i_bleach * invlogit((sst - sst_bleach)/sst_scale_bleach)) * X_{t-1}                                                                   
+ -//     pred_i   = kappa_pred_i * C_i                                                                                                                                  
+ -//     X_t      = clip( X_{t-1} + growth_i - mort_i - pred_i, 0, 100 )                                                                                                
+ -// (6) Juvenile-mediated COTS update (new):                                                                                                                           
+ -//     L_prod   = rA * f_SST_A * Phi_A * fecundity_boost * A_{t-1}                                                                                                    
+ -//     J_t      = clip( (1 - mJ) * J_{t-1} + sJ * L_prod + gamma_I * I_lag, tiny, +infty )                                                                            
+ -//               where I_lag = (1 - rho_lag_I) * cotsimm_{t-1} + rho_lag_I * cotsimm_{t-2} (for t=1, use t-1 only)                                                    
+ -//     matured  = phiJ * J_{t-1} / (1 + A_{t-1} / (K_A + tiny))                                                                                                       
+ -//     A_t      = clip( A_{t-1} + matured - mA * A_{t-1}, tiny, +infty )                                                                                              
+ -// All clips are smooth via softclip to avoid non-differentiabilities.                                                                                                
+ -                                                                                                                                                                      
+  // Data inputs (time series)                                                                                                                                          
+  // IMPORTANT: Use the exact same names as in the CSV headers.                                                                                                         
+  template<class Type>                                                                                                                                                  
+  Type objective_function<Type>::operator() () {                                                                                                                        
+    // Small constants for numerical stability                                                                                                                          
+    const Type tiny = Type(1e-8);    // prevent division by zero                                                                                                        
+    const Type epsp = Type(1e-6);    // for proportions                                                                                                                 
+      Type Phi_A   = invlogit_safe(k_allee * (A_prev - A_crit));                                                                                                        
+      Type f_SST_A = Type(1.0) + beta_sst_A * exp(-Type(0.5) * pow((sst_dat(t-1) - sst_ref) / sst_scale_A, 2));                                                         
+                                                                                                                                                                        
+      // Fecundity boost via per-capita feeding                                                                                                                         
+ +    Type total_cons = C_F + C_S;                                                                                                                                      
+ +    Type percap_cons = total_cons / (A_prev + tiny);                                                                                                                  
+ +    Type fecundity_boost = Type(1.0) + eta_fec * percap_cons;                                                                                                         
+ +                                                                                                                                                                      
+ +    // Larval production from adults (feeds juvenile pool)                                                                                                            
+ +    Type L_prod = rA * f_SST_A * Phi_A * fecundity_boost * A_prev;                                                                                                    
+ +                                                                                                                                                                      
+ +    // Exogenous immigration with 1-year distributed lag                                                                                                              
+ +    Type I_t1 = cotsimm_dat(t-1);                                                                                                                                     
+ +    Type I_t2 = (t-2 >= 0) ? cotsimm_dat(t-2) : Type(0.0);                                                                                                            
+ +    Type I_lag = (Type(1.0) - rho_lag_I) * I_t1 + rho_lag_I * I_t2;                                                                                                   
+ +                                                                                                                                                                      
+ +    // Juvenile update                                                                                                                                                
+ +    Type J_next = (Type(1.0) - mJ) * J_prev + sJ * L_prod + gamma_I * I_lag;                                                                                          
+ +    J_next = softclip(J_next, tiny, bigA, kSmooth);                                                                                                                   
+ +                                                                                                                                                                      
+ +    // Maturation to adults with Beverton-Holt style density dependence on adults via K_A                                                                             
+ +    Type matured = phiJ * J_prev / (Type(1.0) + A_prev / (K_A + tiny));                                                                                               
+ +                                                                                                                                                                      
+ +    // Adult update                                                                                                                                                   
+ +    Type A_next = A_prev + matured - mA * A_prev;                                                                                                                     
+ +    A_next = softclip(A_next, tiny, bigA, kSmooth);                                                                                                                   
+ +                                                                                                                                                                      
+ +    // Save next states                                                                                                                                               
+ +    fast_pred(t) = F_next;                                                                                                                                            
+ +    slow_pred(t) = S_next;                                                                                                                                            
+ +    juv_pred(t)  = J_next;                                                                                                                                            
+ +    cots_pred(t) = A_next;                                                                                                                                            
+ +  }                                                                                                                                                                   
+ +                                                                                                                                                                      
+ +  // Observation likelihoods                                                                                                                                          
+ +  // COTS: log-normal on adult density                                                                                                                                
+ +  for(int t = 0; t < T; ++t){                                                                                                                                         
+ +    Type y = cots_dat(t);                                                                                                                                             
+ +    Type mu = cots_pred(t);                                                                                                                                           
+ +    // clip for log                                                                                                                                                   
+ +    y = softclip(y, tiny, bigA, kSmooth);                                                                                                                             
+ +    mu = softclip(mu, tiny, bigA, kSmooth);                                                                                                                           
+ +    nll -= dnorm(log(y), log(mu), sigma_cots, true);                                                                                                                  
+ +  }                                                                                                                                                                   
+ +                                                                                                                                                                      
+ +  // Coral: logit-normal on % cover scaled to proportion                                                                                                              
+ +  for(int t = 0; t < T; ++t){                                                                                                                                         
+ +    // Fast coral                                                                                                                                                     
+ +    Type yF = fast_dat(t) / Type(100.0);                                                                                                                              
+ +    Type muF = fast_pred(t) / Type(100.0);                                                                                                                            
+ +    Type z_yF = logit_safe(yF, epsp, kSmooth);                                                                                                                        
+ +    Type z_muF = logit_safe(muF, epsp, kSmooth);                                                                                                                      
+ +    nll -= dnorm(z_yF, z_muF, sigma_fast, true);                                                                                                                      
+ +                                                                                                                                                                      
+ +    // Slow coral                                                                                                                                                     
+ +    Type yS = slow_dat(t) / Type(100.0);                                                                                                                              
+ +    Type muS = slow_pred(t) / Type(100.0);                                                                                                                            
+ +    Type z_yS = logit_safe(yS, epsp, kSmooth);                                                                                                                        
+ +    Type z_muS = logit_safe(muS, epsp, kSmooth);                                                                                                                      
+ +    nll -= dnorm(z_yS, z_muS, sigma_slow, true);                                                                                                                      
+ +  }                                                                                                                                                                   
+ +                                                                                                                                                                      
+ +  // Reports                                                                                                                                                          
+ +  REPORT(cots_pred);                                                                                                                                                  
+ +  REPORT(fast_pred);                                                                                                                                                  
+ +  REPORT(slow_pred);                                                                                                                                                  
+ +  REPORT(juv_pred);                                                                                                                                                   
+ +                                                                                                                                                                      
+ +  ADREPORT(cots_pred);                                                                                                                                                
+ +  ADREPORT(fast_pred);                                                                                                                                                
+ +  ADREPORT(slow_pred);                                                                                                                                                
+ +  ADREPORT(juv_pred);                                                                                                                                                 
+ +                                                                                                                                                                      
+ +  return nll;                                                                                                                                                         
+ +}                                                                                                                                                                     
+                                                                                                                                                                        
+
+POPULATIONS/POPULATION_0074/INDIVIDUAL_Y8C4XVI5/parameters.json                                                                                                         
+
+                                                                                                                                                                        
+ @@ -1,4 +1,5 @@                                                                                                                                                        
+  {                                                                                                                                                                     
+          {                                                                                                                                                             
+              "parameter": "gamma_I",                                                                                                                                   
+              "value": 0.3,                                                                                                                                             
+              "units": "ind m^-2 per (ind m^-2 yr^-1 proxy)",                                                                                                           
+ -            "description": "Additive conversion from cotsimm_dat to adult COTS (captures recruitment pulses)",                                                        
+ +            "description": "Additive conversion from cotsimm_dat to juvenile COTS pool (cryptic stage), not directly to adults",                                      
+              "source": "initial estimate",                                                                                                                             
+              "import_type": "PARAMETER",                                                                                                                               
+              "priority": 1,                                                                                                                                            
+              "lower_bound": 0.0,                                                                                                                                       
+              "upper_bound": 3.0,                                                                                                                                       
+ -            "enhanced_semantic_description": "Conversion factor from larval immigration to adult COTS density",                                                       
+ +            "enhanced_semantic_description": "Conversion factor from larval immigration proxy to juvenile COTS density (ind/m\u00b2 per proxy unit)",                 
+              "updated_from_literature": false,                                                                                                                         
+              "updated_fields_from_literature": []                                                                                                                      
+          },                                                                                                                                                            
+          {                                                                                                                                                             
+              "parameter": "eta_fec",                                                                                                                                   
+              "value": 0.2,                                                                                                                                             
+              "units": "dimensionless",                                                                                                                                 
+          },                                                                                                                                                            
+          {                                                                                                                                                             
+              "parameter": "eta_fec",                                                                                                                                   
+ @@ -484,5 +484,6 @@                                                                                                                                                    
+              "source": "initial estimate",                                                                                                                             
+              "parameter": "rho_lag_I",                                                                                                                                 
+ +            "parameter": "sJ",                                                                                                                                        
+ +            "value": 0.05,                                                                                                                                            
+ +            "units": "dimensionless",                                                                                                                                 
+ +            "description": "Larval-to-juvenile survival/settlement fraction from adult-produced larvae entering the cryptic juvenile pool",                           
+ +            "source": "ecological rationale",                                                                                                                         
+ +            "import_type": "PARAMETER",                                                                                                                               
+ +            "priority": 1,                                                                                                                                            
+ +            "lower_bound": 0.0,                                                                                                                                       
+ +            "upper_bound": 0.5,                                                                                                                                       
+ +            "enhanced_semantic_description": "Proportion of larvae that survive/settle into juveniles (dimensionless)",                                               
+ +            "updated_from_literature": false,                                                                                                                         
+ +            "updated_fields_from_literature": []                                                                                                                      
+ +        },                                                                                                                                                            
+ +        {                                                                                                                                                             
+ +            "parameter": "mJ",                                                                                                                                        
+ +            "value": 0.5,                                                                                                                                             
+ +            "units": "yr^-1",                                                                                                                                         
+ +            "description": "Juvenile mortality rate in the cryptic stage",                                                                                            
+ +        {                                                                                                                                                             
+ +            "parameter": "mJ",                                                                                                                                        
+ +            "value": 0.5,                                                                                                                                             
+ +            "units": "yr^-1",                                                                                                                                         
+ +            "description": "Juvenile mortality rate in the cryptic stage",                                                                                            
+ +            "source": "ecological rationale",                                                                                                                         
+ +            "import_type": "PARAMETER",                                                                                                                               
+ +            "priority": 1,                                                                                                                                            
+ +            "lower_bound": 0.0,                                                                                                                                       
+ +            "upper_bound": 3.0,                                                                                                                                       
+ +            "enhanced_semantic_description": "Mortality rate of juvenile COTS (year\u207b\u00b9)",                                                                    
+ +            "updated_from_literature": false,                                                                                                                         
+ +            "updated_fields_from_literature": []                                                                                                                      
+ +        },                                                                                                                                                            
+ +        {                                                                                                                                                             
+ +            "parameter": "phiJ",                                                                                                                                      
+ +            "value": 0.4,                                                                                                                                             
+ +            "units": "yr^-1",                                                                                                                                         
+ +            "description": "Juvenile maturation rate into adults; controls average duration of cryptic phase",                                                        
+ +            "source": "ecological rationale",                                                                                                                         
+ +            "import_type": "PARAMETER",                                                                                                                               
+ +            "priority": 1,                                                                                                                                            
+ +            "lower_bound": 0.0,                                                                                                                                       
+ +            "upper_bound": 1.0,                                                                                                                                       
+ +            "enhanced_semantic_description": "Rate at which juveniles mature into adults (year\u207b\u00b9)",                                                         
+ +            "updated_from_literature": false,                                                                                                                         
+ +            "updated_fields_from_literature": []                                                                                                                      
+ +        },                                                                                                                                                            
+ +        {                                                                                                                                                             
+ +            "parameter": "J0",                                                                                                                                        
+ +            "value": 1.0,                                                                                                                                             
+ +            "units": "ind m^-2",                                                                                                                                      
+ +            "upper_bound": 50.0,                                                                                                                                      
+ +            "enhanced_semantic_description": "Initial condition for juvenile COTS density (ind/m\u00b2)",                                                             
+ +            "updated_from_literature": false,                                                                                                                         
+ +            "updated_fields_from_literature": []                                                                                                                      
+          }                                                                                                                                                             
+      ]                                                                                                                                                                 
+ -}+}                                                                                                                                                                   
+                                                                                                                                                                        
+
+Tokens: 19k sent, 11k received. Cost: $0.13 message, $0.21 session.
+Committing POPULATIONS/POPULATION_0074/INDIVIDUAL_Y8C4XVI5/model.cpp before applying edits.
+Committing POPULATIONS/POPULATION_0074/INDIVIDUAL_Y8C4XVI5/parameters.json before applying edits.
+Unable to add /home/spi085/Documents/_Projects/EMs-with-LLMs/POPULATIONS/POPULATION_0074/INDIVIDUAL_Y8C4XVI5/parameters.json: Cmd('git') failed due to: exit code(1)
+  cmdline: git add /home/spi085/Documents/_Projects/EMs-with-LLMs/POPULATIONS/POPULATION_0074/INDIVIDUAL_Y8C4XVI5/parameters.json
+  stderr: 'The following paths are ignored by one of your .gitignore files:
+POPULATIONS
+hint: Use -f if you really want to add them.
+hint: Turn this message off by running
+hint: "git config advice.addIgnoredFile false"'
+Unable to add /home/spi085/Documents/_Projects/EMs-with-LLMs/POPULATIONS/POPULATION_0074/INDIVIDUAL_Y8C4XVI5/model.cpp: Cmd('git') failed due to: exit code(1)
+  cmdline: git add /home/spi085/Documents/_Projects/EMs-with-LLMs/POPULATIONS/POPULATION_0074/INDIVIDUAL_Y8C4XVI5/model.cpp
+  stderr: 'The following paths are ignored by one of your .gitignore files:
+POPULATIONS
+hint: Use -f if you really want to add them.
+hint: Turn this message off by running
+hint: "git config advice.addIgnoredFile false"'
+Unable to commit: Cmd('git') failed due to: exit code(1)
+  cmdline: git commit -m feat: Add POPULATION_0074 individual Y8C4XVI5 model and parameters --no-verify -- 
+/home/spi085/Documents/_Projects/EMs-with-LLMs/POPULATIONS/POPULATION_0074/INDIVIDUAL_Y8C4XVI5/parameters.json 
+/home/spi085/Documents/_Projects/EMs-with-LLMs/POPULATIONS/POPULATION_0074/INDIVIDUAL_Y8C4XVI5/model.cpp
+  stderr: 'error: pathspec '/home/spi085/Documents/_Projects/EMs-with-LLMs/POPULATIONS/POPULATION_0074/INDIVIDUAL_Y8C4XVI5/parameters.json' did not match any file(s) 
+known to git
+error: pathspec '/home/spi085/Documents/_Projects/EMs-with-LLMs/POPULATIONS/POPULATION_0074/INDIVIDUAL_Y8C4XVI5/model.cpp' did not match any file(s) known to git'
+Applied edit to POPULATIONS/POPULATION_0074/INDIVIDUAL_Y8C4XVI5/parameters.json
+Applied edit to POPULATIONS/POPULATION_0074/INDIVIDUAL_Y8C4XVI5/model.cpp
+Improved existing model in individual: POPULATIONS/POPULATION_0074/INDIVIDUAL_Y8C4XVI5
+Validating model for data leakage...
+Opening file: POPULATIONS/POPULATION_0074/INDIVIDUAL_Y8C4XVI5/model.cpp
+File read successfully
+TMB convention check: {'uses_tmb_header': True, 'uses_data_macros': True, 'uses_vector_type': True, 'uses_standard_report': True, 'uses_objective_function': True, 'uses_std_vector': False, 'uses_string_report': False}
+Extracting vectors...
+Found data vectors: {'Year', 'slow_dat', 'cots_dat', 'fast_dat', 'sst_dat', 'cotsimm_dat'}
+Found prediction vectors: {'juv_pred', 'cots_pred', 'fast_pred', 'slow_pred'}
+Found reported vectors: {'juv_pred', 'cots_pred', 'fast_pred', 'slow_pred'}
+Finding initial conditions...
+Found 4 initial conditions
+Finding time-stepping loop...
+Found loop from line 197 to 269
+Looking for metadata file at: /home/spi085/Documents/_Projects/EMs-with-LLMs/POPULATIONS/POPULATION_0074/population_metadata.json
+Attempting to read CSV file: /home/spi085/Documents/_Projects/EMs-with-LLMs/Data/timeseries_data_COTS_response.csv
+Successfully read CSV file with 4 columns
+Found response variables from /home/spi085/Documents/_Projects/EMs-with-LLMs/Data/timeseries_data_COTS_response.csv: {'slow_dat', 'fast_dat', 'cots_dat'}
+[93m[PID 1800177] Running model for individual...[0m
+[0m[PID 1800177] Individual directory: POPULATIONS/POPULATION_0074/INDIVIDUAL_Y8C4XVI5[0m
+[96m[PID 1800177] Launching Rscript... (timeout=none)[0m
+[93m[PID 1800177] R script stdout BEGIN >>>[0m
+[0mg++ -std=gnu++17 -I"/usr/share/R/include" -DNDEBUG -I"/home/spi085/R/x86_64-pc-linux-gnu-library/4.4/TMB/include" -I"/home/spi085/R/x86_64-pc-linux-gnu-library/4.4/RcppEigen/include"   -DTMB_EIGEN_DISABLE_WARNINGS   -DTMB_LIB_INIT=R_init_model  -DCPPAD_FRAMEWORK      -fpic  -O2  -c POPULATIONS/POPULATION_0074/INDIVIDUAL_Y8C4XVI5/model.cpp -o POPULATIONS/POPULATION_0074/INDIVIDUAL_Y8C4XVI5/model.o
+g++ -std=gnu++17 -shared -L/usr/lib/R/lib -Wl,-Bsymbolic-functions -flto=auto -ffat-lto-objects -Wl,-z,relro -o POPULATIONS/POPULATION_0074/INDIVIDUAL_Y8C4XVI5/model.so POPULATIONS/POPULATION_0074/INDIVIDUAL_Y8C4XVI5/model.o -L/usr/lib/R/lib -lR
+
+NA counts per required column:
+       Year    cots_dat    fast_dat    slow_dat     sst_dat cotsimm_dat 
+          0           0           0           0           0           0 
+
+Out-of-range checks:
+Any cots_dat < 0?  FALSE 
+Any fast_dat outside [0,100]?  FALSE 
+Any slow_dat outside [0,100]?  FALSE 
+
+PARAMETER starts (first few):
+         rA          mA     kK_perc         kK0        wK_F        wK_S 
+      1.500       0.565       0.030       0.200       0.600       0.400 
+     A_crit     k_allee  beta_sst_A     sst_ref sst_scale_A     gamma_I 
+      0.200       5.000       0.300      28.500       1.500       0.300 
+Starting model phases
+Number of phases: 4 
+Phase 1 
+Initial parameter values for phase 1 :
+            rA             mA        gamma_I             aF             aS 
+         1.500          0.565          0.300          1.200          0.500 
+   kappa_predF    kappa_predS             sJ             mJ           phiJ 
+         3.000          1.500          0.050          0.500          0.400 
+log_sigma_cots log_sigma_fast log_sigma_slow 
+        -1.200         -1.200         -1.200 
+Final parameter values for phase 1 :
+            rA             mA        gamma_I             aF             aS 
+     2.1583076      0.5046336      2.3393437      1.3735296      5.0000000 
+   kappa_predF    kappa_predS             sJ             mJ           phiJ 
+    10.0000000     10.0000000      0.5000000      1.4119056      1.0000000 
+log_sigma_cots log_sigma_fast log_sigma_slow 
+    -0.7324405     -1.3599916     -2.2823290 
+Convergence message: relative convergence (4) 
+Number of iterations: 91 
+Objective function value: 17.70089 
+Gradient at solution for phase 1 :
+              [,1]         [,2]         [,3]         [,4]      [,5]       [,6]
+[1,] -1.234411e-05 2.036984e-05 5.157866e-08 1.419474e-06 -5.005597 -0.4522209
+         [,7]       [,8]          [,9]     [,10]       [,11]        [,12]
+[1,] -4.01279 -0.5038657 -1.961256e-05 -14.72401 3.97975e-06 6.987859e-06
+             [,13]
+[1,] -4.171325e-06
+Phase 2 
+Initial parameter values for phase 2 :
+  kK_perc       kK0    A_crit   eta_fec rho_lag_I      q_fr        hF        hS 
+     0.03      0.20      0.20      0.20      0.40      1.00      0.80      0.80 
+       rF        rS mF_bleach mS_bleach        A0        F0        S0        J0 
+     0.30      0.30      0.40      0.20      0.20     30.00     20.00      1.00 
+Final parameter values for phase 2 :
+     kK_perc          kK0       A_crit      eta_fec    rho_lag_I         q_fr 
+ 0.006409225  0.011528170  0.000000000  0.854523451  0.000000000  1.000000001 
+          hF           hS           rF           rS    mF_bleach    mS_bleach 
+ 0.449662801  0.020561745  0.325860326  0.351376656  1.467095636  1.509404569 
+          A0           F0           S0           J0 
+ 0.704853303 29.400283421 17.469115263  1.954192675 
+Convergence message: iteration limit reached without convergence (10) 
+Number of iterations: 150 
+Objective function value: 0.360023 
+Gradient at solution for phase 2 :
+         [,1]     [,2]     [,3]       [,4]       [,5]      [,6]      [,7]
+[1,] 2.848384 6.763658 1.330215 -0.2446409 0.01786045 -5.529502 0.2298539
+          [,8]      [,9]    [,10]    [,11]    [,12]    [,13]     [,14]
+[1,] 0.7972876 -3.515546 -7.00461 1.003992 1.033993 1.489687 0.2940232
+         [,15]     [,16]
+[1,] 0.4769468 0.2345887
+Phase 3 
+Initial parameter values for phase 3 :
+                wK_F                 wK_S              k_allee 
+                0.60                 0.40                 5.00 
+          beta_sst_A               pref_F               pref_S 
+                0.30                 1.00                 0.60 
+             mF_base              mS_base           sst_bleach 
+                0.15                 0.07                31.75 
+alpha_bleach_growthF alpha_bleach_growthS 
+                0.50                 0.30 
+Final parameter values for phase 3 :
+                wK_F                 wK_S              k_allee 
+          0.60556035           0.40892966           5.00457102 
+          beta_sst_A               pref_F               pref_S 
+          0.32368390           1.04664357           0.58510845 
+             mF_base              mS_base           sst_bleach 
+          0.14581196           0.07356722          31.80223073 
+alpha_bleach_growthF alpha_bleach_growthS 
+          0.49557639           0.29662608 
+Convergence message: iteration limit reached without convergence (10) 
+Number of iterations: 150 
+Objective function value: 0.1423571 
+Gradient at solution for phase 3 :
+            [,1]       [,2]       [,3]       [,4]      [,5]     [,6]       [,7]
+[1,] -0.07945859 -0.2222451 -0.1384251 -0.6254576 -1.518156 1.038629 -0.9648465
+         [,8]      [,9]     [,10]      [,11]
+[1,] 1.884178 -1.499101 0.1240501 0.09474088
+Phase 4 
+Initial parameter values for phase 4 :
+         sst_ref      sst_scale_A sst_scale_bleach 
+            28.5              1.5              0.7 
+Final parameter values for phase 4 :
+         sst_ref      sst_scale_A sst_scale_bleach 
+      28.1930159        1.1037494        0.6860459 
+Convergence message: relative convergence (4) 
+Number of iterations: 8 
+Objective function value: 0.079026 
+Gradient at solution for phase 4 :
+              [,1]          [,2]          [,3]
+[1,] -7.099247e-08 -2.326387e-07 -8.803989e-07
+Final Phase
+Initial parameter values for final phase:
+                  rA                   mA              kK_perc 
+         2.158307605          0.504633634          0.006409225 
+                 kK0                 wK_F                 wK_S 
+         0.011528170          0.605560355          0.408929655 
+              A_crit              k_allee           beta_sst_A 
+         0.000000000          5.004571016          0.323683903 
+             sst_ref          sst_scale_A              gamma_I 
+        28.193015851          1.103749369          2.339343735 
+             eta_fec            rho_lag_I                 q_fr 
+         0.854523451          0.000000000          1.000000001 
+                  aF                   aS                   hF 
+         1.373529582          5.000000000          0.449662801 
+                  hS               pref_F               pref_S 
+         0.020561745          1.046643574          0.585108449 
+         kappa_predF          kappa_predS                   rF 
+        10.000000000         10.000000000          0.325860326 
+                  rS              mF_base              mS_base 
+         0.351376656          0.145811961          0.073567221 
+           mF_bleach            mS_bleach           sst_bleach 
+         1.467095636          1.509404569         31.802230733 
+    sst_scale_bleach alpha_bleach_growthF alpha_bleach_growthS 
+         0.686045866          0.495576395          0.296626084 
+                  sJ                   mJ                 phiJ 
+         0.500000000          1.411905617          1.000000000 
+                  A0                   F0                   S0 
+         0.704853303         29.400283421         17.469115263 
+                  J0       log_sigma_cots       log_sigma_fast 
+         1.954192675         -0.732440525         -1.359991647 
+      log_sigma_slow 
+        -2.282329025 
+Final parameter values for final phase:
+                  rA                   mA              kK_perc 
+         2.156752668          0.499511409          0.007630875 
+                 kK0                 wK_F                 wK_S 
+         0.003255048          0.605404986          0.409147330 
+              A_crit              k_allee           beta_sst_A 
+         0.000000000          5.004801739          0.325226864 
+             sst_ref          sst_scale_A              gamma_I 
+        28.193012439          1.103601975          2.339034409 
+             eta_fec            rho_lag_I                 q_fr 
+         0.855123578          0.000000000          1.000000000 
+                  aF                   aS                   hF 
+         1.375207772          4.999566578          0.448753058 
+                  hS               pref_F               pref_S 
+         0.018214529          1.049234329          0.584016595 
+         kappa_predF          kappa_predS                   rF 
+         9.999956724          9.999632672          0.327158178 
+                  rS              mF_base              mS_base 
+         0.355015841          0.145230901          0.071802316 
+           mF_bleach            mS_bleach           sst_bleach 
+         1.466263853          1.509102504         31.803780237 
+    sst_scale_bleach alpha_bleach_growthF alpha_bleach_growthS 
+         0.684544712          0.495397976          0.296613477 
+                  sJ                   mJ                 phiJ 
+         0.498927972          1.403941865          0.997828044 
+                  A0                   F0                   S0 
+         0.702093104         29.399721563         17.468249174 
+                  J0       log_sigma_cots       log_sigma_fast 
+         1.953398697         -0.756077301         -1.363830450 
+      log_sigma_slow 
+        -2.304817903 
+Convergence message: iteration limit reached without convergence (10) 
+Number of iterations: 150 
+Objective function value: -0.6490167 
+Gradient at solution for final phase:
+           [,1]    [,2]      [,3]     [,4]       [,5]       [,6]     [,7]
+[1,] 0.01200913 2.97381 -32.10799 2.585886 -0.1993484 -0.2927916 1.066227
+           [,8]       [,9]        [,10]      [,11]      [,12]      [,13]
+[1,] -0.1285332 -0.9478652 -0.007153417 0.04518305 0.01203778 -0.4958217
+        [,14]   [,15]      [,16]      [,17]     [,18]    [,19]     [,20]
+[1,] 1.032775 3.83517 -0.5274433 -0.2161054 0.9430454 2.255453 -1.104308
+         [,21]      [,22]       [,23]     [,24]    [,25]    [,26]     [,27]
+[1,] -3.244685 0.04940216 -0.01671644 -3.470171 5.491706 4.937096 -10.61305
+         [,28]      [,29]      [,30]     [,31]    [,32]       [,33]      [,34]
+[1,] 0.4720825 -0.1490429 -0.3776698 0.2898398 0.098728 -0.07529762 -0.4513131
+       [,35]     [,36]    [,37]     [,38]     [,39]    [,40]    [,41]    [,42]
+[1,] 4.17619 0.2336397 1.532952 0.2927846 0.5251382 0.395454 12.81177 2.017912
+        [,43]
+[1,] 12.20779
+All phases completed
+Successfully updated parameters_metadata.json with optimized values
+[1] "Train test split:"
+[1] 1
+
+Running model validation...
+No test data available (train_test_split >= 1.0)
+NULL
+
+DEBUG: Report contents:
+List of 4
+ $ cots_pred: num [1:26] 0.708 0.877 0.635 0.778 0.539 ...
+ $ fast_pred: num [1:26] 29.4 27.5 25.3 23.6 22.6 ...
+ $ juv_pred : num [1:26] 1.953 0.848 1.673 0.594 1.037 ...
+ $ slow_pred: num [1:26] 17.5 16.3 14.7 13.9 13.1 ...
+NULL
+
+DEBUG: Available variables in report:
+[1] "cots_pred" "fast_pred" "juv_pred"  "slow_pred"
+
+Checking predictions and calculating objective function...
+
+DEBUG: Processing cots_pred 
+DEBUG: First few predictions: 0.7079821 0.8774397 0.63488 0.7776094 0.5390121 0.5868787 
+DEBUG: Summary statistics:
+   Min. 1st Qu.  Median    Mean 3rd Qu.    Max. 
+ 0.2983  0.4087  0.5316  0.6336  0.7602  1.7407 
+DEBUG: All zeros? FALSE 
+DEBUG: Any infinities? FALSE 
+
+DEBUG: Processing fast_pred 
+DEBUG: First few predictions: 29.39972 27.48325 25.29982 23.61887 22.57574 22.24795 
+DEBUG: Summary statistics:
+   Min. 1st Qu.  Median    Mean 3rd Qu.    Max. 
+  5.512   8.345  17.936  16.422  21.564  29.400 
+DEBUG: All zeros? FALSE 
+DEBUG: Any infinities? FALSE 
+
+DEBUG: Processing slow_pred 
+DEBUG: First few predictions: 17.46825 16.34207 14.70638 13.86641 13.13129 13.22335 
+DEBUG: Summary statistics:
+   Min. 1st Qu.  Median    Mean 3rd Qu.    Max. 
+  2.659   5.233  10.679   9.681  13.768  17.468 
+DEBUG: All zeros? FALSE 
+DEBUG: Any infinities? FALSE 
+
+DEBUG: Using the following variables for objective function:
+cots_dat -> cots_pred
+fast_dat -> fast_pred
+slow_dat -> slow_pred
+
+DEBUG: Calculating MSE for prediction variables only:
+
+DEBUG: cots_pred 
+Observed: 0.2615042 0.5498196 0.7268086 0.5522907 0.828121 0.5470078 ...
+Predicted: 0.7079821 0.8774397 0.63488 0.7776094 0.5390121 0.5868787 ...
+MSE (normalized): 0.3154381 
+
+DEBUG: fast_pred 
+Observed: 10.06939 17.72357 23.82758 19.41812 15.63542 32.45961 ...
+Predicted: 29.39972 27.48325 25.29982 23.61887 22.57574 22.24795 ...
+MSE (normalized): 0.6177145 
+
+DEBUG: slow_pred 
+Observed: 12.77261 16.41474 12.77729 12.27975 15.11516 12.81941 ...
+Predicted: 17.46825 16.34207 14.70638 13.86641 13.13129 13.22335 ...
+MSE (normalized): 0.1965163 
+
+DEBUG: MSE values:
+ cots_dat  fast_dat  slow_dat 
+0.3154381 0.6177145 0.1965163 
+
+DEBUG: Final objective value (mean of MSEs): 0.3765563 
+
+Final objective function value: 0.3765563 
+
+JSON_REPORT_START
+{
+  "status": "SUCCESS",
+  "objective_value": 0.3766,
+  "model_summary": ["            Length Class  Mode     ", "par         43     -none- numeric  ", "objective    1     -none- numeric  ", "convergence  1     -none- numeric  ", "iterations   1     -none- numeric  ", "evaluations  2     -none- numeric  ", "message      1     -none- character"],
+  "model_report": {
+    "cots_pred": [0.708, 0.8774, 0.6349, 0.7776, 0.539, 0.5869, 0.497, 0.5478, 0.4456, 0.4833, 0.4205, 1.6198, 0.8143, 1.7407, 0.9216, 0.9064, 0.5242, 0.6603, 0.4047, 0.4483, 0.3228, 0.3489, 0.2983, 0.3161, 0.3028, 0.3258],
+    "fast_pred": [29.3997, 27.4833, 25.2998, 23.6189, 22.5757, 22.2479, 21.5824, 21.5095, 21.297, 21.3561, 21.3039, 21.3942, 18.2203, 17.6522, 15.0512, 14.6044, 13.8981, 12.3421, 5.5124, 5.8764, 6.2218, 6.6902, 7.1568, 7.6891, 8.1997, 8.7792],
+    "juv_pred": [1.9534, 0.8483, 1.6729, 0.5939, 1.0374, 0.6709, 0.9243, 0.514, 0.7255, 0.4822, 4.0527, 0.0016, 6.5537, 0.4587, 2.571, 0.3205, 1.4868, 0.2131, 0.797, 0.2065, 0.449, 0.229, 0.3403, 0.2754, 0.3651, 0.2478],
+    "slow_pred": [17.4682, 16.3421, 14.7064, 13.8664, 13.1313, 13.2233, 13.0297, 13.3354, 13.4733, 13.9602, 14.3229, 14.9057, 10.9318, 10.427, 7.4574, 7.0108, 6.473, 5.8971, 2.6588, 2.9368, 3.2046, 3.6069, 4.0263, 4.5419, 5.0758, 5.7033]
+  },
+  "plot_data": {
+    "cots_pred": {
+      "Year": [1980, 1981, 1982, 1983, 1984, 1985, 1986, 1987, 1988, 1989, 1990, 1991, 1992, 1993, 1994, 1995, 1996, 1997, 1998, 1999, 2000, 2001, 2002, 2003, 2004, 2005],
+      "Modeled": [0.708, 0.8774, 0.6349, 0.7776, 0.539, 0.5869, 0.497, 0.5478, 0.4456, 0.4833, 0.4205, 1.6198, 0.8143, 1.7407, 0.9216, 0.9064, 0.5242, 0.6603, 0.4047, 0.4483, 0.3228, 0.3489, 0.2983, 0.3161, 0.3028, 0.3258],
+      "Observed": [0.2615, 0.5498, 0.7268, 0.5523, 0.8281, 0.547, 0.758, 0.6288, 0.4762, 0.6466, 0.9107, 2.152, 0.6446, 1.6723, 0.4766, 0.8075, 0.3635, 0.3728, 0.6173, 0.3107, 0.256, 0.2984, 0.3362, 0.2878, 0.3221, 0.4308]
+    },
+    "fast_pred": {
+      "Year": [1980, 1981, 1982, 1983, 1984, 1985, 1986, 1987, 1988, 1989, 1990, 1991, 1992, 1993, 1994, 1995, 1996, 1997, 1998, 1999, 2000, 2001, 2002, 2003, 2004, 2005],
+      "Modeled": [29.3997, 27.4833, 25.2998, 23.6189, 22.5757, 22.2479, 21.5824, 21.5095, 21.297, 21.3561, 21.3039, 21.3942, 18.2203, 17.6522, 15.0512, 14.6044, 13.8981, 12.3421, 5.5124, 5.8764, 6.2218, 6.6902, 7.1568, 7.6891, 8.1997, 8.7792],
+      "Observed": [10.0694, 17.7236, 23.8276, 19.4181, 15.6354, 32.4596, 21.5567, 34.1938, 18.8708, 27.3176, 44.3301, 13.3275, 11.3741, 8.3362, 15.207, 12.443, 11.0666, 10.6442, 2.3628, 2.76, 3.7236, 7.0355, 10.2239, 8.4754, 9.0819, 13.7314]
+    },
+    "slow_pred": {
+      "Year": [1980, 1981, 1982, 1983, 1984, 1985, 1986, 1987, 1988, 1989, 1990, 1991, 1992, 1993, 1994, 1995, 1996, 1997, 1998, 1999, 2000, 2001, 2002, 2003, 2004, 2005],
+      "Modeled": [17.4682, 16.3421, 14.7064, 13.8664, 13.1313, 13.2233, 13.0297, 13.3354, 13.4733, 13.9602, 14.3229, 14.9057, 10.9318, 10.427, 7.4574, 7.0108, 6.473, 5.8971, 2.6588, 2.9368, 3.2046, 3.6069, 4.0263, 4.5419, 5.0758, 5.7033],
+      "Observed": [12.7726, 16.4147, 12.7773, 12.2798, 15.1152, 12.8194, 10.4631, 9.7251, 13.2014, 16.4512, 11.1393, 18.0832, 11.5223, 8.51, 9.1622, 5.3353, 8.6044, 7.2781, 2.629, 4.6951, 1.5948, 5.2172, 2.6041, 3.3618, 7.3289, 4.4014]
+    }
+  }
+}
+JSON_REPORT_END[0m
+[93m[PID 1800177] R script stdout END <<<[0m
+[93m[PID 1800177] R script stderr BEGIN >>>[0m
+[0mLoading required package: TMB
+Loading required package: jsonlite
+here() starts at /home/spi085/Documents/_Projects/EMs-with-LLMs
+using C++ compiler: ‘g++ (Ubuntu 13.3.0-6ubuntu2~24.04) 13.3.0’
+Warning message:
+`aes_string()` was deprecated in ggplot2 3.0.0.
+ℹ Please use tidy evaluation idioms with `aes()`.
+ℹ See also `vignette("ggplot2-in-packages")` for more information.[0m
+[93m[PID 1800177] R script stderr END <<<[0m
+[96m[PID 1800177] JSON detected, parsing...[0m
+[96m[PID 1800177] Writing model report...[0m
+[94m[PID 1800177] Objective value: 0.3766[0m
+[96m[PID 1800177] Generating plots...[0m
+[94m[PID 1800177] Objective Value: 0.3766[0m
+[92m[PID 1800177] Successful model run[0m
+[0m----------------------------------------------[0m
+MODEL RUN FINISHED
+Model run successful. Objective value: 0.3766
+Model ran successful and returned meaningful objective value... enhancing parameter descriptions.
+Enhancing parameter descriptions...
+Parameter descriptions enhanced successfully.
+Running parameter processing...
+DEBUG: get_params() called with directory_path: POPULATIONS/POPULATION_0074/INDIVIDUAL_Y8C4XVI5
+DEBUG: population_dir: POPULATIONS/POPULATION_0074
+DEBUG: meta_file path: POPULATIONS/POPULATION_0074/population_metadata.json
+DEBUG: Checking if meta_file exists...
+DEBUG: meta_file exists, attempting to read...
+DEBUG: Successfully read meta_file
+DEBUG: rag_choice: gpt-4.1-mini, doc_store_dir: doc_store
+DEBUG: About to resolve model name...
+[get_params] Using model from rag_choice: 'gpt-4.1-mini' -> 'gpt-4.1-mini'
+[get_params] Using doc_store_dir: 'doc_store'
+Processing literature parameter: rA
+Searching for rA with query: Adult COTS intrinsic population growth rate (year⁻¹)
+Engine order for rA: ['rag', 'semantic_scholar', 'serper']
+Loading llama_index.core.storage.kvstore.simple_kvstore from /home/spi085/Documents/_Projects/EMs-with-LLMs/storage_chroma_doc_store/docstore.json.
+Loading llama_index.core.storage.kvstore.simple_kvstore from /home/spi085/Documents/_Projects/EMs-with-LLMs/storage_chroma_doc_store/index_store.json.
+Search results found for rA (engine=rag, attempt=1)
+S2 Response Status Code: 200
+S2 Query: Adult COTS intrinsic population growth rate (year⁻¹)
+S2 Total results: 2870
+Search results found for rA (engine=semantic_scholar, attempt=1)
+Error: Serper API returned status code 400
+No search results for rA (engine=serper, attempt=1)
+Error: Serper API returned status code 400
+No search results for rA (engine=serper, attempt=2)
+Error: Serper API returned status code 400
+No search results for rA (engine=serper, attempt=3)
+DEBUG: Aggregated 8 total source chunks for rA:
+ Source [1]: C:\Users\spi085\OneDrive - CSIRO\Documents\_Projects\SCCP-QuantModelling\doc_store\Rogers-2022-Culling corallivores improves shor.pdf
+ Source [2]: C:\Users\spi085\OneDrive - CSIRO\Documents\_Projects\SCCP-QuantModelling\doc_store\Morello-2014-Model to manage and reduce crown-.pdf
+ Source [3]: https://www.semanticscholar.org/paper/553d2acc5605f566797ffab37cba11ac42e7a2c8
+ Source [4]: https://www.semanticscholar.org/paper/5ae8ca503a0f836e4f85c20cb026816220b31b91
+ Source [5]: https://www.semanticscholar.org/paper/38d473002ee70c2fa44df0695527248f88959ffb
+ Source [6]: https://www.semanticscholar.org/paper/fe22a188dd5b28d980c12430a0e9306af93aee52
+ Source [7]: https://www.semanticscholar.org/paper/a6f50d3585de568f7f7862a68399382389742487
+ Source [8]: https://www.semanticscholar.org/paper/ea11683fbd43b6afe1900fa305c0af5e644324eb
+Asking gpt-4.1-mini
+DEBUG: LLM response for rA: No relevant values found
+Processing literature parameter: mA
+Searching for mA with query: Adult COTS natural mortality rate (year⁻¹)
+Engine order for mA: ['semantic_scholar', 'rag', 'serper']
+S2 Response Status Code: 200
+S2 Query: Adult COTS natural mortality rate (year⁻¹)
+S2 Total results: 7019
+Search results found for mA (engine=semantic_scholar, attempt=1)
+Search results found for mA (engine=rag, attempt=1)
+Error: Serper API returned status code 400
+No search results for mA (engine=serper, attempt=1)
+Error: Serper API returned status code 400
+No search results for mA (engine=serper, attempt=2)
+Error: Serper API returned status code 400
+No search results for mA (engine=serper, attempt=3)
+DEBUG: Aggregated 7 total source chunks for mA:
+ Source [1]: https://www.semanticscholar.org/paper/b98faec52552408230ed7f3e54e456c8c8b84cfc
+ Source [2]: https://www.semanticscholar.org/paper/7b8f4b5ca387769298ac47252d8529e8986db388
+ Source [3]: https://www.semanticscholar.org/paper/7f7d7046b418a1c1621b5756e9b28b2616ffdace
+ Source [4]: https://www.semanticscholar.org/paper/9cf2a89810ff804c64050e88b4890b81a94d4ec9
+ Source [5]: C:\Users\spi085\OneDrive - CSIRO\Documents\_Projects\SCCP-QuantModelling\doc_store\Rogers-2022-Culling corallivores improves shor.pdf
+ Source [6]: C:\Users\spi085\OneDrive - CSIRO\Documents\_Projects\SCCP-QuantModelling\doc_store\Pratchett-2017-Thirty years of research on cro.pdf
+ Source [7]: C:\Users\spi085\OneDrive - CSIRO\Documents\_Projects\SCCP-QuantModelling\doc_store\Morello-2014-Model to manage and reduce crown-.pdf
+Asking gpt-4.1-mini
+DEBUG: LLM response for mA: ```json
+{
+  "min": 0.39,
+  "max": 0.74,
+  "value": 0.565,
+  "relevant_text": "M values for adult stage were 0.39 to 0.43 year−1 for early maturity and 0.68 to 0.74 year−1 for late maturity scenarios [3]",
+  "citations_used": [3]
+}
+```
+Processing literature parameter: A_crit
+Searching for A_crit with query: COTS Allee threshold density reducing recruitment (ind/m²)
+Engine order for A_crit: ['serper', 'rag', 'semantic_scholar']
+Error: Serper API returned status code 400
+No search results for A_crit (engine=serper, attempt=1)
+Error: Serper API returned status code 400
+No search results for A_crit (engine=serper, attempt=2)
+Error: Serper API returned status code 400
+No search results for A_crit (engine=serper, attempt=3)
+Search results found for A_crit (engine=rag, attempt=1)
+S2 Response Status Code: 200
+S2 Query: COTS Allee threshold density reducing recruitment (ind/m²)
+S2 Total results: 1
+Search results found for A_crit (engine=semantic_scholar, attempt=1)
+DEBUG: Aggregated 5 total source chunks for A_crit:
+ Source [1]: C:\Users\spi085\OneDrive - CSIRO\Documents\_Projects\SCCP-QuantModelling\doc_store\Rogers-2022-Culling corallivores improves shor.pdf
+ Source [2]: C:\Users\spi085\OneDrive - CSIRO\Documents\_Projects\SCCP-QuantModelling\doc_store\Condie et al (2021) - large scale interventions may delay decline of Great Barrier Reef.pdf
+ Source [3]: C:\Users\spi085\OneDrive - CSIRO\Documents\_Projects\SCCP-QuantModelling\doc_store\Plagányi-2014-Ecosystem modelling provides clu.pdf
+ Source [4]: C:\Users\spi085\OneDrive - CSIRO\Documents\_Projects\SCCP-QuantModelling\doc_store\Morello-2014-Model to manage and reduce crown-.pdf
+ Source [5]: https://www.semanticscholar.org/paper/3a83d18001c165dd4dd9378f928eec1536dbfc8d
+Asking gpt-4.1-mini
+DEBUG: LLM response for A_crit: No relevant values found
+Processing literature parameter: beta_sst_A
+Searching for beta_sst_A with query: Amplitude of hump-shaped SST effect (centered at sst_ref) on COTS net growth rate
+Engine order for beta_sst_A: ['semantic_scholar', 'rag', 'serper']
+S2 Response Status Code: 200
+S2 Query: Amplitude of hump-shaped SST effect (centered at sst_ref) on COTS net growth rate
+S2 Total results: 0
+No papers found.
+No search results for beta_sst_A (engine=semantic_scholar, attempt=1)
+S2 Response Status Code: 200
+S2 Query: Amplitude of hump-shaped SST effect (centered at sst_ref) on COTS net growth rate
+S2 Total results: 0
+No papers found.
+No search results for beta_sst_A (engine=semantic_scholar, attempt=2)
+S2 Response Status Code: 200
+S2 Query: Amplitude of hump-shaped SST effect (centered at sst_ref) on COTS net growth rate
+S2 Total results: 0
+No papers found.
+No search results for beta_sst_A (engine=semantic_scholar, attempt=3)
+Search results found for beta_sst_A (engine=rag, attempt=1)
+Error: Serper API returned status code 400
+No search results for beta_sst_A (engine=serper, attempt=1)
+Error: Serper API returned status code 400
+No search results for beta_sst_A (engine=serper, attempt=2)
+Error: Serper API returned status code 400
+No search results for beta_sst_A (engine=serper, attempt=3)
+DEBUG: Aggregated 1 total source chunks for beta_sst_A:
+ Source [1]: C:\Users\spi085\OneDrive - CSIRO\Documents\_Projects\SCCP-QuantModelling\doc_store\Morello-2014-Model to manage and reduce crown-.pdf
+Asking gpt-4.1-mini
+DEBUG: LLM response for beta_sst_A: No relevant values found
+Processing literature parameter: sst_ref
+Searching for sst_ref with query: Optimal sea surface temperature for COTS growth/recruitment (°C), Gaussian center
+Engine order for sst_ref: ['rag', 'serper', 'semantic_scholar']
+Search results found for sst_ref (engine=rag, attempt=1)
+Error: Serper API returned status code 400
+No search results for sst_ref (engine=serper, attempt=1)
+Error: Serper API returned status code 400
+No search results for sst_ref (engine=serper, attempt=2)
+Error: Serper API returned status code 400
+No search results for sst_ref (engine=serper, attempt=3)
+S2 Response Status Code: 200
+S2 Query: Optimal sea surface temperature for COTS growth/recruitment (°C), Gaussian center
+S2 Total results: 1
+No search results for sst_ref (engine=semantic_scholar, attempt=1)
+S2 Response Status Code: 200
+S2 Query: Optimal sea surface temperature for COTS growth/recruitment (°C), Gaussian center
+S2 Total results: 1
+No search results for sst_ref (engine=semantic_scholar, attempt=2)
+S2 Response Status Code: 200
+S2 Query: Optimal sea surface temperature for COTS growth/recruitment (°C), Gaussian center
+S2 Total results: 1
+No search results for sst_ref (engine=semantic_scholar, attempt=3)
+DEBUG: Aggregated 2 total source chunks for sst_ref:
+ Source [1]: C:\Users\spi085\OneDrive - CSIRO\Documents\_Projects\SCCP-QuantModelling\doc_store\Morello-2014-Model to manage and reduce crown-.pdf
+ Source [2]: C:\Users\spi085\OneDrive - CSIRO\Documents\_Projects\SCCP-QuantModelling\doc_store\Pratchett-2017-Thirty years of research on cro.pdf
+Asking gpt-4.1-mini
+DEBUG: LLM response for sst_ref: No relevant values found
+Processing literature parameter: q_fr
+Searching for q_fr with query: Functional response shape parameter (1=Type II, >1=Type III-like)
+Engine order for q_fr: ['serper', 'semantic_scholar', 'rag']
+Error: Serper API returned status code 400
+No search results for q_fr (engine=serper, attempt=1)
+Error: Serper API returned status code 400
+No search results for q_fr (engine=serper, attempt=2)
+Error: Serper API returned status code 400
+No search results for q_fr (engine=serper, attempt=3)
+S2 Response Status Code: 200
+S2 Query: Functional response shape parameter (1=Type II, >1=Type III-like)
+S2 Total results: 2743
+Search results found for q_fr (engine=semantic_scholar, attempt=1)
+Search results found for q_fr (engine=rag, attempt=1)
+DEBUG: Aggregated 7 total source chunks for q_fr:
+ Source [1]: https://www.semanticscholar.org/paper/dc1fbae8120b4f883e648bcf5543e15b97f8eb49
+ Source [2]: https://www.semanticscholar.org/paper/c8977a2d3df7deeab97101200cf7261761929291
+ Source [3]: https://www.semanticscholar.org/paper/fa476c767509c9320e4be0053f83c889cbaebef6
+ Source [4]: https://www.semanticscholar.org/paper/3dd537b8827fdd869f9bdc297425edcd40df1930
+ Source [5]: https://www.semanticscholar.org/paper/8210e19750db62cfc236de22f086cdadbb894d05
+ Source [6]: https://www.semanticscholar.org/paper/511bcf6e1efe378d79d3020d8ce60e74202fb607
+ Source [7]: C:\Users\spi085\OneDrive - CSIRO\Documents\_Projects\SCCP-QuantModelling\doc_store\Plaganyi (2007) - Ecosystemmodellingfullversion.pdf
+Asking gpt-4.1-mini
+DEBUG: LLM response for q_fr: No relevant values found
+Processing literature parameter: aF
+Searching for aF with query: COTS attack rate on fast-growing coral (year⁻¹)
+Engine order for aF: ['semantic_scholar', 'serper', 'rag']
+S2 Response Status Code: 200
+S2 Query: COTS attack rate on fast-growing coral (year⁻¹)
+S2 Total results: 0
+No papers found.
+No search results for aF (engine=semantic_scholar, attempt=1)
+S2 Response Status Code: 200
+S2 Query: COTS attack rate on fast-growing coral (year⁻¹)
+S2 Total results: 0
+No papers found.
+No search results for aF (engine=semantic_scholar, attempt=2)
+S2 Response Status Code: 200
+S2 Query: COTS attack rate on fast-growing coral (year⁻¹)
+S2 Total results: 0
+No papers found.
+No search results for aF (engine=semantic_scholar, attempt=3)
+Error: Serper API returned status code 400
+No search results for aF (engine=serper, attempt=1)
+Error: Serper API returned status code 400
+No search results for aF (engine=serper, attempt=2)
+Error: Serper API returned status code 400
+No search results for aF (engine=serper, attempt=3)
+Search results found for aF (engine=rag, attempt=1)
+DEBUG: Aggregated 1 total source chunks for aF:
+ Source [1]: C:\Users\spi085\OneDrive - CSIRO\Documents\_Projects\SCCP-QuantModelling\doc_store\Morello-2014-Model to manage and reduce crown-.pdf
+Asking gpt-4.1-mini
+DEBUG: LLM response for aF: No relevant values found
+Processing literature parameter: aS
+Searching for aS with query: COTS attack rate on slow-growing coral (year⁻¹)
+Engine order for aS: ['rag', 'semantic_scholar', 'serper']
+Search results found for aS (engine=rag, attempt=1)
+S2 Response Status Code: 200
+S2 Query: COTS attack rate on slow-growing coral (year⁻¹)
+S2 Total results: 0
+No papers found.
+No search results for aS (engine=semantic_scholar, attempt=1)
+S2 Response Status Code: 200
+S2 Query: COTS attack rate on slow-growing coral (year⁻¹)
+S2 Total results: 0
+No papers found.
+No search results for aS (engine=semantic_scholar, attempt=2)
+S2 Response Status Code: 200
+S2 Query: COTS attack rate on slow-growing coral (year⁻¹)
+S2 Total results: 0
+No papers found.
+No search results for aS (engine=semantic_scholar, attempt=3)
+Error: Serper API returned status code 400
+No search results for aS (engine=serper, attempt=1)
+Error: Serper API returned status code 400
+No search results for aS (engine=serper, attempt=2)
+Error: Serper API returned status code 400
+No search results for aS (engine=serper, attempt=3)
+DEBUG: Aggregated 3 total source chunks for aS:
+ Source [1]: C:\Users\spi085\OneDrive - CSIRO\Documents\_Projects\SCCP-QuantModelling\doc_store\Morello-2014-Model to manage and reduce crown-.pdf
+ Source [2]: C:\Users\spi085\OneDrive - CSIRO\Documents\_Projects\SCCP-QuantModelling\doc_store\Rogers-2022-Culling corallivores improves shor.pdf
+ Source [3]: C:\Users\spi085\OneDrive - CSIRO\Documents\_Projects\SCCP-QuantModelling\doc_store\Condie et al (2021) - large scale interventions may delay decline of Great Barrier Reef.pdf
+Asking gpt-4.1-mini
+DEBUG: LLM response for aS: No relevant values found
+Processing literature parameter: pref_F
+Searching for pref_F with query: Preference multiplier for fast-growing coral prey
+Engine order for pref_F: ['semantic_scholar', 'rag', 'serper']
+S2 Response Status Code: 200
+S2 Query: Preference multiplier for fast-growing coral prey
+S2 Total results: 2
+Search results found for pref_F (engine=semantic_scholar, attempt=1)
+Search results found for pref_F (engine=rag, attempt=1)
+Error: Serper API returned status code 400
+No search results for pref_F (engine=serper, attempt=1)
+Error: Serper API returned status code 400
+No search results for pref_F (engine=serper, attempt=2)
+Error: Serper API returned status code 400
+No search results for pref_F (engine=serper, attempt=3)
+DEBUG: Aggregated 3 total source chunks for pref_F:
+ Source [1]: https://www.semanticscholar.org/paper/97117b8ed8c079f80f2f6eb6f619a0d850566dd8
+ Source [2]: C:\Users\spi085\OneDrive - CSIRO\Documents\_Projects\SCCP-QuantModelling\doc_store\Rogers-2022-Culling corallivores improves shor.pdf
+ Source [3]: C:\Users\spi085\OneDrive - CSIRO\Documents\_Projects\SCCP-QuantModelling\doc_store\Pratchett-2017-Thirty years of research on cro.pdf
+Asking gpt-4.1-mini
+DEBUG: LLM response for pref_F: No relevant values found
+Processing literature parameter: pref_S
+Searching for pref_S with query: Preference multiplier for slow-growing coral prey
+Engine order for pref_S: ['semantic_scholar', 'serper', 'rag']
+S2 Response Status Code: 200
+S2 Query: Preference multiplier for slow-growing coral prey
+S2 Total results: 3
+Search results found for pref_S (engine=semantic_scholar, attempt=1)
+Error: Serper API returned status code 400
+No search results for pref_S (engine=serper, attempt=1)
+Error: Serper API returned status code 400
+No search results for pref_S (engine=serper, attempt=2)
+Error: Serper API returned status code 400
+No search results for pref_S (engine=serper, attempt=3)
+Search results found for pref_S (engine=rag, attempt=1)
+DEBUG: Aggregated 3 total source chunks for pref_S:
+ Source [1]: https://www.semanticscholar.org/paper/97117b8ed8c079f80f2f6eb6f619a0d850566dd8
+ Source [2]: C:\Users\spi085\OneDrive - CSIRO\Documents\_Projects\SCCP-QuantModelling\doc_store\Rogers-2022-Culling corallivores improves shor.pdf
+ Source [3]: C:\Users\spi085\OneDrive - CSIRO\Documents\_Projects\SCCP-QuantModelling\doc_store\Pratchett-2017-Thirty years of research on cro.pdf
+Asking gpt-4.1-mini
+DEBUG: LLM response for pref_S: No relevant values found
+Processing literature parameter: rF
+Searching for rF with query: Intrinsic growth rate of fast-growing coral (year⁻¹)
+Engine order for rF: ['semantic_scholar', 'serper', 'rag']
+S2 Response Status Code: 200
+S2 Query: Intrinsic growth rate of fast-growing coral (year⁻¹)
+S2 Total results: 49
+Search results found for rF (engine=semantic_scholar, attempt=1)
+Error: Serper API returned status code 400
+No search results for rF (engine=serper, attempt=1)
+Error: Serper API returned status code 400
+No search results for rF (engine=serper, attempt=2)
+Error: Serper API returned status code 400
+No search results for rF (engine=serper, attempt=3)
+Search results found for rF (engine=rag, attempt=1)
+DEBUG: Aggregated 4 total source chunks for rF:
+ Source [1]: https://www.semanticscholar.org/paper/17963181158abc73158ad34ac1e8adbe73c36857
+ Source [2]: C:\Users\spi085\OneDrive - CSIRO\Documents\_Projects\SCCP-QuantModelling\doc_store\Pratchett-2017-Thirty years of research on cro.pdf
+ Source [3]: C:\Users\spi085\OneDrive - CSIRO\Documents\_Projects\SCCP-QuantModelling\doc_store\Condie et al (2021) - large scale interventions may delay decline of Great Barrier Reef.pdf
+ Source [4]: C:\Users\spi085\OneDrive - CSIRO\Documents\_Projects\SCCP-QuantModelling\doc_store\Rogers-2022-Culling corallivores improves shor.pdf
+Asking gpt-4.1-mini
+DEBUG: LLM response for rF: No relevant values found
+Processing literature parameter: rS
+Searching for rS with query: Intrinsic growth rate of slow-growing coral (year⁻¹)
+Engine order for rS: ['semantic_scholar', 'rag', 'serper']
+S2 Response Status Code: 200
+S2 Query: Intrinsic growth rate of slow-growing coral (year⁻¹)
+S2 Total results: 43
+Search results found for rS (engine=semantic_scholar, attempt=1)
+Search results found for rS (engine=rag, attempt=1)
+Error: Serper API returned status code 400
+No search results for rS (engine=serper, attempt=1)
+Error: Serper API returned status code 400
+No search results for rS (engine=serper, attempt=2)
+Error: Serper API returned status code 400
+No search results for rS (engine=serper, attempt=3)
+DEBUG: Aggregated 7 total source chunks for rS:
+ Source [1]: https://www.semanticscholar.org/paper/c581e1846fc0fbcb381085ed9560e0d535768647
+ Source [2]: https://www.semanticscholar.org/paper/17963181158abc73158ad34ac1e8adbe73c36857
+ Source [3]: https://www.semanticscholar.org/paper/9fe25d1cecc24bf339c3ed920768519f9d4ccb16
+ Source [4]: https://www.semanticscholar.org/paper/d013e50c54a21f24a8312d7641bcf4ca69f6324d
+ Source [5]: C:\Users\spi085\OneDrive - CSIRO\Documents\_Projects\SCCP-QuantModelling\doc_store\Condie et al (2021) - large scale interventions may delay decline of Great Barrier Reef.pdf
+ Source [6]: C:\Users\spi085\OneDrive - CSIRO\Documents\_Projects\SCCP-QuantModelling\doc_store\Pratchett-2017-Thirty years of research on cro.pdf
+ Source [7]: C:\Users\spi085\OneDrive - CSIRO\Documents\_Projects\SCCP-QuantModelling\doc_store\Rogers-2022-Culling corallivores improves shor.pdf
+Asking gpt-4.1-mini
+DEBUG: LLM response for rS: No relevant values found
+Processing literature parameter: mF_bleach
+Searching for mF_bleach with query: Additional bleaching-induced mortality rate for fast coral (year⁻¹)
+Engine order for mF_bleach: ['semantic_scholar', 'serper', 'rag']
+S2 Response Status Code: 200
+S2 Query: Additional bleaching-induced mortality rate for fast coral (year⁻¹)
+S2 Total results: 2
+Search results found for mF_bleach (engine=semantic_scholar, attempt=1)
+Error: Serper API returned status code 400
+No search results for mF_bleach (engine=serper, attempt=1)
+Error: Serper API returned status code 400
+No search results for mF_bleach (engine=serper, attempt=2)
+Error: Serper API returned status code 400
+No search results for mF_bleach (engine=serper, attempt=3)
+Search results found for mF_bleach (engine=rag, attempt=1)
+DEBUG: Aggregated 3 total source chunks for mF_bleach:
+ Source [1]: https://www.semanticscholar.org/paper/b9dfa14fe7c0779d06d1fed031cf02741c252780
+ Source [2]: C:\Users\spi085\OneDrive - CSIRO\Documents\_Projects\SCCP-QuantModelling\doc_store\Rogers-2022-Culling corallivores improves shor.pdf
+ Source [3]: C:\Users\spi085\OneDrive - CSIRO\Documents\_Projects\SCCP-QuantModelling\doc_store\Condie et al (2021) - large scale interventions may delay decline of Great Barrier Reef.pdf
+Asking gpt-4.1-mini
+DEBUG: LLM response for mF_bleach: No relevant values found
+Processing literature parameter: mS_bleach
+Searching for mS_bleach with query: Additional bleaching-induced mortality rate for slow coral (year⁻¹)
+Engine order for mS_bleach: ['serper', 'semantic_scholar', 'rag']
+Error: Serper API returned status code 400
+No search results for mS_bleach (engine=serper, attempt=1)
+Error: Serper API returned status code 400
+No search results for mS_bleach (engine=serper, attempt=2)
+Error: Serper API returned status code 400
+No search results for mS_bleach (engine=serper, attempt=3)
+S2 Response Status Code: 200
+S2 Query: Additional bleaching-induced mortality rate for slow coral (year⁻¹)
+S2 Total results: 1
+No search results for mS_bleach (engine=semantic_scholar, attempt=1)
+S2 Response Status Code: 200
+S2 Query: Additional bleaching-induced mortality rate for slow coral (year⁻¹)
+S2 Total results: 1
+No search results for mS_bleach (engine=semantic_scholar, attempt=2)
+S2 Response Status Code: 200
+S2 Query: Additional bleaching-induced mortality rate for slow coral (year⁻¹)
+S2 Total results: 1
+No search results for mS_bleach (engine=semantic_scholar, attempt=3)
+Search results found for mS_bleach (engine=rag, attempt=1)
+DEBUG: Aggregated 2 total source chunks for mS_bleach:
+ Source [1]: C:\Users\spi085\OneDrive - CSIRO\Documents\_Projects\SCCP-QuantModelling\doc_store\Rogers-2022-Culling corallivores improves shor.pdf
+ Source [2]: C:\Users\spi085\OneDrive - CSIRO\Documents\_Projects\SCCP-QuantModelling\doc_store\Condie et al (2021) - large scale interventions may delay decline of Great Barrier Reef.pdf
+Asking gpt-4.1-mini
+DEBUG: LLM response for mS_bleach: No relevant values found
+Processing literature parameter: sst_bleach
+Searching for sst_bleach with query: Sea surface temperature threshold for coral bleaching onset (°C)
+Engine order for sst_bleach: ['rag', 'serper', 'semantic_scholar']
+Search results found for sst_bleach (engine=rag, attempt=1)
+Error: Serper API returned status code 400
+No search results for sst_bleach (engine=serper, attempt=1)
+Error: Serper API returned status code 400
+No search results for sst_bleach (engine=serper, attempt=2)
+Error: Serper API returned status code 400
+No search results for sst_bleach (engine=serper, attempt=3)
+S2 Response Status Code: 200
+S2 Query: Sea surface temperature threshold for coral bleaching onset (°C)
+S2 Total results: 31
+Search results found for sst_bleach (engine=semantic_scholar, attempt=1)
+DEBUG: Aggregated 7 total source chunks for sst_bleach:
+ Source [1]: C:\Users\spi085\OneDrive - CSIRO\Documents\_Projects\SCCP-QuantModelling\doc_store\Rogers-2022-Culling corallivores improves shor.pdf
+ Source [2]: C:\Users\spi085\OneDrive - CSIRO\Documents\_Projects\SCCP-QuantModelling\doc_store\Condie et al (2021) - large scale interventions may delay decline of Great Barrier Reef.pdf
+ Source [3]: https://www.semanticscholar.org/paper/b5b5ddf5ee110855bda616fc90aa4f1d24ef11a1
+ Source [4]: https://www.semanticscholar.org/paper/e44d6c86d6ec34d716d15530873e716de5eda0f8
+ Source [5]: https://www.semanticscholar.org/paper/5cd063cf37c69cd05934c255a405c0611c8af536
+ Source [6]: https://www.semanticscholar.org/paper/3df9e4c5e81655ae5412b052bcf5e2950569c18f
+ Source [7]: https://www.semanticscholar.org/paper/acb97a3adfb9696ba410df65d509fa9172ca5af9
+Asking gpt-4.1-mini
+DEBUG: LLM response for sst_bleach: No relevant values found
+Processing literature parameter: alpha_bleach_growthF
+Searching for alpha_bleach_growthF with query: Amplitude of SST-induced suppression on fast coral growth (0–1)
+Engine order for alpha_bleach_growthF: ['rag', 'serper', 'semantic_scholar']
+Search results found for alpha_bleach_growthF (engine=rag, attempt=1)
+Error: Serper API returned status code 400
+No search results for alpha_bleach_growthF (engine=serper, attempt=1)
+Error: Serper API returned status code 400
+No search results for alpha_bleach_growthF (engine=serper, attempt=2)
+Error: Serper API returned status code 400
+No search results for alpha_bleach_growthF (engine=serper, attempt=3)
+S2 Response Status Code: 200
+S2 Query: Amplitude of SST-induced suppression on fast coral growth (0–1)
+S2 Total results: 0
+No papers found.
+No search results for alpha_bleach_growthF (engine=semantic_scholar, attempt=1)
+S2 Response Status Code: 200
+S2 Query: Amplitude of SST-induced suppression on fast coral growth (0–1)
+S2 Total results: 0
+No papers found.
+No search results for alpha_bleach_growthF (engine=semantic_scholar, attempt=2)
+S2 Response Status Code: 200
+S2 Query: Amplitude of SST-induced suppression on fast coral growth (0–1)
+S2 Total results: 0
+No papers found.
+No search results for alpha_bleach_growthF (engine=semantic_scholar, attempt=3)
+DEBUG: Aggregated 2 total source chunks for alpha_bleach_growthF:
+ Source [1]: C:\Users\spi085\OneDrive - CSIRO\Documents\_Projects\SCCP-QuantModelling\doc_store\Rogers-2022-Culling corallivores improves shor.pdf
+ Source [2]: C:\Users\spi085\OneDrive - CSIRO\Documents\_Projects\SCCP-QuantModelling\doc_store\Condie et al (2021) - large scale interventions may delay decline of Great Barrier Reef.pdf
+Asking gpt-4.1-mini
+DEBUG: LLM response for alpha_bleach_growthF: No relevant values found
+Processing literature parameter: alpha_bleach_growthS
+Searching for alpha_bleach_growthS with query: Amplitude of SST-induced suppression on slow coral growth (0–1)
+Engine order for alpha_bleach_growthS: ['semantic_scholar', 'rag', 'serper']
+S2 Response Status Code: 200
+S2 Query: Amplitude of SST-induced suppression on slow coral growth (0–1)
+S2 Total results: 0
+No papers found.
+No search results for alpha_bleach_growthS (engine=semantic_scholar, attempt=1)
+S2 Response Status Code: 200
+S2 Query: Amplitude of SST-induced suppression on slow coral growth (0–1)
+S2 Total results: 0
+No papers found.
+No search results for alpha_bleach_growthS (engine=semantic_scholar, attempt=2)
+S2 Response Status Code: 200
+S2 Query: Amplitude of SST-induced suppression on slow coral growth (0–1)
+S2 Total results: 0
+No papers found.
+No search results for alpha_bleach_growthS (engine=semantic_scholar, attempt=3)
+Search results found for alpha_bleach_growthS (engine=rag, attempt=1)
+Error: Serper API returned status code 400
+No search results for alpha_bleach_growthS (engine=serper, attempt=1)
+Error: Serper API returned status code 400
+No search results for alpha_bleach_growthS (engine=serper, attempt=2)
+Error: Serper API returned status code 400
+No search results for alpha_bleach_growthS (engine=serper, attempt=3)
+DEBUG: Aggregated 2 total source chunks for alpha_bleach_growthS:
+ Source [1]: C:\Users\spi085\OneDrive - CSIRO\Documents\_Projects\SCCP-QuantModelling\doc_store\Condie et al (2021) - large scale interventions may delay decline of Great Barrier Reef.pdf
+ Source [2]: C:\Users\spi085\OneDrive - CSIRO\Documents\_Projects\SCCP-QuantModelling\doc_store\Rogers-2022-Culling corallivores improves shor.pdf
+Asking gpt-4.1-mini
+DEBUG: LLM response for alpha_bleach_growthS: No relevant values found
+Parameter processing completed successfully.
+Re-running model after parameter processing...
+[93m[PID 1800177] Running model for individual...[0m
+[0m[PID 1800177] Individual directory: POPULATIONS/POPULATION_0074/INDIVIDUAL_Y8C4XVI5[0m
+[93m[PID 1800177] Removed old compilation: model.o[0m
+[96m[PID 1800177] Launching Rscript... (timeout=none)[0m
+[93m[PID 1800177] R script stdout BEGIN >>>[0m
+[0mg++ -std=gnu++17 -I"/usr/share/R/include" -DNDEBUG -I"/home/spi085/R/x86_64-pc-linux-gnu-library/4.4/TMB/include" -I"/home/spi085/R/x86_64-pc-linux-gnu-library/4.4/RcppEigen/include"   -DTMB_EIGEN_DISABLE_WARNINGS   -DTMB_LIB_INIT=R_init_model  -DCPPAD_FRAMEWORK      -fpic  -O2  -c POPULATIONS/POPULATION_0074/INDIVIDUAL_Y8C4XVI5/model.cpp -o POPULATIONS/POPULATION_0074/INDIVIDUAL_Y8C4XVI5/model.o
+g++ -std=gnu++17 -shared -L/usr/lib/R/lib -Wl,-Bsymbolic-functions -flto=auto -ffat-lto-objects -Wl,-z,relro -o POPULATIONS/POPULATION_0074/INDIVIDUAL_Y8C4XVI5/model.so POPULATIONS/POPULATION_0074/INDIVIDUAL_Y8C4XVI5/model.o -L/usr/lib/R/lib -lR
+
+NA counts per required column:
+       Year    cots_dat    fast_dat    slow_dat     sst_dat cotsimm_dat 
+          0           0           0           0           0           0 
+
+Out-of-range checks:
+Any cots_dat < 0?  FALSE 
+Any fast_dat outside [0,100]?  FALSE 
+Any slow_dat outside [0,100]?  FALSE 
+
+PARAMETER starts (first few):
+         rA          mA     kK_perc         kK0        wK_F        wK_S 
+      1.500       0.565       0.030       0.200       0.600       0.400 
+     A_crit     k_allee  beta_sst_A     sst_ref sst_scale_A     gamma_I 
+      0.200       5.000       0.300      28.500       1.500       0.300 
+Starting model phases
+Number of phases: 4 
+Phase 1 
+Initial parameter values for phase 1 :
+            rA             mA        gamma_I             aF             aS 
+         1.500          0.565          0.300          1.200          0.500 
+   kappa_predF    kappa_predS             sJ             mJ           phiJ 
+         3.000          1.500          0.050          0.500          0.400 
+log_sigma_cots log_sigma_fast log_sigma_slow 
+        -1.200         -1.200         -1.200 
+Final parameter values for phase 1 :
+            rA             mA        gamma_I             aF             aS 
+     2.1583076      0.5046336      2.3393437      1.3735296      5.0000000 
+   kappa_predF    kappa_predS             sJ             mJ           phiJ 
+    10.0000000     10.0000000      0.5000000      1.4119056      1.0000000 
+log_sigma_cots log_sigma_fast log_sigma_slow 
+    -0.7324405     -1.3599916     -2.2823290 
+Convergence message: relative convergence (4) 
+Number of iterations: 91 
+Objective function value: 17.70089 
+Gradient at solution for phase 1 :
+              [,1]         [,2]         [,3]         [,4]      [,5]       [,6]
+[1,] -1.234411e-05 2.036984e-05 5.157866e-08 1.419474e-06 -5.005597 -0.4522209
+         [,7]       [,8]          [,9]     [,10]       [,11]        [,12]
+[1,] -4.01279 -0.5038657 -1.961256e-05 -14.72401 3.97975e-06 6.987859e-06
+             [,13]
+[1,] -4.171325e-06
+Phase 2 
+Initial parameter values for phase 2 :
+  kK_perc       kK0    A_crit   eta_fec rho_lag_I      q_fr        hF        hS 
+     0.03      0.20      0.20      0.20      0.40      1.00      0.80      0.80 
+       rF        rS mF_bleach mS_bleach        A0        F0        S0        J0 
+     0.30      0.30      0.40      0.20      0.20     30.00     20.00      1.00 
+Final parameter values for phase 2 :
+     kK_perc          kK0       A_crit      eta_fec    rho_lag_I         q_fr 
+ 0.006409225  0.011528170  0.000000000  0.854523451  0.000000000  1.000000001 
+          hF           hS           rF           rS    mF_bleach    mS_bleach 
+ 0.449662801  0.020561745  0.325860326  0.351376656  1.467095636  1.509404569 
+          A0           F0           S0           J0 
+ 0.704853303 29.400283421 17.469115263  1.954192675 
+Convergence message: iteration limit reached without convergence (10) 
+Number of iterations: 150 
+Objective function value: 0.360023 
+Gradient at solution for phase 2 :
+         [,1]     [,2]     [,3]       [,4]       [,5]      [,6]      [,7]
+[1,] 2.848384 6.763658 1.330215 -0.2446409 0.01786045 -5.529502 0.2298539
+          [,8]      [,9]    [,10]    [,11]    [,12]    [,13]     [,14]
+[1,] 0.7972876 -3.515546 -7.00461 1.003992 1.033993 1.489687 0.2940232
+         [,15]     [,16]
+[1,] 0.4769468 0.2345887
+Phase 3 
+Initial parameter values for phase 3 :
+                wK_F                 wK_S              k_allee 
+                0.60                 0.40                 5.00 
+          beta_sst_A               pref_F               pref_S 
+                0.30                 1.00                 0.60 
+             mF_base              mS_base           sst_bleach 
+                0.15                 0.07                31.75 
+alpha_bleach_growthF alpha_bleach_growthS 
+                0.50                 0.30 
+Final parameter values for phase 3 :
+                wK_F                 wK_S              k_allee 
+          0.60556035           0.40892966           5.00457102 
+          beta_sst_A               pref_F               pref_S 
+          0.32368390           1.04664357           0.58510845 
+             mF_base              mS_base           sst_bleach 
+          0.14581196           0.07356722          31.80223073 
+alpha_bleach_growthF alpha_bleach_growthS 
+          0.49557639           0.29662608 
+Convergence message: iteration limit reached without convergence (10) 
+Number of iterations: 150 
+Objective function value: 0.1423571 
+Gradient at solution for phase 3 :
+            [,1]       [,2]       [,3]       [,4]      [,5]     [,6]       [,7]
+[1,] -0.07945859 -0.2222451 -0.1384251 -0.6254576 -1.518156 1.038629 -0.9648465
+         [,8]      [,9]     [,10]      [,11]
+[1,] 1.884178 -1.499101 0.1240501 0.09474088
+Phase 4 
+Initial parameter values for phase 4 :
+         sst_ref      sst_scale_A sst_scale_bleach 
+            28.5              1.5              0.7 
+Final parameter values for phase 4 :
+         sst_ref      sst_scale_A sst_scale_bleach 
+      28.1930159        1.1037494        0.6860459 
+Convergence message: relative convergence (4) 
+Number of iterations: 8 
+Objective function value: 0.079026 
+Gradient at solution for phase 4 :
+              [,1]          [,2]          [,3]
+[1,] -7.099247e-08 -2.326387e-07 -8.803989e-07
+Final Phase
+Initial parameter values for final phase:
+                  rA                   mA              kK_perc 
+         2.158307605          0.504633634          0.006409225 
+                 kK0                 wK_F                 wK_S 
+         0.011528170          0.605560355          0.408929655 
+              A_crit              k_allee           beta_sst_A 
+         0.000000000          5.004571016          0.323683903 
+             sst_ref          sst_scale_A              gamma_I 
+        28.193015851          1.103749369          2.339343735 
+             eta_fec            rho_lag_I                 q_fr 
+         0.854523451          0.000000000          1.000000001 
+                  aF                   aS                   hF 
+         1.373529582          5.000000000          0.449662801 
+                  hS               pref_F               pref_S 
+         0.020561745          1.046643574          0.585108449 
+         kappa_predF          kappa_predS                   rF 
+        10.000000000         10.000000000          0.325860326 
+                  rS              mF_base              mS_base 
+         0.351376656          0.145811961          0.073567221 
+           mF_bleach            mS_bleach           sst_bleach 
+         1.467095636          1.509404569         31.802230733 
+    sst_scale_bleach alpha_bleach_growthF alpha_bleach_growthS 
+         0.686045866          0.495576395          0.296626084 
+                  sJ                   mJ                 phiJ 
+         0.500000000          1.411905617          1.000000000 
+                  A0                   F0                   S0 
+         0.704853303         29.400283421         17.469115263 
+                  J0       log_sigma_cots       log_sigma_fast 
+         1.954192675         -0.732440525         -1.359991647 
+      log_sigma_slow 
+        -2.282329025 
+Final parameter values for final phase:
+                  rA                   mA              kK_perc 
+         2.156752668          0.499511409          0.007630875 
+                 kK0                 wK_F                 wK_S 
+         0.003255048          0.605404986          0.409147330 
+              A_crit              k_allee           beta_sst_A 
+         0.000000000          5.004801739          0.325226864 
+             sst_ref          sst_scale_A              gamma_I 
+        28.193012439          1.103601975          2.339034409 
+             eta_fec            rho_lag_I                 q_fr 
+         0.855123578          0.000000000          1.000000000 
+                  aF                   aS                   hF 
+         1.375207772          4.999566578          0.448753058 
+                  hS               pref_F               pref_S 
+         0.018214529          1.049234329          0.584016595 
+         kappa_predF          kappa_predS                   rF 
+         9.999956724          9.999632672          0.327158178 
+                  rS              mF_base              mS_base 
+         0.355015841          0.145230901          0.071802316 
+           mF_bleach            mS_bleach           sst_bleach 
+         1.466263853          1.509102504         31.803780237 
+    sst_scale_bleach alpha_bleach_growthF alpha_bleach_growthS 
+         0.684544712          0.495397976          0.296613477 
+                  sJ                   mJ                 phiJ 
+         0.498927972          1.403941865          0.997828044 
+                  A0                   F0                   S0 
+         0.702093104         29.399721563         17.468249174 
+                  J0       log_sigma_cots       log_sigma_fast 
+         1.953398697         -0.756077301         -1.363830450 
+      log_sigma_slow 
+        -2.304817903 
+Convergence message: iteration limit reached without convergence (10) 
+Number of iterations: 150 
+Objective function value: -0.6490167 
+Gradient at solution for final phase:
+           [,1]    [,2]      [,3]     [,4]       [,5]       [,6]     [,7]
+[1,] 0.01200913 2.97381 -32.10799 2.585886 -0.1993484 -0.2927916 1.066227
+           [,8]       [,9]        [,10]      [,11]      [,12]      [,13]
+[1,] -0.1285332 -0.9478652 -0.007153417 0.04518305 0.01203778 -0.4958217
+        [,14]   [,15]      [,16]      [,17]     [,18]    [,19]     [,20]
+[1,] 1.032775 3.83517 -0.5274433 -0.2161054 0.9430454 2.255453 -1.104308
+         [,21]      [,22]       [,23]     [,24]    [,25]    [,26]     [,27]
+[1,] -3.244685 0.04940216 -0.01671644 -3.470171 5.491706 4.937096 -10.61305
+         [,28]      [,29]      [,30]     [,31]    [,32]       [,33]      [,34]
+[1,] 0.4720825 -0.1490429 -0.3776698 0.2898398 0.098728 -0.07529762 -0.4513131
+       [,35]     [,36]    [,37]     [,38]     [,39]    [,40]    [,41]    [,42]
+[1,] 4.17619 0.2336397 1.532952 0.2927846 0.5251382 0.395454 12.81177 2.017912
+        [,43]
+[1,] 12.20779
+All phases completed
+Successfully updated parameters_metadata.json with optimized values
+[1] "Train test split:"
+[1] 1
+
+Running model validation...
+No test data available (train_test_split >= 1.0)
+NULL
+
+DEBUG: Report contents:
+List of 4
+ $ cots_pred: num [1:26] 0.708 0.877 0.635 0.778 0.539 ...
+ $ fast_pred: num [1:26] 29.4 27.5 25.3 23.6 22.6 ...
+ $ juv_pred : num [1:26] 1.953 0.848 1.673 0.594 1.037 ...
+ $ slow_pred: num [1:26] 17.5 16.3 14.7 13.9 13.1 ...
+NULL
+
+DEBUG: Available variables in report:
+[1] "cots_pred" "fast_pred" "juv_pred"  "slow_pred"
+
+Checking predictions and calculating objective function...
+
+DEBUG: Processing cots_pred 
+DEBUG: First few predictions: 0.7079821 0.8774397 0.63488 0.7776094 0.5390121 0.5868787 
+DEBUG: Summary statistics:
+   Min. 1st Qu.  Median    Mean 3rd Qu.    Max. 
+ 0.2983  0.4087  0.5316  0.6336  0.7602  1.7407 
+DEBUG: All zeros? FALSE 
+DEBUG: Any infinities? FALSE 
+
+DEBUG: Processing fast_pred 
+DEBUG: First few predictions: 29.39972 27.48325 25.29982 23.61887 22.57574 22.24795 
+DEBUG: Summary statistics:
+   Min. 1st Qu.  Median    Mean 3rd Qu.    Max. 
+  5.512   8.345  17.936  16.422  21.564  29.400 
+DEBUG: All zeros? FALSE 
+DEBUG: Any infinities? FALSE 
+
+DEBUG: Processing slow_pred 
+DEBUG: First few predictions: 17.46825 16.34207 14.70638 13.86641 13.13129 13.22335 
+DEBUG: Summary statistics:
+   Min. 1st Qu.  Median    Mean 3rd Qu.    Max. 
+  2.659   5.233  10.679   9.681  13.768  17.468 
+DEBUG: All zeros? FALSE 
+DEBUG: Any infinities? FALSE 
+
+DEBUG: Using the following variables for objective function:
+cots_dat -> cots_pred
+fast_dat -> fast_pred
+slow_dat -> slow_pred
+
+DEBUG: Calculating MSE for prediction variables only:
+
+DEBUG: cots_pred 
+Observed: 0.2615042 0.5498196 0.7268086 0.5522907 0.828121 0.5470078 ...
+Predicted: 0.7079821 0.8774397 0.63488 0.7776094 0.5390121 0.5868787 ...
+MSE (normalized): 0.3154381 
+
+DEBUG: fast_pred 
+Observed: 10.06939 17.72357 23.82758 19.41812 15.63542 32.45961 ...
+Predicted: 29.39972 27.48325 25.29982 23.61887 22.57574 22.24795 ...
+MSE (normalized): 0.6177145 
+
+DEBUG: slow_pred 
+Observed: 12.77261 16.41474 12.77729 12.27975 15.11516 12.81941 ...
+Predicted: 17.46825 16.34207 14.70638 13.86641 13.13129 13.22335 ...
+MSE (normalized): 0.1965163 
+
+DEBUG: MSE values:
+ cots_dat  fast_dat  slow_dat 
+0.3154381 0.6177145 0.1965163 
+
+DEBUG: Final objective value (mean of MSEs): 0.3765563 
+
+Final objective function value: 0.3765563 
+
+JSON_REPORT_START
+{
+  "status": "SUCCESS",
+  "objective_value": 0.3766,
+  "model_summary": ["            Length Class  Mode     ", "par         43     -none- numeric  ", "objective    1     -none- numeric  ", "convergence  1     -none- numeric  ", "iterations   1     -none- numeric  ", "evaluations  2     -none- numeric  ", "message      1     -none- character"],
+  "model_report": {
+    "cots_pred": [0.708, 0.8774, 0.6349, 0.7776, 0.539, 0.5869, 0.497, 0.5478, 0.4456, 0.4833, 0.4205, 1.6198, 0.8143, 1.7407, 0.9216, 0.9064, 0.5242, 0.6603, 0.4047, 0.4483, 0.3228, 0.3489, 0.2983, 0.3161, 0.3028, 0.3258],
+    "fast_pred": [29.3997, 27.4833, 25.2998, 23.6189, 22.5757, 22.2479, 21.5824, 21.5095, 21.297, 21.3561, 21.3039, 21.3942, 18.2203, 17.6522, 15.0512, 14.6044, 13.8981, 12.3421, 5.5124, 5.8764, 6.2218, 6.6902, 7.1568, 7.6891, 8.1997, 8.7792],
+    "juv_pred": [1.9534, 0.8483, 1.6729, 0.5939, 1.0374, 0.6709, 0.9243, 0.514, 0.7255, 0.4822, 4.0527, 0.0016, 6.5537, 0.4587, 2.571, 0.3205, 1.4868, 0.2131, 0.797, 0.2065, 0.449, 0.229, 0.3403, 0.2754, 0.3651, 0.2478],
+    "slow_pred": [17.4682, 16.3421, 14.7064, 13.8664, 13.1313, 13.2233, 13.0297, 13.3354, 13.4733, 13.9602, 14.3229, 14.9057, 10.9318, 10.427, 7.4574, 7.0108, 6.473, 5.8971, 2.6588, 2.9368, 3.2046, 3.6069, 4.0263, 4.5419, 5.0758, 5.7033]
+  },
+  "plot_data": {
+    "cots_pred": {
+      "Year": [1980, 1981, 1982, 1983, 1984, 1985, 1986, 1987, 1988, 1989, 1990, 1991, 1992, 1993, 1994, 1995, 1996, 1997, 1998, 1999, 2000, 2001, 2002, 2003, 2004, 2005],
+      "Modeled": [0.708, 0.8774, 0.6349, 0.7776, 0.539, 0.5869, 0.497, 0.5478, 0.4456, 0.4833, 0.4205, 1.6198, 0.8143, 1.7407, 0.9216, 0.9064, 0.5242, 0.6603, 0.4047, 0.4483, 0.3228, 0.3489, 0.2983, 0.3161, 0.3028, 0.3258],
+      "Observed": [0.2615, 0.5498, 0.7268, 0.5523, 0.8281, 0.547, 0.758, 0.6288, 0.4762, 0.6466, 0.9107, 2.152, 0.6446, 1.6723, 0.4766, 0.8075, 0.3635, 0.3728, 0.6173, 0.3107, 0.256, 0.2984, 0.3362, 0.2878, 0.3221, 0.4308]
+    },
+    "fast_pred": {
+      "Year": [1980, 1981, 1982, 1983, 1984, 1985, 1986, 1987, 1988, 1989, 1990, 1991, 1992, 1993, 1994, 1995, 1996, 1997, 1998, 1999, 2000, 2001, 2002, 2003, 2004, 2005],
+      "Modeled": [29.3997, 27.4833, 25.2998, 23.6189, 22.5757, 22.2479, 21.5824, 21.5095, 21.297, 21.3561, 21.3039, 21.3942, 18.2203, 17.6522, 15.0512, 14.6044, 13.8981, 12.3421, 5.5124, 5.8764, 6.2218, 6.6902, 7.1568, 7.6891, 8.1997, 8.7792],
+      "Observed": [10.0694, 17.7236, 23.8276, 19.4181, 15.6354, 32.4596, 21.5567, 34.1938, 18.8708, 27.3176, 44.3301, 13.3275, 11.3741, 8.3362, 15.207, 12.443, 11.0666, 10.6442, 2.3628, 2.76, 3.7236, 7.0355, 10.2239, 8.4754, 9.0819, 13.7314]
+    },
+    "slow_pred": {
+      "Year": [1980, 1981, 1982, 1983, 1984, 1985, 1986, 1987, 1988, 1989, 1990, 1991, 1992, 1993, 1994, 1995, 1996, 1997, 1998, 1999, 2000, 2001, 2002, 2003, 2004, 2005],
+      "Modeled": [17.4682, 16.3421, 14.7064, 13.8664, 13.1313, 13.2233, 13.0297, 13.3354, 13.4733, 13.9602, 14.3229, 14.9057, 10.9318, 10.427, 7.4574, 7.0108, 6.473, 5.8971, 2.6588, 2.9368, 3.2046, 3.6069, 4.0263, 4.5419, 5.0758, 5.7033],
+      "Observed": [12.7726, 16.4147, 12.7773, 12.2798, 15.1152, 12.8194, 10.4631, 9.7251, 13.2014, 16.4512, 11.1393, 18.0832, 11.5223, 8.51, 9.1622, 5.3353, 8.6044, 7.2781, 2.629, 4.6951, 1.5948, 5.2172, 2.6041, 3.3618, 7.3289, 4.4014]
+    }
+  }
+}
+JSON_REPORT_END[0m
+[93m[PID 1800177] R script stdout END <<<[0m
+[93m[PID 1800177] R script stderr BEGIN >>>[0m
+[0mLoading required package: TMB
+Loading required package: jsonlite
+here() starts at /home/spi085/Documents/_Projects/EMs-with-LLMs
+using C++ compiler: ‘g++ (Ubuntu 13.3.0-6ubuntu2~24.04) 13.3.0’
+Warning message:
+`aes_string()` was deprecated in ggplot2 3.0.0.
+ℹ Please use tidy evaluation idioms with `aes()`.
+ℹ See also `vignette("ggplot2-in-packages")` for more information.[0m
+[93m[PID 1800177] R script stderr END <<<[0m
+[96m[PID 1800177] JSON detected, parsing...[0m
+[96m[PID 1800177] Writing model report...[0m
+[94m[PID 1800177] Objective value: 0.3766[0m
+[96m[PID 1800177] Generating plots...[0m
+[94m[PID 1800177] Objective Value: 0.3766[0m
+[92m[PID 1800177] Successful model run[0m
+[0m----------------------------------------------[0m
+FINAL MODEL RUN FINISHED
+Final model run successful. Objective value: 0.3766

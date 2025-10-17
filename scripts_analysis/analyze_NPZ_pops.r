@@ -546,7 +546,6 @@ extract_ecological_scores <- function(metadata_path, individual_dir) {
   phytoplankton_equation_mixing <- get_score("phytoplankton_equation_mixing")
   zooplankton_equation_growth <- get_score("zooplankton_equation_growth")
   zooplankton_equation_mortality <- get_score("zooplankton_equation_mortality")
-  zooplankton_equation_mixing <- get_score("zooplankton_equation_mixing")
 
   extras_count <- suppressWarnings(as.numeric(sj$extra_components_count))
   if (is.na(extras_count)) extras_count <- NA_real_
@@ -575,7 +574,6 @@ extract_ecological_scores <- function(metadata_path, individual_dir) {
     phytoplankton_equation_mixing = phytoplankton_equation_mixing,
     zooplankton_equation_growth = zooplankton_equation_growth,
     zooplankton_equation_mortality = zooplankton_equation_mortality,
-    zooplankton_equation_mixing = zooplankton_equation_mixing,
     extras_count = extras_count,
     extras_description = extras_description,
     extras_list_json = extras_list_json,
@@ -597,7 +595,6 @@ stub_ecology_row <- function(individual_dir) {
     phytoplankton_equation_mixing = NA_real_,
     zooplankton_equation_growth = NA_real_,
     zooplankton_equation_mortality = NA_real_,
-    zooplankton_equation_mixing = NA_real_,
     extras_count = NA_real_,
     extras_description = NA_character_,
     extras_list_json = NA_character_,
@@ -987,7 +984,6 @@ summary_df <- ecology_all %>%
     phytoplankton_equation_mixing = suppressWarnings(as.numeric(phytoplankton_equation_mixing)),
     zooplankton_equation_growth = suppressWarnings(as.numeric(zooplankton_equation_growth)),
     zooplankton_equation_mortality = suppressWarnings(as.numeric(zooplankton_equation_mortality)),
-    zooplankton_equation_mixing = suppressWarnings(as.numeric(zooplankton_equation_mixing)),
     llm = as.character(llm),
     llm_short = short_llm(llm),
     Population = as.character(Population),
@@ -1010,8 +1006,7 @@ mechanism_cols <- c(
   "phytoplankton_equation_mortality",
   "phytoplankton_equation_mixing",
   "zooplankton_equation_growth",
-  "zooplankton_equation_mortality",
-  "zooplankton_equation_mixing"
+  "zooplankton_equation_mortality"
 )
 mechanism_cols <- mechanism_cols[mechanism_cols %in% colnames(summary_df)]
 
@@ -1317,8 +1312,7 @@ if (!exists("mechanism_cols")) {
     "phytoplankton_equation_mortality",
     "phytoplankton_equation_mixing",
     "zooplankton_equation_growth",
-    "zooplankton_equation_mortality",
-    "zooplankton_equation_mixing"
+    "zooplankton_equation_mortality"
   )
   mechanism_cols <- mechanism_cols[mechanism_cols %in% colnames(ecology_all)]
 }
@@ -1481,7 +1475,7 @@ p_mech_dist_cat_fixed <- ggplot(
     alpha = 0,
     show.legend = TRUE
   ) +
-  facet_wrap(~mechanism, scales = "free_y", ncol = 4,
+  facet_wrap(~mechanism, scales = "free_y", ncol = 3,
            labeller = labeller(mechanism = ~stringr::str_to_sentence(gsub("_", " ", gsub("equation", "-", .))))) +
   scale_fill_manual(values = llm_cols, name = "LLM", drop = FALSE) +
   scale_shape_manual(
@@ -1496,20 +1490,22 @@ p_mech_dist_cat_fixed <- ggplot(
   ) +
   theme_classic() +
   theme(
-    legend.position = c(0.85, -0.04),
-    legend.justification = c(1, 0),
+    legend.position = "bottom",
+    legend.justification = "center", # optional: center the box at the bottom
     legend.background = element_rect(fill = "white", color = "white"),
     legend.box.background = element_rect(fill = "white", color = NA),
-    legend.direction = "vertical",
-    legend.box = "vertical",
+    legend.direction = "horizontal", # legend keys flow horizontally
+    legend.box = "horizontal", # multiple legends placed side-by-side
     strip.text = element_text(size = 10),
     axis.text.x = element_text(angle = 30, hjust = 1),
-    strip.background = element_blank()
+    strip.background = element_blank(),
+    legend.spacing.x = unit(0.3, "cm"), # optional: spacing between keys
+    legend.key.width = unit(1.2, "lines") # optional: widen keys if needed
   ) +
-  guides(
-    fill = guide_legend(order = 1, title = "LLM", ncol = 1),
-    shape = guide_legend(order = 2, title = NULL, ncol = 1)
-  )
+    guides(
+      fill  = guide_legend(order = 1, title = "LLM", nrow = 1, byrow = TRUE),
+      shape = guide_legend(order = 2, title = NULL, nrow = 1, byrow = TRUE)
+    )
 
 # Save
 fig_dir <- "Figures"

@@ -1,0 +1,1328 @@
+Warning: Input is not a terminal (fd=4).
+Skipping POPULATIONS/POPULATION_0002/INDIVIDUAL_UWK0NDLE/model.cpp that matches gitignore spec.
+Skipping POPULATIONS/POPULATION_0002/INDIVIDUAL_UWK0NDLE/parameters.json that matches gitignore spec.
+Skipping POPULATIONS/POPULATION_0002/INDIVIDUAL_UWK0NDLE/intention.txt that matches gitignore spec.
+Creating empty file POPULATIONS/POPULATION_0002/INDIVIDUAL_UWK0NDLE/intention.txt
+I understand the request.                                                                                                                                                                                                                               
+
+ 1 Are code changes needed? Yes.                                                                                                                                                                                                                        
+
+ • The current model likely underestimates the speed/strength of the COTS crash phase after outbreaks because starvation-driven mortality is modeled as a linear function of food scarcity. This can delay the bust and produce positive post-peak      
+   residuals. I propose adding a non-linear starvation mortality exponent (starvation_nu) so mortality increases super-linearly as food availability declines, better capturing abrupt collapse.                                                        
+ • There is also a structural inconsistency: m_C has an extremely tight [2.56, 2.56] bound in parameters.json but the model.cpp penalizes m_C above 2.0. I loosen m_C bounds in both files to be consistent and to allow estimation while centering     
+   around the literature value.                                                                                                                                                                                                                         
+
+ 2 Explanation of changes                                                                                                                                                                                                                               
+
+ • Added a new parameter starvation_nu (dimensionless, >=1) that shapes how strongly mortality scales with food scarcity: percap_mort = m_C * [1 + starvation_scale * (1 - food_avail)^starvation_nu]. This amplifies mortality when food_avail is low, 
+   promoting rapid busts post-peak without changing outbreak thresholds already governed by the Hill response on food.                                                                                                                                  
+ • Adjusted the soft bound penalty for m_C to [0, 5] in model.cpp and aligned parameters.json bounds accordingly. This removes a penalty forcing m_C < 2.0 while the literature value is 2.56.                                                          
+ • Documentation and comments updated to reflect the change.                                                                                                                                                                                            
+ • No data leakage was introduced; all dynamics continue to use t-1 state/driver values only.                                                                                                                                                           
+
+ 3 Updated files follow.                                                                                                                                                                                                                                
+
+POPULATIONS/POPULATION_0002/INDIVIDUAL_UWK0NDLE/intention.txt                                                                                                                                                                                           
+
+                                                                                                                                                                                                                                                        
+ @@ -0,0 +1,44 @@                                                                                                                                                                                                                                       
+ +Assessment, gaps, and proposed improvement                                                                                                                                                                                                            
+ +                                                                                                                                                                                                                                                      
+ +Fit assessment (using structure + expected residual patterns)                                                                                                                                                                                         
+ +- Residuals file was not provided here, so the following is based on structural expectations and common misfits in COTS outbreak models.                                                                                                              
+ +- The process model contains strong positive feedbacks for growth (Hill-type food availability, thermal performance, Allee effect) and a linear starvation penalty on mortality. This combination often produces:                                     
+ +  - Good outbreak initiation timing when food_hill_nu is moderately high.                                                                                                                                                                             
+ +  - Slower-than-observed collapses post-peak because mortality increases only linearly with scarcity, leading to positive residuals after outbreak peaks (observed > predicted crash rate).                                                           
+ +  - Potential over-removal of coral in a single step when predator densities are high because consumption scales linearly with available coral in the current formulation; however, the current soft penalties may partially mask this.               
+ +                                                                                                                                                                                                                                                      
+ +Project-context alignment                                                                                                                                                                                                                             
+ +- The model already targets boom-bust cycles with:                                                                                                                                                                                                    
+ +  - Resource limitation via food availability and carrying capacity K_eff.                                                                                                                                                                            
+ +  - A threshold-like recruitment efficiency through a Hill function (food_hill_nu).                                                                                                                                                                   
+ +  - A temperature modifier on reproduction (Gaussian TPC).                                                                                                                                                                                            
+ +  - An Allee effect.                                                                                                                                                                                                                                  
+ +- These are appropriate for capturing outbreak triggers. Where it can fall short is the abrupt nature of the bust, which in reality can be rapid once coral prey are depleted.                                                                        
+ +                                                                                                                                                                                                                                                      
+ +Key processes potentially missing or oversimplified                                                                                                                                                                                                   
+ +- Starvation/disease-driven collapses: Currently scaled linearly with (1 - food_avail). Empirically, once preferred coral depletes, mortality escalates sharply; a super-linear response is ecologically justified.                                   
+ +- Handling-time-limited consumption on corals (Holling II/III at the prey level): Current predation on coral is linear in A_prop and S_prop and could exceed biologically plausible annual removal without saturation. This can produce unrealistical 
+ fast coral loss in some fits.                                                                                                                                                                                                                          
+ +- Stage structure and time lags: Not represented; recruitment from consumption is effectively a one-year lag via t-1 states, which is reasonable but simplified relative to multi-year maturation.                                                    
+ +- External nutrient pulses: Not represented due to lack of an input driver.                                                                                                                                                                           
+ +                                                                                                                                                                                                                                                      
+ +Parameter review and inconsistencies                                                                                                                                                                                                                  
+ +- m_C (COTS baseline adult mortality) is 2.56 year^-1 in parameters.json, but model.cpp penalizes m_C > 2.0, creating a structural conflict. This likely biases the fit and should be reconciled. I broaden m_C bounds in both places to [0,5],       
+ centering inference around the literature value rather than penalizing it.                                                                                                                                                                             
+ +- Several parameters marked as “initial estimate” (e.g., k_bleach, H_half, K_food) appear plausible; without new evidence here, I leave them unchanged.                                                                                               
+ +                                                                                                                                                                                                                                                      
+ +Chosen ecological improvement: nonlinear starvation mortality (environmental modifier of processes)                                                                                                                                                   
+ +- Rationale: To reproduce sharp outbreak collapses once prey becomes scarce, starvation/disease/malnutrition mortality should escalate nonlinearly with scarcity. This is parsimonious (one new parameter), ecologically motivated, and directly      
+ targets the most common boom-bust misfit.                                                                                                                                                                                                              
+ +- Mathematical change:                                                                                                                                                                                                                                
+ +  - Old: percap_mort = m_C * (1 + starvation_scale * (1 - food_avail))                                                                                                                                                                                
+ +  - New: percap_mort = m_C * (1 + starvation_scale * (max(0, 1 - food_avail))^{starvation_nu})                                                                                                                                                        
+ +  - We implement this in a numerically stable, AD-safe way using exp(starvation_nu * log(scarcity + eps)).                                                                                                                                            
+ +- Expected effect on residuals:                                                                                                                                                                                                                       
+ +  - Reduces post-peak positive residuals for COTS by producing faster, stronger crashes as coral depletes.                                                                                                                                            
+ +  - Has minimal effect during outbreak buildup (food_avail near 1) and at low densities (due to Allee limitation), preserving outbreak onset dynamics.                                                                                                
+ +                                                                                                                                                                                                                                                      
+ +Other structural notes (left unchanged for now)                                                                                                                                                                                                       
+ +- Coral predation remains linear in A_prop/S_prop; if residuals show over-removal of coral or poor coral recovery dynamics, consider a Holling-II saturation at the prey level in a subsequent iteration.                                             
+ +- No data leakage is introduced; all t predictions use only t-1 states/drivers.                                                                                                                                                                       
+ +                                                                                                                                                                                                                                                      
+ +Parameter changes                                                                                                                                                                                                                                     
+ +- Added starvation_nu (dimensionless, lower bound 1, upper bound 5). This governs the curvature of starvation mortality with scarcity and should be identifiable from post-peak dynamics.                                                             
+ +- Broadened bounds for m_C to [0,5] to align with literature value 2.56 and remove conflicting penalties.                                                                                                                                             
+                                                                                                                                                                                                                                                        
+
+POPULATIONS/POPULATION_0002/INDIVIDUAL_UWK0NDLE/parameters.json                                                                                                                                                                                         
+
+                                                                                                                                                                                                                                                        
+ @@ -2,5 +2,6 @@                                                                                                                                                                                                                                        
+      "parameters": [                                                                                                                                                                                                                                   
+              "description": "Baseline adult COTS mortality rate (in absence of starvation)",                                                                                                                                                           
+              "source": "literature",                                                                                                                                                                                                                   
+              "import_type": "PARAMETER",                                                                                                                                                                                                               
+              "priority": 2,                                                                                                                                                                                                                            
+ -            "lower_bound": 2.56,                                                                                                                                                                                                                      
+ -            "upper_bound": 2.5600000025600003,                                                                                                                                                                                                        
+ -            "enhanced_semantic_description": "Baseline annual mortality rate of adult COTS without starvation effects",                                                                                                                               
+ -            "updated_from_literature": false,                                                                                                                                                                                                         
+ -            "updated_fields_from_literature": []                                                                                                                                                                                                      
+ -        },                                                                                                                                                                                                                                            
+ -        {                                                                                                                                                                                                                                             
+ -            "parameter": "starvation_scale",                                                                                                                                                                                                          
+ -            "value": 1.0,                                                                                                                                                                                                                             
+ -            "units": "dimensionless",                                                                                                                                                                                                                 
+ -            "description": "Multiplier for added mortality when resources are scarce (1 - food availability)",                                                                                                                                        
+ -            "source": "initial estimate",                                                                                                                                                                                                             
+ -            "import_type": "PARAMETER",                                                                                                                                                                                                               
+ -            "priority": 3,                                                                                                                                                                                                                            
+              "lower_bound": 0.0,                                                                                                                                                                                                                       
+              "upper_bound": 5.0,                                                                                                                                                                                                                       
+ -            "enhanced_semantic_description": "Mortality multiplier scaling added COTS death under resource scarcity",                                                                                                                                 
+ -            "updated_from_literature": false,                                                                                                                                                                                                         
+ -            "updated_fields_from_literature": []                                                                                                                                                                                                      
+ +            "enhanced_semantic_description": "Baseline annual mortality rate of adult COTS without starvation effects",                                                                                                                               
+ +            "updated_from_literature": true,                                                                                                                                                                                                          
+          {                                                                                                                                                                                                                                             
+ -            "parameter": "K_C",                                                                                                                                                                                                                       
+ -            "value": 3.0,                                                                                                                                                                                                                             
+ -            "units": "indiv m^-2",                                                                                                                                                                                                                    
+ -            "description": "Baseline carrying capacity scaling for COTS, modulated by food availability",                                                                                                                                             
+ -            "source": "initial estimate",                                                                                                                                                                                                             
+ -            "import_type": "PARAMETER",                                                                                                                                                                                                               
+ -            "priority": 2,                                                                                                                                                                                                                            
+ -            "lower_bound": 0.05,                                                                                                                                                                                                                      
+ -            "upper_bound": 10.0,                                                                                                                                                                                                                      
+ -            "enhanced_semantic_description": "Baseline carrying capacity scaling factor for COTS population density (indiv/m\u00b2)",                                                                                                                 
+ -            "updated_from_literature": false,                                                                                                                                                                                                         
+ -            "updated_fields_from_literature": []                                                                                                                                                                                                      
+ -        },                                                                                                                                                                                                                                            
+ -        {                                                                                                                                                                                                                                             
+ -            "parameter": "phi_A",                                                                                                                                                                                                                     
+ -            "value": 1.0,                                                                                                                                                                                                                             
+ +            "parameter": "starvation_nu",                                                                                                                                                                                                             
+ +            "value": 2.0,                                                                                                                                                                                                                             
+              "units": "dimensionless",                                                                                                                                                                                                                 
+ -            "description": "Weight of Acropora cover in determining COTS resource availability/capacity",                                                                                                                                             
+ -            "source": "literature",                                                                                                                                                                                                                   
+ -            "import_type": "PARAMETER",                                                                                                                                                                                                               
+ -            "priority": 2,                                                                                                                                                                                                                            
+ -            "lower_bound": 0.0,                                                                                                                                                                                                                       
+ -            "upper_bound": 5.0,                                                                                                                                                                                                                       
+ -            "enhanced_semantic_description": "Relative contribution weight of Acropora coral to COTS food availability",                                                                                                                              
+ -            "updated_from_literature": false,                                                                                                                                                                                                         
+ -            "updated_fields_from_literature": []                                                                                                                                                                                                      
+ -        },                                                                                                                                                                                                                                            
+ -        {                                                                                                                                                                                                                                             
+ -            "parameter": "phi_S",                                                                                                                                                                                                                     
+ -            "value": 0.3,                                                                                                                                                                                                                             
+ -            "units": "dimensionless",                                                                                                                                                                                                                 
+ -            "description": "Weight of massive coral cover in determining COTS resource availability/capacity",                                                                                                                                        
+ -            "source": "literature",                                                                                                                                                                                                                   
+ -            "import_type": "PARAMETER",                                                                                                                                                                                                               
+ -            "priority": 3,                                                                                                                                                                                                                            
+ -            "lower_bound": 0.0,                                                                                                                                                                                                                       
+ -            "upper_bound": 5.0,                                                                                                                                                                                                                       
+ -            "enhanced_semantic_description": "Relative contribution weight of massive corals to COTS food availability",                                                                                                                              
+ -            "updated_from_literature": false,                                                                                                                                                                                                         
+ -            "updated_fields_from_literature": []                                                                                                                                                                                                      
+ -        },                                                                                                                                                                                                                                            
+ -        {                                                                                                                                                                                                                                             
+ -            "parameter": "K_food",                                                                                                                                                                                                                    
+ -            "value": 0.2,                                                                                                                                                                                                                             
+ -            "units": "proportion",                                                                                                                                                                                                                    
+ -            "description": "Half-saturation scale for food/carrying capacity saturation function",                                                                                                                                                    
+ -            "source": "initial estimate",                                                                                                                                                                                                             
+ -            "import_type": "PARAMETER",                                                                                                                                                                                                               
+ -            "priority": 3,                                                                                                                                                                                                                            
+ -            "lower_bound": 0.01,                                                                                                                                                                                                                      
+ -            "upper_bound": 2.0,                                                                                                                                                                                                                       
+ -            "enhanced_semantic_description": "Half-saturation constant for food availability saturation function (proportion)",                                                                                                                       
+ -            "updated_from_literature": false,                                                                                                                                                                                                         
+ -            "updated_fields_from_literature": []                                                                                                                                                                                                      
+ -        },                                                                                                                                                                                                                                            
+ -        {                                                                                                                                                                                                                                             
+ -            "parameter": "food_hill_nu",                                                                                                                                                                                                              
+ -            "value": 3.0,                                                                                                                                                                                                                             
+ -            "units": "dimensionless",                                                                                                                                                                                                                 
+ -            "description": "Hill exponent for food availability saturation (controls outbreak threshold behavior)",                                                                                                                                   
+ +            "description": "Exponent shaping how sharply starvation mortality increases as food availability declines",                                                                                                                               
+              "source": "conceptual improvement",                                                                                                                                                                                                       
+              "import_type": "PARAMETER",                                                                                                                                                                                                               
+              "priority": 2,                                                                                                                                                                                                                            
+              "lower_bound": 1.0,                                                                                                                                                                                                                       
+              "upper_bound": 5.0,                                                                                                                                                                                                                       
+ +            "enhanced_semantic_description": "Curvature parameter for starvation/disease mortality with resource scarcity; values >1 yield super-linear increases driving rapid post-peak collapses",                                                 
+ +    Type percap_mort = m_C * (Type(1.0) + starvation_scale * scarcity_nu); // year^-1                                                                                                                                                                 
+                                                                                                                                                                                                                                                        
+      Type C_next_core = C_prev * exp(percap_growth - percap_mort) + rec_from_food + imm_to_adults; // indiv m^-2                                                                                                                                       
+      Type C_next = softplus(C_next_core); // ensure positivity smoothly                                                                                                                                                                                
+                                                                                                                                                                                                                                                        
+      // Assign predictions                                                                                                                                                                                                                             
+      fast_pred(t) = A_next_pct;                                                                                                                                                                                                                        
+      slow_pred(t) = S_next_pct;                                                                                                                                                                                                                        
+     R_food,t = gamma_A * pred_A,t + gamma_S * pred_S,t                                                                                                                                                                                                 
+     R_imm,t = imm_surv * cotsimm_dat(t-1)                                                                                                                                                                                                              
+                                                                                                                                                                                                                                                        
+  10) COTS dynamics (indiv m^-2):                                                                                                                                                                                                                       
+ -    C_t = softplus( C_{t-1} * exp( rC_allee,t * TPC_t * Food_t * (1 - C_{t-1}/K_eff,t)                                                                                                                                                                
+ -                                   - m_C*(1 + starvation_scale*(1 - Food_t)) )                                                                                                                                                                        
+ +    Growth_t = rC_allee,t * TPC_t * Food_t * (1 - C_{t-1}/K_eff,t)                                                                                                                                                                                    
+ +    Mort_t   = m_C * (1 + starvation_scale * max(0, 1 - Food_t)^{starvation_nu})                                                                                                                                                                      
+ +    C_t = softplus( C_{t-1} * exp( Growth_t - Mort_t )                                                                                                                                                                                                
+                      + R_food,t + R_imm,t )                                                                                                                                                                                                            
+                                                                                                                                                                                                                                                        
+  Observation models:                                                                                                                                                                                                                                   
+  11) log(cots_dat) ~ Normal(log(cots_pred), obs_sd_cots_ln)                                                                                                                                                                                            
+  12) fast_dat(%)  ~ Normal(fast_pred(%),  obs_sd_fast)                                                                                                                                                                                                 
+                                                                                                                                                                                                                                                        
+
+Tokens: 10k sent, 11k received. Cost: $0.12 message, $0.12 session.
+Committing POPULATIONS/POPULATION_0002/INDIVIDUAL_UWK0NDLE/intention.txt before applying edits.
+Committing POPULATIONS/POPULATION_0002/INDIVIDUAL_UWK0NDLE/parameters.json before applying edits.
+Committing POPULATIONS/POPULATION_0002/INDIVIDUAL_UWK0NDLE/model.cpp before applying edits.
+Unable to add /home/spi085/Documents/_Projects/EMs-with-LLMs/POPULATIONS/POPULATION_0002/INDIVIDUAL_UWK0NDLE/model.cpp: Cmd('git') failed due to: exit code(1)
+  cmdline: git add /home/spi085/Documents/_Projects/EMs-with-LLMs/POPULATIONS/POPULATION_0002/INDIVIDUAL_UWK0NDLE/model.cpp
+  stderr: 'The following paths are ignored by one of your .gitignore files:
+POPULATIONS
+hint: Use -f if you really want to add them.
+hint: Turn this message off by running
+hint: "git config advice.addIgnoredFile false"'
+Unable to add /home/spi085/Documents/_Projects/EMs-with-LLMs/POPULATIONS/POPULATION_0002/INDIVIDUAL_UWK0NDLE/parameters.json: Cmd('git') failed due to: exit code(1)
+  cmdline: git add /home/spi085/Documents/_Projects/EMs-with-LLMs/POPULATIONS/POPULATION_0002/INDIVIDUAL_UWK0NDLE/parameters.json
+  stderr: 'The following paths are ignored by one of your .gitignore files:
+POPULATIONS
+hint: Use -f if you really want to add them.
+hint: Turn this message off by running
+hint: "git config advice.addIgnoredFile false"'
+Unable to add /home/spi085/Documents/_Projects/EMs-with-LLMs/POPULATIONS/POPULATION_0002/INDIVIDUAL_UWK0NDLE/intention.txt: Cmd('git') failed due to: exit code(1)
+  cmdline: git add /home/spi085/Documents/_Projects/EMs-with-LLMs/POPULATIONS/POPULATION_0002/INDIVIDUAL_UWK0NDLE/intention.txt
+  stderr: 'The following paths are ignored by one of your .gitignore files:
+POPULATIONS
+hint: Use -f if you really want to add them.
+hint: Turn this message off by running
+hint: "git config advice.addIgnoredFile false"'
+Unable to commit: Cmd('git') failed due to: exit code(1)
+  cmdline: git commit -m feat: Add individual UWK0NDLE for POPULATION_0002 with model/params --no-verify -- /home/spi085/Documents/_Projects/EMs-with-LLMs/POPULATIONS/POPULATION_0002/INDIVIDUAL_UWK0NDLE/model.cpp 
+/home/spi085/Documents/_Projects/EMs-with-LLMs/POPULATIONS/POPULATION_0002/INDIVIDUAL_UWK0NDLE/parameters.json /home/spi085/Documents/_Projects/EMs-with-LLMs/POPULATIONS/POPULATION_0002/INDIVIDUAL_UWK0NDLE/intention.txt
+  stderr: 'error: pathspec '/home/spi085/Documents/_Projects/EMs-with-LLMs/POPULATIONS/POPULATION_0002/INDIVIDUAL_UWK0NDLE/model.cpp' did not match any file(s) known to git
+error: pathspec '/home/spi085/Documents/_Projects/EMs-with-LLMs/POPULATIONS/POPULATION_0002/INDIVIDUAL_UWK0NDLE/parameters.json' did not match any file(s) known to git
+error: pathspec '/home/spi085/Documents/_Projects/EMs-with-LLMs/POPULATIONS/POPULATION_0002/INDIVIDUAL_UWK0NDLE/intention.txt' did not match any file(s) known to git'
+Applied edit to POPULATIONS/POPULATION_0002/INDIVIDUAL_UWK0NDLE/model.cpp
+Applied edit to POPULATIONS/POPULATION_0002/INDIVIDUAL_UWK0NDLE/parameters.json
+Applied edit to POPULATIONS/POPULATION_0002/INDIVIDUAL_UWK0NDLE/intention.txt
+Improved existing model in individual: POPULATIONS/POPULATION_0002/INDIVIDUAL_UWK0NDLE
+Validating model for data leakage...
+Opening file: POPULATIONS/POPULATION_0002/INDIVIDUAL_UWK0NDLE/model.cpp
+File read successfully
+TMB convention check: {'uses_tmb_header': True, 'uses_data_macros': True, 'uses_vector_type': True, 'uses_standard_report': True, 'uses_objective_function': True, 'uses_std_vector': False, 'uses_string_report': False}
+Extracting vectors...
+Found data vectors: {'sst_dat', 'cotsimm_dat', 'fast_dat', 'cots_dat', 'Year', 'slow_dat'}
+Found prediction vectors: {'slow_pred', 'fast_pred', 'cots_pred'}
+Found reported vectors: {'slow_pred', 'fast_pred', 'cots_pred'}
+Finding initial conditions...
+Found 5 initial conditions
+Finding time-stepping loop...
+Found loop from line 186 to 265
+Looking for metadata file at: /home/spi085/Documents/_Projects/EMs-with-LLMs/POPULATIONS/POPULATION_0002/population_metadata.json
+Attempting to read CSV file: /home/spi085/Documents/_Projects/EMs-with-LLMs/Data/timeseries_data_COTS_response.csv
+Successfully read CSV file with 4 columns
+Found response variables from /home/spi085/Documents/_Projects/EMs-with-LLMs/Data/timeseries_data_COTS_response.csv: {'cots_dat', 'fast_dat', 'slow_dat'}
+[93m[PID 2509594] Running model for individual...[0m
+[0m[PID 2509594] Individual directory: POPULATIONS/POPULATION_0002/INDIVIDUAL_UWK0NDLE[0m
+[96m[PID 2509594] Launching Rscript... (timeout=none)[0m
+[93m[PID 2509594] R script stdout BEGIN >>>[0m
+[0mg++ -std=gnu++17 -I"/usr/share/R/include" -DNDEBUG -I"/home/spi085/R/x86_64-pc-linux-gnu-library/4.4/TMB/include" -I"/home/spi085/R/x86_64-pc-linux-gnu-library/4.4/RcppEigen/include"   -DTMB_EIGEN_DISABLE_WARNINGS   -DTMB_LIB_INIT=R_init_model  -DCPPAD_FRAMEWORK      -fpic  -O2  -c POPULATIONS/POPULATION_0002/INDIVIDUAL_UWK0NDLE/model.cpp -o POPULATIONS/POPULATION_0002/INDIVIDUAL_UWK0NDLE/model.o
+g++ -std=gnu++17 -shared -L/usr/lib/R/lib -Wl,-Bsymbolic-functions -flto=auto -ffat-lto-objects -Wl,-z,relro -o POPULATIONS/POPULATION_0002/INDIVIDUAL_UWK0NDLE/model.so POPULATIONS/POPULATION_0002/INDIVIDUAL_UWK0NDLE/model.o -L/usr/lib/R/lib -lR
+
+NA counts per required column:
+       Year    cots_dat    fast_dat    slow_dat     sst_dat cotsimm_dat 
+          0           0           0           0           0           0 
+
+Out-of-range checks:
+Any cots_dat < 0?  FALSE 
+Any fast_dat outside [0,100]?  FALSE 
+Any slow_dat outside [0,100]?  FALSE 
+
+PARAMETER starts (first few):
+       r_A        r_S        m_A        m_S        b_A        b_S   T_bleach 
+      0.50       0.20       0.10       0.05       0.30       0.15      29.50 
+  k_bleach c_attack_A c_attack_S     H_half        r_C 
+      1.00       1.20       0.40       0.80       1.20 
+Starting model phases
+Number of phases: 4 
+Phase 1 
+Initial parameter values for phase 1 :
+           r_A       T_bleach     c_attack_A            r_C        gamma_A 
+          0.50          29.50           1.20           1.20           0.80 
+      imm_surv obs_sd_cots_ln 
+          0.50           0.25 
+Final parameter values for phase 1 :
+           r_A       T_bleach     c_attack_A            r_C        gamma_A 
+      1.046853      29.105970       1.219563       0.000000       0.000000 
+      imm_surv obs_sd_cots_ln 
+      1.000000       0.010000 
+Convergence message: relative convergence (4) 
+Number of iterations: 22 
+Objective function value: 2288.913 
+Gradient at solution for phase 1 :
+              [,1]          [,2]         [,3]     [,4]     [,5]      [,6]
+[1,] -3.926193e-05 -6.837296e-07 5.774948e-05 7.173339 71.62757 -174.7034
+         [,7]
+[1,] 6.482698
+Phase 2 
+Initial parameter values for phase 2 :
+          r_S           m_A           b_A    c_attack_S        H_half 
+         0.20          0.10          0.30          0.40          0.80 
+          m_C starvation_nu           K_C         phi_A  food_hill_nu 
+         2.56          2.00          3.00          1.00          3.00 
+       Topt_C       gamma_S   obs_sd_fast   obs_sd_slow 
+        28.50          0.20          0.20          0.20 
+Final parameter values for phase 2 :
+          r_S           m_A           b_A    c_attack_S        H_half 
+   0.21144728    0.01067072    0.56023306    0.20127306    1.02693312 
+          m_C starvation_nu           K_C         phi_A  food_hill_nu 
+   2.51001868    1.99995983    3.00202970    0.97426697    3.00073013 
+       Topt_C       gamma_S   obs_sd_fast   obs_sd_slow 
+  28.49923796    0.25995715    1.74272391    1.23437576 
+Convergence message: iteration limit reached without convergence (10) 
+Number of iterations: 150 
+Objective function value: 282.4915 
+Gradient at solution for phase 2 :
+          [,1]      [,2]     [,3]     [,4]     [,5]     [,6]      [,7]
+[1,] -168.1014 -98.01324 -73.4183 113.2435 27.01977 3.358356 -0.322249
+            [,8]       [,9]      [,10]      [,11]     [,12]     [,13]     [,14]
+[1,] -0.04872777 -0.5265972 -0.1901186 0.01829533 -0.571521 -98.51938 -33.80373
+Phase 3 
+Initial parameter values for phase 3 :
+             m_S              b_S starvation_scale            phi_S 
+            0.05             0.15             1.00             0.30 
+          K_food        sigma_T_C           Alee_C 
+            0.20             1.50             0.10 
+Final parameter values for phase 3 :
+             m_S              b_S starvation_scale            phi_S 
+      0.01101386       0.26354688       2.70200769       0.00000000 
+          K_food        sigma_T_C           Alee_C 
+      0.15538518       2.54983845       1.00013903 
+Convergence message: relative convergence (4) 
+Number of iterations: 91 
+Objective function value: 271.524 
+Gradient at solution for phase 3 :
+            [,1]         [,2]         [,3]     [,4]         [,5]          [,6]
+[1,] -0.00292864 0.0004356568 -5.89923e-06 1.330769 -0.000331893 -2.362774e-05
+            [,7]
+[1,] 5.46712e-05
+Phase 4 
+Initial parameter values for phase 4 :
+k_bleach    K_tot 
+     1.0      0.8 
+Final parameter values for phase 4 :
+ k_bleach     K_tot 
+1.1099670 0.7840887 
+Convergence message: relative convergence (4) 
+Number of iterations: 12 
+Objective function value: 268.7025 
+Gradient at solution for phase 4 :
+              [,1]          [,2]
+[1,] -1.375209e-05 -6.116814e-05
+Final Phase
+Initial parameter values for final phase:
+             r_A              r_S              m_A              m_S 
+      1.04685334       0.21144728       0.01067072       0.01101386 
+             b_A              b_S         T_bleach         k_bleach 
+      0.56023306       0.26354688      29.10597006       1.10996700 
+      c_attack_A       c_attack_S           H_half              r_C 
+      1.21956337       0.20127306       1.02693312       0.00000000 
+             m_C starvation_scale    starvation_nu              K_C 
+      2.51001868       2.70200769       1.99995983       3.00202970 
+           phi_A            phi_S           K_food     food_hill_nu 
+      0.97426697       0.00000000       0.15538518       3.00073013 
+          Topt_C        sigma_T_C           Alee_C          gamma_A 
+     28.49923796       2.54983845       1.00013903       0.00000000 
+         gamma_S         imm_surv            K_tot   obs_sd_cots_ln 
+      0.25995715       1.00000000       0.78408870       0.01000000 
+     obs_sd_fast      obs_sd_slow 
+      1.74272391       1.23437576 
+Final parameter values for final phase:
+             r_A              r_S              m_A              m_S 
+    1.414586e+00     2.183989e-01     2.186855e-03     7.295937e-04 
+             b_A              b_S         T_bleach         k_bleach 
+    6.996581e-01     3.011009e-01     2.936269e+01     1.579524e+00 
+      c_attack_A       c_attack_S           H_half              r_C 
+    1.641411e+00     2.802983e-01     7.800191e-01     9.186686e-02 
+             m_C starvation_scale    starvation_nu              K_C 
+    2.476384e+00     2.697441e+00     2.048089e+00     3.009562e+00 
+           phi_A            phi_S           K_food     food_hill_nu 
+    1.060176e+00     1.168813e-01     1.023128e-02     3.000807e+00 
+          Topt_C        sigma_T_C           Alee_C          gamma_A 
+    2.849243e+01     2.548770e+00     1.000272e+00     8.174279e-02 
+         gamma_S         imm_surv            K_tot   obs_sd_cots_ln 
+    3.251434e-01     1.000000e+00     1.000000e+00     1.000000e-02 
+     obs_sd_fast      obs_sd_slow 
+    3.595058e+00     2.130151e+00 
+Convergence message: iteration limit reached without convergence (10) 
+Number of iterations: 150 
+Objective function value: 177.7728 
+Gradient at solution for final phase:
+        [,1]     [,2]      [,3]     [,4]      [,5]     [,6]      [,7]
+[1,] 9.50865 -3.98945 -7.210007 15.15261 -2.072937 3.641574 0.1406037
+            [,8]      [,9]     [,10]     [,11]     [,12]      [,13]      [,14]
+[1,] -0.05270672 -7.104018 -3.314478 -1.817533 -0.376857 -0.2555052 0.01634961
+          [,15]       [,16]      [,17]      [,18]     [,19]       [,20]
+[1,] -0.1761049 -0.05376149 -0.1602114 -0.1722803 -11.67909 0.009339246
+          [,21]       [,22]        [,23]    [,24]    [,25]     [,26]     [,27]
+[1,] 0.01655237 0.001851344 -0.008734156 1.204855 -0.29188 -3.445339 -6.711976
+        [,28]     [,29]     [,30]
+[1,] 5.721554 -5.013627 -1.050261
+All phases completed
+Successfully updated parameters_metadata.json with optimized values
+[1] "Train test split:"
+[1] 1
+
+Running model validation...
+No test data available (train_test_split >= 1.0)
+NULL
+
+DEBUG: Report contents:
+List of 3
+ $ cots_pred: num [1:26] 0.262 0.706 0.733 0.735 0.734 ...
+ $ fast_pred: num [1:26] 10.1 18.8 21.4 19 22.6 ...
+ $ slow_pred: num [1:26] 12.8 14.2 14.1 12.7 12.9 ...
+NULL
+
+DEBUG: Available variables in report:
+[1] "cots_pred" "fast_pred" "slow_pred"
+
+Checking predictions and calculating objective function...
+
+DEBUG: Processing cots_pred 
+DEBUG: First few predictions: 0.2615042 0.7056748 0.7330339 0.7354576 0.7339104 0.7356298 
+DEBUG: Summary statistics:
+   Min. 1st Qu.  Median    Mean 3rd Qu.    Max. 
+ 0.2615  0.7278  0.7326  0.8170  0.7368  1.8526 
+DEBUG: All zeros? FALSE 
+DEBUG: Any infinities? FALSE 
+
+DEBUG: Processing fast_pred 
+DEBUG: First few predictions: 10.06939 18.7987 21.44394 18.99519 22.62762 24.95794 
+DEBUG: Summary statistics:
+   Min. 1st Qu.  Median    Mean 3rd Qu.    Max. 
+ 0.5755  9.2155 14.0575 15.2028 22.3317 31.6279 
+DEBUG: All zeros? FALSE 
+DEBUG: Any infinities? FALSE 
+
+DEBUG: Processing slow_pred 
+DEBUG: First few predictions: 12.77261 14.24324 14.1173 12.69628 12.90419 12.81315 
+DEBUG: Summary statistics:
+   Min. 1st Qu.  Median    Mean 3rd Qu.    Max. 
+  3.106   4.838  10.342   9.270  12.224  14.243 
+DEBUG: All zeros? FALSE 
+DEBUG: Any infinities? FALSE 
+
+DEBUG: Using the following variables for objective function:
+cots_dat -> cots_pred
+fast_dat -> fast_pred
+slow_dat -> slow_pred
+
+DEBUG: Calculating MSE for prediction variables only:
+
+DEBUG: cots_pred 
+Observed: 0.2615042 0.5498196 0.7268086 0.5522907 0.828121 0.5470078 ...
+Predicted: 0.2615042 0.7056748 0.7330339 0.7354576 0.7339104 0.7356298 ...
+MSE (normalized): 1.238822 
+
+DEBUG: fast_pred 
+Observed: 10.06939 17.72357 23.82758 19.41812 15.63542 32.45961 ...
+Predicted: 10.06939 18.7987 21.44394 18.99519 22.62762 24.95794 ...
+MSE (normalized): 0.2189819 
+
+DEBUG: slow_pred 
+Observed: 12.77261 16.41474 12.77729 12.27975 15.11516 12.81941 ...
+Predicted: 12.77261 14.24324 14.1173 12.69628 12.90419 12.81315 ...
+MSE (normalized): 0.2477088 
+
+DEBUG: MSE values:
+ cots_dat  fast_dat  slow_dat 
+1.2388224 0.2189819 0.2477088 
+
+DEBUG: Final objective value (mean of MSEs): 0.5685044 
+
+Final objective function value: 0.5685044 
+
+JSON_REPORT_START
+{
+  "status": "SUCCESS",
+  "objective_value": 0.5685,
+  "model_summary": ["            Length Class  Mode     ", "par         30     -none- numeric  ", "objective    1     -none- numeric  ", "convergence  1     -none- numeric  ", "iterations   1     -none- numeric  ", "evaluations  2     -none- numeric  ", "message      1     -none- character"],
+  "model_report": {
+    "cots_pred": [0.2615, 0.7057, 0.733, 0.7355, 0.7339, 0.7356, 0.7365, 0.7362, 0.7369, 0.7377, 1.7734, 0.7961, 1.8526, 1.231, 0.7557, 0.731, 0.7317, 0.7321, 0.7294, 0.6987, 0.7192, 0.7251, 0.7266, 0.7275, 0.7287, 0.7294],
+    "fast_pred": [10.0694, 18.7987, 21.4439, 18.9952, 22.6276, 24.9579, 24.6904, 27.3503, 29.387, 30.6335, 31.6279, 13.1756, 16.2912, 10.1851, 9.7254, 13.0626, 14.9393, 9.0455, 0.5755, 1.2534, 2.148, 3.4173, 5.2822, 7.96, 11.4274, 16.2016],
+    "slow_pred": [12.7726, 14.2432, 14.1173, 12.6963, 12.9042, 12.8132, 12.2141, 12.2275, 12.1923, 12.087, 11.9874, 10.6214, 10.8539, 9.947, 9.6787, 10.0616, 9.671, 7.1146, 3.1063, 3.3847, 3.6882, 3.9873, 4.2822, 4.5636, 4.7748, 5.027]
+  },
+  "plot_data": {
+    "cots_pred": {
+      "Year": [1980, 1981, 1982, 1983, 1984, 1985, 1986, 1987, 1988, 1989, 1990, 1991, 1992, 1993, 1994, 1995, 1996, 1997, 1998, 1999, 2000, 2001, 2002, 2003, 2004, 2005],
+      "Modeled": [0.2615, 0.7057, 0.733, 0.7355, 0.7339, 0.7356, 0.7365, 0.7362, 0.7369, 0.7377, 1.7734, 0.7961, 1.8526, 1.231, 0.7557, 0.731, 0.7317, 0.7321, 0.7294, 0.6987, 0.7192, 0.7251, 0.7266, 0.7275, 0.7287, 0.7294],
+      "Observed": [0.2615, 0.5498, 0.7268, 0.5523, 0.8281, 0.547, 0.758, 0.6288, 0.4762, 0.6466, 0.9107, 2.152, 0.6446, 1.6723, 0.4766, 0.8075, 0.3635, 0.3728, 0.6173, 0.3107, 0.256, 0.2984, 0.3362, 0.2878, 0.3221, 0.4308]
+    },
+    "fast_pred": {
+      "Year": [1980, 1981, 1982, 1983, 1984, 1985, 1986, 1987, 1988, 1989, 1990, 1991, 1992, 1993, 1994, 1995, 1996, 1997, 1998, 1999, 2000, 2001, 2002, 2003, 2004, 2005],
+      "Modeled": [10.0694, 18.7987, 21.4439, 18.9952, 22.6276, 24.9579, 24.6904, 27.3503, 29.387, 30.6335, 31.6279, 13.1756, 16.2912, 10.1851, 9.7254, 13.0626, 14.9393, 9.0455, 0.5755, 1.2534, 2.148, 3.4173, 5.2822, 7.96, 11.4274, 16.2016],
+      "Observed": [10.0694, 17.7236, 23.8276, 19.4181, 15.6354, 32.4596, 21.5567, 34.1938, 18.8708, 27.3176, 44.3301, 13.3275, 11.3741, 8.3362, 15.207, 12.443, 11.0666, 10.6442, 2.3628, 2.76, 3.7236, 7.0355, 10.2239, 8.4754, 9.0819, 13.7314]
+    },
+    "slow_pred": {
+      "Year": [1980, 1981, 1982, 1983, 1984, 1985, 1986, 1987, 1988, 1989, 1990, 1991, 1992, 1993, 1994, 1995, 1996, 1997, 1998, 1999, 2000, 2001, 2002, 2003, 2004, 2005],
+      "Modeled": [12.7726, 14.2432, 14.1173, 12.6963, 12.9042, 12.8132, 12.2141, 12.2275, 12.1923, 12.087, 11.9874, 10.6214, 10.8539, 9.947, 9.6787, 10.0616, 9.671, 7.1146, 3.1063, 3.3847, 3.6882, 3.9873, 4.2822, 4.5636, 4.7748, 5.027],
+      "Observed": [12.7726, 16.4147, 12.7773, 12.2798, 15.1152, 12.8194, 10.4631, 9.7251, 13.2014, 16.4512, 11.1393, 18.0832, 11.5223, 8.51, 9.1622, 5.3353, 8.6044, 7.2781, 2.629, 4.6951, 1.5948, 5.2172, 2.6041, 3.3618, 7.3289, 4.4014]
+    }
+  }
+}
+JSON_REPORT_END[0m
+[93m[PID 2509594] R script stdout END <<<[0m
+[93m[PID 2509594] R script stderr BEGIN >>>[0m
+[0mLoading required package: TMB
+Loading required package: jsonlite
+here() starts at /home/spi085/Documents/_Projects/EMs-with-LLMs
+using C++ compiler: ‘g++ (Ubuntu 13.3.0-6ubuntu2~24.04) 13.3.0’
+Warning message:
+`aes_string()` was deprecated in ggplot2 3.0.0.
+ℹ Please use tidy evaluation idioms with `aes()`.
+ℹ See also `vignette("ggplot2-in-packages")` for more information.[0m
+[93m[PID 2509594] R script stderr END <<<[0m
+[96m[PID 2509594] JSON detected, parsing...[0m
+[96m[PID 2509594] Writing model report...[0m
+[94m[PID 2509594] Objective value: 0.5685[0m
+[96m[PID 2509594] Generating plots...[0m
+[94m[PID 2509594] Objective Value: 0.5685[0m
+[92m[PID 2509594] Successful model run[0m
+[0m----------------------------------------------[0m
+MODEL RUN FINISHED
+Model run successful. Objective value: 0.5685
+Model ran successful and returned meaningful objective value... enhancing parameter descriptions.
+Enhancing parameter descriptions...
+Parameter descriptions enhanced successfully.
+Running parameter processing...
+DEBUG: get_params() called with directory_path: POPULATIONS/POPULATION_0002/INDIVIDUAL_UWK0NDLE
+DEBUG: population_dir: POPULATIONS/POPULATION_0002
+DEBUG: meta_file path: POPULATIONS/POPULATION_0002/population_metadata.json
+DEBUG: Checking if meta_file exists...
+DEBUG: meta_file exists, attempting to read...
+DEBUG: Successfully read meta_file
+DEBUG: rag_choice: gpt-4.1-mini, doc_store_dir: doc_store
+DEBUG: About to resolve model name...
+[get_params] Using model from rag_choice: 'gpt-4.1-mini' -> 'gpt-4.1-mini'
+[get_params] Using doc_store_dir: 'doc_store'
+Processing literature parameter: r_A
+Searching for r_A with query: Intrinsic annual regrowth rate of fast-growing Acropora coral
+Engine order for r_A: ['semantic_scholar', 'rag', 'serper']
+S2 Response Status Code: 200
+S2 Query: Intrinsic annual regrowth rate of fast-growing Acropora coral
+S2 Total results: 0
+No papers found.
+No search results for r_A (engine=semantic_scholar, attempt=1)
+S2 Response Status Code: 200
+S2 Query: Intrinsic annual regrowth rate of fast-growing Acropora coral
+S2 Total results: 0
+No papers found.
+No search results for r_A (engine=semantic_scholar, attempt=2)
+S2 Response Status Code: 200
+S2 Query: Intrinsic annual regrowth rate of fast-growing Acropora coral
+S2 Total results: 0
+No papers found.
+No search results for r_A (engine=semantic_scholar, attempt=3)
+Loading llama_index.core.storage.kvstore.simple_kvstore from /home/spi085/Documents/_Projects/EMs-with-LLMs/storage_chroma_doc_store/docstore.json.
+Loading llama_index.core.storage.kvstore.simple_kvstore from /home/spi085/Documents/_Projects/EMs-with-LLMs/storage_chroma_doc_store/index_store.json.
+Search results found for r_A (engine=rag, attempt=1)
+Error: Serper API returned status code 400
+No search results for r_A (engine=serper, attempt=1)
+Error: Serper API returned status code 400
+No search results for r_A (engine=serper, attempt=2)
+Error: Serper API returned status code 400
+No search results for r_A (engine=serper, attempt=3)
+DEBUG: Aggregated 3 total source chunks for r_A:
+ Source [1]: C:\Users\spi085\OneDrive - CSIRO\Documents\_Projects\SCCP-QuantModelling\doc_store\Pratchett-2017-Thirty years of research on cro.pdf
+ Source [2]: C:\Users\spi085\OneDrive - CSIRO\Documents\_Projects\SCCP-QuantModelling\doc_store\Condie et al (2021) - large scale interventions may delay decline of Great Barrier Reef.pdf
+ Source [3]: C:\Users\spi085\OneDrive - CSIRO\Documents\_Projects\SCCP-QuantModelling\doc_store\Rogers-2022-Culling corallivores improves shor.pdf
+Asking gpt-4.1-mini
+DEBUG: LLM response for r_A: No relevant values found
+Processing literature parameter: r_S
+Searching for r_S with query: Intrinsic annual regrowth rate of slow-growing massive corals
+Engine order for r_S: ['semantic_scholar', 'rag', 'serper']
+S2 Response Status Code: 200
+S2 Query: Intrinsic annual regrowth rate of slow-growing massive corals
+S2 Total results: 1
+No search results for r_S (engine=semantic_scholar, attempt=1)
+S2 Response Status Code: 200
+S2 Query: Intrinsic annual regrowth rate of slow-growing massive corals
+S2 Total results: 1
+No search results for r_S (engine=semantic_scholar, attempt=2)
+S2 Response Status Code: 200
+S2 Query: Intrinsic annual regrowth rate of slow-growing massive corals
+S2 Total results: 1
+No search results for r_S (engine=semantic_scholar, attempt=3)
+Search results found for r_S (engine=rag, attempt=1)
+Error: Serper API returned status code 400
+No search results for r_S (engine=serper, attempt=1)
+Error: Serper API returned status code 400
+No search results for r_S (engine=serper, attempt=2)
+Error: Serper API returned status code 400
+No search results for r_S (engine=serper, attempt=3)
+DEBUG: Aggregated 3 total source chunks for r_S:
+ Source [1]: C:\Users\spi085\OneDrive - CSIRO\Documents\_Projects\SCCP-QuantModelling\doc_store\Rogers-2022-Culling corallivores improves shor.pdf
+ Source [2]: C:\Users\spi085\OneDrive - CSIRO\Documents\_Projects\SCCP-QuantModelling\doc_store\Condie et al (2021) - large scale interventions may delay decline of Great Barrier Reef.pdf
+ Source [3]: C:\Users\spi085\OneDrive - CSIRO\Documents\_Projects\SCCP-QuantModelling\doc_store\Pratchett-2017-Thirty years of research on cro.pdf
+Asking gpt-4.1-mini
+DEBUG: LLM response for r_S: No relevant values found
+Processing literature parameter: m_A
+Searching for m_A with query: Annual background mortality rate of Acropora excluding predation and bleaching
+Engine order for m_A: ['semantic_scholar', 'serper', 'rag']
+S2 Response Status Code: 200
+S2 Query: Annual background mortality rate of Acropora excluding predation and bleaching
+S2 Total results: 0
+No papers found.
+No search results for m_A (engine=semantic_scholar, attempt=1)
+S2 Response Status Code: 200
+S2 Query: Annual background mortality rate of Acropora excluding predation and bleaching
+S2 Total results: 0
+No papers found.
+No search results for m_A (engine=semantic_scholar, attempt=2)
+S2 Response Status Code: 200
+S2 Query: Annual background mortality rate of Acropora excluding predation and bleaching
+S2 Total results: 0
+No papers found.
+No search results for m_A (engine=semantic_scholar, attempt=3)
+Error: Serper API returned status code 400
+No search results for m_A (engine=serper, attempt=1)
+Error: Serper API returned status code 400
+No search results for m_A (engine=serper, attempt=2)
+Error: Serper API returned status code 400
+No search results for m_A (engine=serper, attempt=3)
+litellm.APIConnectionError: APIConnectionError: OpenrouterException - Expecting value: line 167 column 1 (char 913)
+Retrying in 0.2 seconds...
+Search results found for m_A (engine=rag, attempt=1)
+DEBUG: Aggregated 2 total source chunks for m_A:
+ Source [1]: C:\Users\spi085\OneDrive - CSIRO\Documents\_Projects\SCCP-QuantModelling\doc_store\Condie et al (2021) - large scale interventions may delay decline of Great Barrier Reef.pdf
+ Source [2]: C:\Users\spi085\OneDrive - CSIRO\Documents\_Projects\SCCP-QuantModelling\doc_store\Rogers-2022-Culling corallivores improves shor.pdf
+Asking gpt-4.1-mini
+DEBUG: LLM response for m_A: No relevant values found
+Processing literature parameter: m_S
+Searching for m_S with query: Annual background mortality rate of massive corals excluding predation and bleaching
+Engine order for m_S: ['rag', 'serper', 'semantic_scholar']
+Search results found for m_S (engine=rag, attempt=1)
+Error: Serper API returned status code 400
+No search results for m_S (engine=serper, attempt=1)
+Error: Serper API returned status code 400
+No search results for m_S (engine=serper, attempt=2)
+Error: Serper API returned status code 400
+No search results for m_S (engine=serper, attempt=3)
+S2 Response Status Code: 200
+S2 Query: Annual background mortality rate of massive corals excluding predation and bleaching
+S2 Total results: 0
+No papers found.
+No search results for m_S (engine=semantic_scholar, attempt=1)
+S2 Response Status Code: 200
+S2 Query: Annual background mortality rate of massive corals excluding predation and bleaching
+S2 Total results: 0
+No papers found.
+No search results for m_S (engine=semantic_scholar, attempt=2)
+S2 Response Status Code: 200
+S2 Query: Annual background mortality rate of massive corals excluding predation and bleaching
+S2 Total results: 0
+No papers found.
+No search results for m_S (engine=semantic_scholar, attempt=3)
+DEBUG: Aggregated 2 total source chunks for m_S:
+ Source [1]: C:\Users\spi085\OneDrive - CSIRO\Documents\_Projects\SCCP-QuantModelling\doc_store\Condie et al (2021) - large scale interventions may delay decline of Great Barrier Reef.pdf
+ Source [2]: C:\Users\spi085\OneDrive - CSIRO\Documents\_Projects\SCCP-QuantModelling\doc_store\Rogers-2022-Culling corallivores improves shor.pdf
+Asking gpt-4.1-mini
+DEBUG: LLM response for m_S: No relevant values found
+Processing literature parameter: b_A
+Searching for b_A with query: Bleaching-induced mortality sensitivity multiplier for Acropora coral
+Engine order for b_A: ['rag', 'semantic_scholar', 'serper']
+Search results found for b_A (engine=rag, attempt=1)
+S2 Response Status Code: 200
+S2 Query: Bleaching-induced mortality sensitivity multiplier for Acropora coral
+S2 Total results: 3
+Search results found for b_A (engine=semantic_scholar, attempt=1)
+Error: Serper API returned status code 400
+No search results for b_A (engine=serper, attempt=1)
+Error: Serper API returned status code 400
+No search results for b_A (engine=serper, attempt=2)
+Error: Serper API returned status code 400
+No search results for b_A (engine=serper, attempt=3)
+DEBUG: Aggregated 5 total source chunks for b_A:
+ Source [1]: C:\Users\spi085\OneDrive - CSIRO\Documents\_Projects\SCCP-QuantModelling\doc_store\Rogers-2022-Culling corallivores improves shor.pdf
+ Source [2]: C:\Users\spi085\OneDrive - CSIRO\Documents\_Projects\SCCP-QuantModelling\doc_store\Condie et al (2021) - large scale interventions may delay decline of Great Barrier Reef.pdf
+ Source [3]: https://www.semanticscholar.org/paper/45d7e78d49928e4f7e33588875983f5cec382f75
+ Source [4]: https://www.semanticscholar.org/paper/c852a176d1a3eefd6e4e54f208c2bc79891b10e3
+ Source [5]: https://www.semanticscholar.org/paper/70a6d91ee318cc7f332736a88ceccde116dcc7ae
+Asking gpt-4.1-mini
+DEBUG: LLM response for b_A: No relevant values found
+Processing literature parameter: b_S
+Searching for b_S with query: Bleaching-induced mortality sensitivity multiplier for massive corals
+Engine order for b_S: ['serper', 'rag', 'semantic_scholar']
+Error: Serper API returned status code 400
+No search results for b_S (engine=serper, attempt=1)
+Error: Serper API returned status code 400
+No search results for b_S (engine=serper, attempt=2)
+Error: Serper API returned status code 400
+No search results for b_S (engine=serper, attempt=3)
+Search results found for b_S (engine=rag, attempt=1)
+S2 Response Status Code: 200
+S2 Query: Bleaching-induced mortality sensitivity multiplier for massive corals
+S2 Total results: 0
+No papers found.
+No search results for b_S (engine=semantic_scholar, attempt=1)
+S2 Response Status Code: 200
+S2 Query: Bleaching-induced mortality sensitivity multiplier for massive corals
+S2 Total results: 0
+No papers found.
+No search results for b_S (engine=semantic_scholar, attempt=2)
+S2 Response Status Code: 200
+S2 Query: Bleaching-induced mortality sensitivity multiplier for massive corals
+S2 Total results: 0
+No papers found.
+No search results for b_S (engine=semantic_scholar, attempt=3)
+DEBUG: Aggregated 2 total source chunks for b_S:
+ Source [1]: C:\Users\spi085\OneDrive - CSIRO\Documents\_Projects\SCCP-QuantModelling\doc_store\Rogers-2022-Culling corallivores improves shor.pdf
+ Source [2]: C:\Users\spi085\OneDrive - CSIRO\Documents\_Projects\SCCP-QuantModelling\doc_store\Condie et al (2021) - large scale interventions may delay decline of Great Barrier Reef.pdf
+Asking gpt-4.1-mini
+DEBUG: LLM response for b_S: No relevant values found
+Processing literature parameter: T_bleach
+Searching for T_bleach with query: Sea surface temperature threshold for onset of coral bleaching stress (°C)
+Engine order for T_bleach: ['semantic_scholar', 'rag', 'serper']
+S2 Response Status Code: 200
+S2 Query: Sea surface temperature threshold for onset of coral bleaching stress (°C)
+S2 Total results: 23
+Search results found for T_bleach (engine=semantic_scholar, attempt=1)
+Search results found for T_bleach (engine=rag, attempt=1)
+Error: Serper API returned status code 400
+No search results for T_bleach (engine=serper, attempt=1)
+Error: Serper API returned status code 400
+No search results for T_bleach (engine=serper, attempt=2)
+Error: Serper API returned status code 400
+No search results for T_bleach (engine=serper, attempt=3)
+DEBUG: Aggregated 8 total source chunks for T_bleach:
+ Source [1]: https://www.semanticscholar.org/paper/b5b5ddf5ee110855bda616fc90aa4f1d24ef11a1
+ Source [2]: https://www.semanticscholar.org/paper/e44d6c86d6ec34d716d15530873e716de5eda0f8
+ Source [3]: https://www.semanticscholar.org/paper/5cd063cf37c69cd05934c255a405c0611c8af536
+ Source [4]: https://www.semanticscholar.org/paper/9aae594183c57391bbc99083698587f7c8a9baf7
+ Source [5]: https://www.semanticscholar.org/paper/3df9e4c5e81655ae5412b052bcf5e2950569c18f
+ Source [6]: https://www.semanticscholar.org/paper/3b5f914aca37bf84902640702aa7badaf6862570
+ Source [7]: C:\Users\spi085\OneDrive - CSIRO\Documents\_Projects\SCCP-QuantModelling\doc_store\Rogers-2022-Culling corallivores improves shor.pdf
+ Source [8]: C:\Users\spi085\OneDrive - CSIRO\Documents\_Projects\SCCP-QuantModelling\doc_store\Condie et al (2021) - large scale interventions may delay decline of Great Barrier Reef.pdf
+Asking gpt-4.1-mini
+DEBUG: LLM response for T_bleach: No relevant values found
+Processing literature parameter: c_attack_A
+Searching for c_attack_A with query: Annual COTS attack rate on Acropora coral under Type-III functional response
+Engine order for c_attack_A: ['rag', 'semantic_scholar', 'serper']
+Search results found for c_attack_A (engine=rag, attempt=1)
+S2 Response Status Code: 200
+S2 Query: Annual COTS attack rate on Acropora coral under Type-III functional response
+S2 Total results: 0
+No papers found.
+No search results for c_attack_A (engine=semantic_scholar, attempt=1)
+S2 Response Status Code: 200
+S2 Query: Annual COTS attack rate on Acropora coral under Type-III functional response
+S2 Total results: 0
+No papers found.
+No search results for c_attack_A (engine=semantic_scholar, attempt=2)
+S2 Response Status Code: 200
+S2 Query: Annual COTS attack rate on Acropora coral under Type-III functional response
+S2 Total results: 0
+No papers found.
+No search results for c_attack_A (engine=semantic_scholar, attempt=3)
+Error: Serper API returned status code 400
+No search results for c_attack_A (engine=serper, attempt=1)
+Error: Serper API returned status code 400
+No search results for c_attack_A (engine=serper, attempt=2)
+Error: Serper API returned status code 400
+No search results for c_attack_A (engine=serper, attempt=3)
+DEBUG: Aggregated 3 total source chunks for c_attack_A:
+ Source [1]: C:\Users\spi085\OneDrive - CSIRO\Documents\_Projects\SCCP-QuantModelling\doc_store\Morello-2014-Model to manage and reduce crown-.pdf
+ Source [2]: C:\Users\spi085\OneDrive - CSIRO\Documents\_Projects\SCCP-QuantModelling\doc_store\Pratchett-2017-Thirty years of research on cro.pdf
+ Source [3]: C:\Users\spi085\OneDrive - CSIRO\Documents\_Projects\SCCP-QuantModelling\doc_store\Rogers-2022-Culling corallivores improves shor.pdf
+Asking gpt-4.1-mini
+DEBUG: LLM response for c_attack_A: No relevant values found
+Processing literature parameter: c_attack_S
+Searching for c_attack_S with query: Annual COTS attack rate on massive corals under Type-III functional response
+Engine order for c_attack_S: ['semantic_scholar', 'rag', 'serper']
+S2 Response Status Code: 200
+S2 Query: Annual COTS attack rate on massive corals under Type-III functional response
+S2 Total results: 0
+No papers found.
+No search results for c_attack_S (engine=semantic_scholar, attempt=1)
+S2 Response Status Code: 200
+S2 Query: Annual COTS attack rate on massive corals under Type-III functional response
+S2 Total results: 0
+No papers found.
+No search results for c_attack_S (engine=semantic_scholar, attempt=2)
+S2 Response Status Code: 200
+S2 Query: Annual COTS attack rate on massive corals under Type-III functional response
+S2 Total results: 0
+No papers found.
+No search results for c_attack_S (engine=semantic_scholar, attempt=3)
+Search results found for c_attack_S (engine=rag, attempt=1)
+Error: Serper API returned status code 400
+No search results for c_attack_S (engine=serper, attempt=1)
+Error: Serper API returned status code 400
+No search results for c_attack_S (engine=serper, attempt=2)
+Error: Serper API returned status code 400
+No search results for c_attack_S (engine=serper, attempt=3)
+DEBUG: Aggregated 1 total source chunks for c_attack_S:
+ Source [1]: C:\Users\spi085\OneDrive - CSIRO\Documents\_Projects\SCCP-QuantModelling\doc_store\Morello-2014-Model to manage and reduce crown-.pdf
+Asking gpt-4.1-mini
+DEBUG: LLM response for c_attack_S: No relevant values found
+Processing literature parameter: r_C
+Searching for r_C with query: Intrinsic annual growth rate of COTS population (fecundity to recruitment)
+Engine order for r_C: ['serper', 'rag', 'semantic_scholar']
+Error: Serper API returned status code 400
+No search results for r_C (engine=serper, attempt=1)
+Error: Serper API returned status code 400
+No search results for r_C (engine=serper, attempt=2)
+Error: Serper API returned status code 400
+No search results for r_C (engine=serper, attempt=3)
+Search results found for r_C (engine=rag, attempt=1)
+S2 Response Status Code: 200
+S2 Query: Intrinsic annual growth rate of COTS population (fecundity to recruitment)
+S2 Total results: 0
+No papers found.
+No search results for r_C (engine=semantic_scholar, attempt=1)
+S2 Response Status Code: 200
+S2 Query: Intrinsic annual growth rate of COTS population (fecundity to recruitment)
+S2 Total results: 0
+No papers found.
+No search results for r_C (engine=semantic_scholar, attempt=2)
+S2 Response Status Code: 200
+S2 Query: Intrinsic annual growth rate of COTS population (fecundity to recruitment)
+S2 Total results: 0
+No papers found.
+No search results for r_C (engine=semantic_scholar, attempt=3)
+DEBUG: Aggregated 2 total source chunks for r_C:
+ Source [1]: C:\Users\spi085\OneDrive - CSIRO\Documents\_Projects\SCCP-QuantModelling\doc_store\Rogers-2022-Culling corallivores improves shor.pdf
+ Source [2]: C:\Users\spi085\OneDrive - CSIRO\Documents\_Projects\SCCP-QuantModelling\doc_store\Morello-2014-Model to manage and reduce crown-.pdf
+Asking gpt-4.1-mini
+DEBUG: LLM response for r_C: No relevant values found
+Processing literature parameter: m_C
+Searching for m_C with query: Baseline annual mortality rate of adult COTS without starvation effects
+Engine order for m_C: ['semantic_scholar', 'rag', 'serper']
+S2 Response Status Code: 200
+S2 Query: Baseline annual mortality rate of adult COTS without starvation effects
+S2 Total results: 0
+No papers found.
+No search results for m_C (engine=semantic_scholar, attempt=1)
+S2 Response Status Code: 200
+S2 Query: Baseline annual mortality rate of adult COTS without starvation effects
+S2 Total results: 0
+No papers found.
+No search results for m_C (engine=semantic_scholar, attempt=2)
+S2 Response Status Code: 200
+S2 Query: Baseline annual mortality rate of adult COTS without starvation effects
+S2 Total results: 0
+No papers found.
+No search results for m_C (engine=semantic_scholar, attempt=3)
+Search results found for m_C (engine=rag, attempt=1)
+Error: Serper API returned status code 400
+No search results for m_C (engine=serper, attempt=1)
+Error: Serper API returned status code 400
+No search results for m_C (engine=serper, attempt=2)
+Error: Serper API returned status code 400
+No search results for m_C (engine=serper, attempt=3)
+DEBUG: Aggregated 4 total source chunks for m_C:
+ Source [1]: C:\Users\spi085\OneDrive - CSIRO\Documents\_Projects\SCCP-QuantModelling\doc_store\Pratchett-2017-Thirty years of research on cro.pdf
+ Source [2]: C:\Users\spi085\OneDrive - CSIRO\Documents\_Projects\SCCP-QuantModelling\doc_store\Rogers-2022-Culling corallivores improves shor.pdf
+ Source [3]: C:\Users\spi085\OneDrive - CSIRO\Documents\_Projects\SCCP-QuantModelling\doc_store\Plagányi-2014-Ecosystem modelling provides clu.pdf
+ Source [4]: C:\Users\spi085\OneDrive - CSIRO\Documents\_Projects\SCCP-QuantModelling\doc_store\Morello-2014-Model to manage and reduce crown-.pdf
+Asking gpt-4.1-mini
+DEBUG: LLM response for m_C: {
+  "min": 2.56,
+  "max": 2.56,
+  "value": 2.56,
+  "relevant_text": "The base-case model provides an estimate of natural mortality of COTS. This is rather high (M = 2.56 yr−1 or 94%) for an animal that can live for 7 to 8 yr, and if food (e.g. corals) is not limiting in an area, the natural mortality rate of a local COTS population could be expected to be lower. ... the mortality estimated by the base-case model has to be assumed as being a combination of all possible sources of natural mortality. Because it provides the best fit to the data ... the high M estimate can reliably be considered a suitable choice of parameter value to explain the dynamics observed at Lizard Island. [4]",
+  "citations_used": [4]
+}
+Processing literature parameter: phi_A
+Searching for phi_A with query: Relative contribution weight of Acropora coral to COTS food availability
+Engine order for phi_A: ['semantic_scholar', 'serper', 'rag']
+S2 Response Status Code: 200
+S2 Query: Relative contribution weight of Acropora coral to COTS food availability
+S2 Total results: 0
+No papers found.
+No search results for phi_A (engine=semantic_scholar, attempt=1)
+S2 Response Status Code: 200
+S2 Query: Relative contribution weight of Acropora coral to COTS food availability
+S2 Total results: 0
+No papers found.
+No search results for phi_A (engine=semantic_scholar, attempt=2)
+S2 Response Status Code: 200
+S2 Query: Relative contribution weight of Acropora coral to COTS food availability
+S2 Total results: 0
+No papers found.
+No search results for phi_A (engine=semantic_scholar, attempt=3)
+Error: Serper API returned status code 400
+No search results for phi_A (engine=serper, attempt=1)
+Error: Serper API returned status code 400
+No search results for phi_A (engine=serper, attempt=2)
+Error: Serper API returned status code 400
+No search results for phi_A (engine=serper, attempt=3)
+Search results found for phi_A (engine=rag, attempt=1)
+DEBUG: Aggregated 3 total source chunks for phi_A:
+ Source [1]: C:\Users\spi085\OneDrive - CSIRO\Documents\_Projects\SCCP-QuantModelling\doc_store\Pratchett-2017-Thirty years of research on cro.pdf
+ Source [2]: C:\Users\spi085\OneDrive - CSIRO\Documents\_Projects\SCCP-QuantModelling\doc_store\Rogers-2022-Culling corallivores improves shor.pdf
+ Source [3]: C:\Users\spi085\OneDrive - CSIRO\Documents\_Projects\SCCP-QuantModelling\doc_store\Morello-2014-Model to manage and reduce crown-.pdf
+Asking gpt-4.1-mini
+DEBUG: LLM response for phi_A: No relevant values found
+Processing literature parameter: phi_S
+Searching for phi_S with query: Relative contribution weight of massive corals to COTS food availability
+Engine order for phi_S: ['serper', 'rag', 'semantic_scholar']
+Error: Serper API returned status code 400
+No search results for phi_S (engine=serper, attempt=1)
+Error: Serper API returned status code 400
+No search results for phi_S (engine=serper, attempt=2)
+Error: Serper API returned status code 400
+No search results for phi_S (engine=serper, attempt=3)
+Search results found for phi_S (engine=rag, attempt=1)
+S2 Response Status Code: 200
+S2 Query: Relative contribution weight of massive corals to COTS food availability
+S2 Total results: 0
+No papers found.
+No search results for phi_S (engine=semantic_scholar, attempt=1)
+S2 Response Status Code: 200
+S2 Query: Relative contribution weight of massive corals to COTS food availability
+S2 Total results: 0
+No papers found.
+No search results for phi_S (engine=semantic_scholar, attempt=2)
+S2 Response Status Code: 200
+S2 Query: Relative contribution weight of massive corals to COTS food availability
+S2 Total results: 0
+No papers found.
+No search results for phi_S (engine=semantic_scholar, attempt=3)
+DEBUG: Aggregated 2 total source chunks for phi_S:
+ Source [1]: C:\Users\spi085\OneDrive - CSIRO\Documents\_Projects\SCCP-QuantModelling\doc_store\Rogers-2022-Culling corallivores improves shor.pdf
+ Source [2]: C:\Users\spi085\OneDrive - CSIRO\Documents\_Projects\SCCP-QuantModelling\doc_store\Morello-2014-Model to manage and reduce crown-.pdf
+Asking gpt-4.1-mini
+DEBUG: LLM response for phi_S: No relevant values found
+Processing literature parameter: Topt_C
+Searching for Topt_C with query: Optimal sea surface temperature for peak COTS reproductive performance (°C)
+Engine order for Topt_C: ['serper', 'semantic_scholar', 'rag']
+Error: Serper API returned status code 400
+No search results for Topt_C (engine=serper, attempt=1)
+Error: Serper API returned status code 400
+No search results for Topt_C (engine=serper, attempt=2)
+Error: Serper API returned status code 400
+No search results for Topt_C (engine=serper, attempt=3)
+S2 Response Status Code: 200
+S2 Query: Optimal sea surface temperature for peak COTS reproductive performance (°C)
+S2 Total results: 0
+No papers found.
+No search results for Topt_C (engine=semantic_scholar, attempt=1)
+S2 Response Status Code: 200
+S2 Query: Optimal sea surface temperature for peak COTS reproductive performance (°C)
+S2 Total results: 0
+No papers found.
+No search results for Topt_C (engine=semantic_scholar, attempt=2)
+S2 Response Status Code: 200
+S2 Query: Optimal sea surface temperature for peak COTS reproductive performance (°C)
+S2 Total results: 0
+No papers found.
+No search results for Topt_C (engine=semantic_scholar, attempt=3)
+Search results found for Topt_C (engine=rag, attempt=1)
+DEBUG: Aggregated 2 total source chunks for Topt_C:
+ Source [1]: C:\Users\spi085\OneDrive - CSIRO\Documents\_Projects\SCCP-QuantModelling\doc_store\Pratchett-2017-Thirty years of research on cro.pdf
+ Source [2]: C:\Users\spi085\OneDrive - CSIRO\Documents\_Projects\SCCP-QuantModelling\doc_store\Rogers-2022-Culling corallivores improves shor.pdf
+Asking gpt-4.1-mini
+DEBUG: LLM response for Topt_C: {
+  "min": 28.0,
+  "max": 29.0,
+  "value": 28.5,
+  "relevant_text": "The optimal temperatures for embryonic and larval development of A. cf. solaris (28–29 ◦C), reflects ambient temperatures currently experienced during the reproductive season in the northern GBR [1]",
+  "citations_used": [1]
+}
+Processing literature parameter: sigma_T_C
+Searching for sigma_T_C with query: Standard deviation of thermal performance curve for COTS reproduction (°C)
+Engine order for sigma_T_C: ['serper', 'semantic_scholar', 'rag']
+Error: Serper API returned status code 400
+No search results for sigma_T_C (engine=serper, attempt=1)
+Error: Serper API returned status code 400
+No search results for sigma_T_C (engine=serper, attempt=2)
+Error: Serper API returned status code 400
+No search results for sigma_T_C (engine=serper, attempt=3)
+S2 Response Status Code: 200
+S2 Query: Standard deviation of thermal performance curve for COTS reproduction (°C)
+S2 Total results: 0
+No papers found.
+No search results for sigma_T_C (engine=semantic_scholar, attempt=1)
+S2 Response Status Code: 200
+S2 Query: Standard deviation of thermal performance curve for COTS reproduction (°C)
+S2 Total results: 0
+No papers found.
+No search results for sigma_T_C (engine=semantic_scholar, attempt=2)
+S2 Response Status Code: 200
+S2 Query: Standard deviation of thermal performance curve for COTS reproduction (°C)
+S2 Total results: 0
+No papers found.
+No search results for sigma_T_C (engine=semantic_scholar, attempt=3)
+Search results found for sigma_T_C (engine=rag, attempt=1)
+DEBUG: Aggregated 3 total source chunks for sigma_T_C:
+ Source [1]: C:\Users\spi085\OneDrive - CSIRO\Documents\_Projects\SCCP-QuantModelling\doc_store\Morello-2014-Model to manage and reduce crown-.pdf
+ Source [2]: C:\Users\spi085\OneDrive - CSIRO\Documents\_Projects\SCCP-QuantModelling\doc_store\Punt et al (2016) - implications of harvest control rule for sardine.pdf
+ Source [3]: C:\Users\spi085\OneDrive - CSIRO\Documents\_Projects\SCCP-QuantModelling\doc_store\Rogers-2022-Culling corallivores improves shor.pdf
+Asking gpt-4.1-mini
+DEBUG: LLM response for sigma_T_C: No relevant values found
+Processing literature parameter: imm_surv
+Searching for imm_surv with query: Survival fraction of larval COTS immigration to adult population annually
+Engine order for imm_surv: ['semantic_scholar', 'rag', 'serper']
+S2 Response Status Code: 200
+S2 Query: Survival fraction of larval COTS immigration to adult population annually
+S2 Total results: 0
+No papers found.
+No search results for imm_surv (engine=semantic_scholar, attempt=1)
+S2 Response Status Code: 200
+S2 Query: Survival fraction of larval COTS immigration to adult population annually
+S2 Total results: 0
+No papers found.
+No search results for imm_surv (engine=semantic_scholar, attempt=2)
+S2 Response Status Code: 200
+S2 Query: Survival fraction of larval COTS immigration to adult population annually
+S2 Total results: 0
+No papers found.
+No search results for imm_surv (engine=semantic_scholar, attempt=3)
+Search results found for imm_surv (engine=rag, attempt=1)
+Error: Serper API returned status code 400
+No search results for imm_surv (engine=serper, attempt=1)
+Error: Serper API returned status code 400
+No search results for imm_surv (engine=serper, attempt=2)
+Error: Serper API returned status code 400
+No search results for imm_surv (engine=serper, attempt=3)
+DEBUG: Aggregated 2 total source chunks for imm_surv:
+ Source [1]: C:\Users\spi085\OneDrive - CSIRO\Documents\_Projects\SCCP-QuantModelling\doc_store\Pratchett-2017-Thirty years of research on cro.pdf
+ Source [2]: C:\Users\spi085\OneDrive - CSIRO\Documents\_Projects\SCCP-QuantModelling\doc_store\Morello-2014-Model to manage and reduce crown-.pdf
+Asking gpt-4.1-mini
+DEBUG: LLM response for imm_surv: No relevant values found
+Processing literature parameter: K_tot
+Searching for K_tot with query: Maximum combined coral cover proportion for Acropora and massive corals (0-1)
+Engine order for K_tot: ['semantic_scholar', 'serper', 'rag']
+S2 Response Status Code: 200
+S2 Query: Maximum combined coral cover proportion for Acropora and massive corals (0-1)
+S2 Total results: 0
+No papers found.
+No search results for K_tot (engine=semantic_scholar, attempt=1)
+S2 Response Status Code: 200
+S2 Query: Maximum combined coral cover proportion for Acropora and massive corals (0-1)
+S2 Total results: 0
+No papers found.
+No search results for K_tot (engine=semantic_scholar, attempt=2)
+S2 Response Status Code: 200
+S2 Query: Maximum combined coral cover proportion for Acropora and massive corals (0-1)
+S2 Total results: 0
+No papers found.
+No search results for K_tot (engine=semantic_scholar, attempt=3)
+Error: Serper API returned status code 400
+No search results for K_tot (engine=serper, attempt=1)
+Error: Serper API returned status code 400
+No search results for K_tot (engine=serper, attempt=2)
+Error: Serper API returned status code 400
+No search results for K_tot (engine=serper, attempt=3)
+Search results found for K_tot (engine=rag, attempt=1)
+DEBUG: Aggregated 3 total source chunks for K_tot:
+ Source [1]: C:\Users\spi085\OneDrive - CSIRO\Documents\_Projects\SCCP-QuantModelling\doc_store\Pratchett-2017-Thirty years of research on cro.pdf
+ Source [2]: C:\Users\spi085\OneDrive - CSIRO\Documents\_Projects\SCCP-QuantModelling\doc_store\Condie et al (2021) - large scale interventions may delay decline of Great Barrier Reef.pdf
+ Source [3]: C:\Users\spi085\OneDrive - CSIRO\Documents\_Projects\SCCP-QuantModelling\doc_store\Rogers-2022-Culling corallivores improves shor.pdf
+Asking gpt-4.1-mini
+DEBUG: LLM response for K_tot: No relevant values found
+Parameter processing completed successfully.
+Re-running model after parameter processing...
+[93m[PID 2509594] Running model for individual...[0m
+[0m[PID 2509594] Individual directory: POPULATIONS/POPULATION_0002/INDIVIDUAL_UWK0NDLE[0m
+[93m[PID 2509594] Removed old compilation: model.o[0m
+[96m[PID 2509594] Launching Rscript... (timeout=none)[0m
+[93m[PID 2509594] R script stdout BEGIN >>>[0m
+[0mg++ -std=gnu++17 -I"/usr/share/R/include" -DNDEBUG -I"/home/spi085/R/x86_64-pc-linux-gnu-library/4.4/TMB/include" -I"/home/spi085/R/x86_64-pc-linux-gnu-library/4.4/RcppEigen/include"   -DTMB_EIGEN_DISABLE_WARNINGS   -DTMB_LIB_INIT=R_init_model  -DCPPAD_FRAMEWORK      -fpic  -O2  -c POPULATIONS/POPULATION_0002/INDIVIDUAL_UWK0NDLE/model.cpp -o POPULATIONS/POPULATION_0002/INDIVIDUAL_UWK0NDLE/model.o
+g++ -std=gnu++17 -shared -L/usr/lib/R/lib -Wl,-Bsymbolic-functions -flto=auto -ffat-lto-objects -Wl,-z,relro -o POPULATIONS/POPULATION_0002/INDIVIDUAL_UWK0NDLE/model.so POPULATIONS/POPULATION_0002/INDIVIDUAL_UWK0NDLE/model.o -L/usr/lib/R/lib -lR
+
+NA counts per required column:
+       Year    cots_dat    fast_dat    slow_dat     sst_dat cotsimm_dat 
+          0           0           0           0           0           0 
+
+Out-of-range checks:
+Any cots_dat < 0?  FALSE 
+Any fast_dat outside [0,100]?  FALSE 
+Any slow_dat outside [0,100]?  FALSE 
+
+PARAMETER starts (first few):
+       r_A        r_S        m_A        m_S        b_A        b_S   T_bleach 
+      0.50       0.20       0.10       0.05       0.30       0.15      29.50 
+  k_bleach c_attack_A c_attack_S     H_half        r_C 
+      1.00       1.20       0.40       0.80       1.20 
+Starting model phases
+Number of phases: 4 
+Phase 1 
+Initial parameter values for phase 1 :
+           r_A       T_bleach     c_attack_A            r_C        gamma_A 
+          0.50          29.50           1.20           1.20           0.80 
+      imm_surv obs_sd_cots_ln 
+          0.50           0.25 
+Final parameter values for phase 1 :
+           r_A       T_bleach     c_attack_A            r_C        gamma_A 
+      1.046853      29.105970       1.219563       0.000000       0.000000 
+      imm_surv obs_sd_cots_ln 
+      1.000000       0.010000 
+Convergence message: relative convergence (4) 
+Number of iterations: 22 
+Objective function value: 2288.913 
+Gradient at solution for phase 1 :
+              [,1]          [,2]         [,3]     [,4]     [,5]      [,6]
+[1,] -3.926193e-05 -6.837296e-07 5.774948e-05 7.173339 71.62757 -174.7034
+         [,7]
+[1,] 6.482698
+Phase 2 
+Initial parameter values for phase 2 :
+          r_S           m_A           b_A    c_attack_S        H_half 
+         0.20          0.10          0.30          0.40          0.80 
+          m_C starvation_nu           K_C         phi_A  food_hill_nu 
+         2.56          2.00          3.00          1.00          3.00 
+       Topt_C       gamma_S   obs_sd_fast   obs_sd_slow 
+        28.50          0.20          0.20          0.20 
+Final parameter values for phase 2 :
+          r_S           m_A           b_A    c_attack_S        H_half 
+   0.21168094    0.01088513    0.55982911    0.20171128    1.02590656 
+          m_C starvation_nu           K_C         phi_A  food_hill_nu 
+   2.56000000    2.00228085    3.00203576    0.98577185    2.99978189 
+       Topt_C       gamma_S   obs_sd_fast   obs_sd_slow 
+  28.49923568    0.25998528    1.74159342    1.23332480 
+Convergence message: iteration limit reached without convergence (10) 
+Number of iterations: 150 
+Objective function value: 282.7875 
+Gradient at solution for phase 2 :
+          [,1]      [,2]      [,3]     [,4]     [,5]     [,6]       [,7]
+[1,] -168.6353 -98.69701 -73.84696 113.5792 27.23813 3.203846 -0.3040913
+            [,8]       [,9]      [,10]      [,11]      [,12]     [,13]
+[1,] -0.04872748 -0.4662026 -0.1774703 0.01829524 -0.5719854 -98.81262
+         [,14]
+[1,] -33.85341
+Phase 3 
+Initial parameter values for phase 3 :
+             m_S              b_S starvation_scale            phi_S 
+            0.05             0.15             1.00             0.30 
+          K_food        sigma_T_C           Alee_C 
+            0.20             1.50             0.10 
+Final parameter values for phase 3 :
+             m_S              b_S starvation_scale            phi_S 
+      0.01095711       0.26374370       2.70546728       0.00000000 
+          K_food        sigma_T_C           Alee_C 
+      0.15716133       2.54999892       1.00000224 
+Convergence message: relative convergence (4) 
+Number of iterations: 94 
+Objective function value: 271.7856 
+Gradient at solution for phase 3 :
+             [,1]         [,2]          [,3]     [,4]          [,5]
+[1,] 7.816841e-05 3.464852e-05 -3.239806e-07 1.280561 -2.545234e-05
+             [,6]         [,7]
+[1,] -1.58569e-07 8.795852e-07
+Phase 4 
+Initial parameter values for phase 4 :
+k_bleach    K_tot 
+     1.0      0.8 
+Final parameter values for phase 4 :
+ k_bleach     K_tot 
+1.1106085 0.7840005 
+Convergence message: relative convergence (4) 
+Number of iterations: 12 
+Objective function value: 268.9257 
+Gradient at solution for phase 4 :
+             [,1]          [,2]
+[1,] -1.45251e-05 -6.618793e-05
+Final Phase
+Initial parameter values for final phase:
+             r_A              r_S              m_A              m_S 
+      1.04685334       0.21168094       0.01088513       0.01095711 
+             b_A              b_S         T_bleach         k_bleach 
+      0.55982911       0.26374370      29.10597006       1.11060850 
+      c_attack_A       c_attack_S           H_half              r_C 
+      1.21956337       0.20171128       1.02590656       0.00000000 
+             m_C starvation_scale    starvation_nu              K_C 
+      2.56000000       2.70546728       2.00228085       3.00203576 
+           phi_A            phi_S           K_food     food_hill_nu 
+      0.98577185       0.00000000       0.15716133       2.99978189 
+          Topt_C        sigma_T_C           Alee_C          gamma_A 
+     28.49923568       2.54999892       1.00000224       0.00000000 
+         gamma_S         imm_surv            K_tot   obs_sd_cots_ln 
+      0.25998528       1.00000000       0.78400054       0.01000000 
+     obs_sd_fast      obs_sd_slow 
+      1.74159342       1.23332480 
+Final parameter values for final phase:
+             r_A              r_S              m_A              m_S 
+       1.3284021        0.1953323        0.1742711        0.0000000 
+             b_A              b_S         T_bleach         k_bleach 
+       0.6885260        0.2696095       29.3388650        1.4068214 
+      c_attack_A       c_attack_S           H_half              r_C 
+       1.9191621        0.4141826        1.1530443        0.0000000 
+             m_C starvation_scale    starvation_nu              K_C 
+       2.5600000        2.7662699        2.0096151        3.0083492 
+           phi_A            phi_S           K_food     food_hill_nu 
+       0.9825059        0.1447155        0.2998757        2.9790758 
+          Topt_C        sigma_T_C           Alee_C          gamma_A 
+      28.4921205        2.5426784        0.9983288        0.0471617 
+         gamma_S         imm_surv            K_tot   obs_sd_cots_ln 
+       0.2903921        0.7964392        1.0000000        0.0100000 
+     obs_sd_fast      obs_sd_slow 
+       3.0238288        1.8540252 
+Convergence message: iteration limit reached without convergence (10) 
+Number of iterations: 150 
+Objective function value: 180.9763 
+Gradient at solution for final phase:
+         [,1]      [,2]       [,3]     [,4]     [,5]      [,6]      [,7]
+[1,] 4.627598 -14.98731 -0.4405628 41.12603 2.186222 -4.421793 -1.529215
+          [,8]    [,9]    [,10]     [,11]     [,12]       [,13]      [,14]
+[1,] -2.476348 -1.4748 3.076936 -1.575385 0.5235385 -0.06469575 0.00740934
+          [,15]      [,16]      [,17]      [,18]     [,19]        [,20]
+[1,] -0.1513276 -0.0484247 0.03368934 -0.3366964 -1.276156 -0.001916568
+          [,21]        [,22]        [,23]     [,24]      [,25]      [,26]
+[1,] 0.01801597 -0.001070835 -0.000657175 -0.418634 -0.4287284 -0.9347262
+         [,27]    [,28]     [,29]     [,30]
+[1,] -11.41911 7.165518 -10.88415 -4.178509
+All phases completed
+Successfully updated parameters_metadata.json with optimized values
+[1] "Train test split:"
+[1] 1
+
+Running model validation...
+No test data available (train_test_split >= 1.0)
+NULL
+
+DEBUG: Report contents:
+List of 3
+ $ cots_pred: num [1:26] 0.262 0.694 0.698 0.698 0.698 ...
+ $ fast_pred: num [1:26] 10.1 16.9 19.3 17.5 21.7 ...
+ $ slow_pred: num [1:26] 12.8 14 13.9 12.6 12.9 ...
+NULL
+
+DEBUG: Available variables in report:
+[1] "cots_pred" "fast_pred" "slow_pred"
+
+Checking predictions and calculating objective function...
+
+DEBUG: Processing cots_pred 
+DEBUG: First few predictions: 0.2615042 0.6937649 0.6977098 0.6982885 0.6976148 0.6988591 
+DEBUG: Summary statistics:
+   Min. 1st Qu.  Median    Mean 3rd Qu.    Max. 
+ 0.2615  0.6946  0.6970  0.7558  0.7002  1.5261 
+DEBUG: All zeros? FALSE 
+DEBUG: Any infinities? FALSE 
+
+DEBUG: Processing fast_pred 
+DEBUG: First few predictions: 10.06939 16.89519 19.31461 17.47582 21.65363 24.42257 
+DEBUG: Summary statistics:
+   Min. 1st Qu.  Median    Mean 3rd Qu.    Max. 
+ 0.6322  8.7582 13.8329 14.8834 21.0689 33.3371 
+DEBUG: All zeros? FALSE 
+DEBUG: Any infinities? FALSE 
+
+DEBUG: Processing slow_pred 
+DEBUG: First few predictions: 12.77261 14.04404 13.89849 12.57005 12.88593 12.83516 
+DEBUG: Summary statistics:
+   Min. 1st Qu.  Median    Mean 3rd Qu.    Max. 
+  3.414   5.151   9.953   9.264  12.333  14.044 
+DEBUG: All zeros? FALSE 
+DEBUG: Any infinities? FALSE 
+
+DEBUG: Using the following variables for objective function:
+cots_dat -> cots_pred
+fast_dat -> fast_pred
+slow_dat -> slow_pred
+
+DEBUG: Calculating MSE for prediction variables only:
+
+DEBUG: cots_pred 
+Observed: 0.2615042 0.5498196 0.7268086 0.5522907 0.828121 0.5470078 ...
+Predicted: 0.2615042 0.6937649 0.6977098 0.6982885 0.6976148 0.6988591 ...
+MSE (normalized): 1.039982 
+
+DEBUG: fast_pred 
+Observed: 10.06939 17.72357 23.82758 19.41812 15.63542 32.45961 ...
+Predicted: 10.06939 16.89519 19.31461 17.47582 21.65363 24.42257 ...
+MSE (normalized): 0.2151824 
+
+DEBUG: slow_pred 
+Observed: 12.77261 16.41474 12.77729 12.27975 15.11516 12.81941 ...
+Predicted: 12.77261 14.04404 13.89849 12.57005 12.88593 12.83516 ...
+MSE (normalized): 0.2454389 
+
+DEBUG: MSE values:
+ cots_dat  fast_dat  slow_dat 
+1.0399824 0.2151824 0.2454389 
+
+DEBUG: Final objective value (mean of MSEs): 0.5002012 
+
+Final objective function value: 0.5002012 
+
+JSON_REPORT_START
+{
+  "status": "SUCCESS",
+  "objective_value": 0.5002,
+  "model_summary": ["            Length Class  Mode     ", "par         30     -none- numeric  ", "objective    1     -none- numeric  ", "convergence  1     -none- numeric  ", "iterations   1     -none- numeric  ", "evaluations  2     -none- numeric  ", "message      1     -none- character"],
+  "model_report": {
+    "cots_pred": [0.2615, 0.6938, 0.6977, 0.6983, 0.6976, 0.6989, 0.7002, 0.7, 0.7024, 0.705, 1.4801, 0.7266, 1.5261, 1.0215, 0.6974, 0.6958, 0.6963, 0.6965, 0.6954, 0.6938, 0.6939, 0.6941, 0.6943, 0.6945, 0.6949, 0.6954],
+    "fast_pred": [10.0694, 16.8952, 19.3146, 17.4758, 21.6536, 24.4226, 24.3101, 27.617, 30.3215, 31.9724, 33.3371, 11.5959, 15.2301, 8.7214, 9.3047, 12.9814, 14.6843, 8.8684, 0.6322, 1.3155, 2.1898, 3.451, 5.3045, 7.9483, 11.2827, 16.0679],
+    "slow_pred": [12.7726, 14.044, 13.8985, 12.5701, 12.8859, 12.8352, 12.2351, 12.3117, 12.34, 12.2733, 12.2197, 10.3371, 10.6809, 9.3454, 9.1268, 9.5682, 9.167, 6.9306, 3.414, 3.6993, 3.9927, 4.2976, 4.6001, 4.8858, 5.0834, 5.3551]
+  },
+  "plot_data": {
+    "cots_pred": {
+      "Year": [1980, 1981, 1982, 1983, 1984, 1985, 1986, 1987, 1988, 1989, 1990, 1991, 1992, 1993, 1994, 1995, 1996, 1997, 1998, 1999, 2000, 2001, 2002, 2003, 2004, 2005],
+      "Modeled": [0.2615, 0.6938, 0.6977, 0.6983, 0.6976, 0.6989, 0.7002, 0.7, 0.7024, 0.705, 1.4801, 0.7266, 1.5261, 1.0215, 0.6974, 0.6958, 0.6963, 0.6965, 0.6954, 0.6938, 0.6939, 0.6941, 0.6943, 0.6945, 0.6949, 0.6954],
+      "Observed": [0.2615, 0.5498, 0.7268, 0.5523, 0.8281, 0.547, 0.758, 0.6288, 0.4762, 0.6466, 0.9107, 2.152, 0.6446, 1.6723, 0.4766, 0.8075, 0.3635, 0.3728, 0.6173, 0.3107, 0.256, 0.2984, 0.3362, 0.2878, 0.3221, 0.4308]
+    },
+    "fast_pred": {
+      "Year": [1980, 1981, 1982, 1983, 1984, 1985, 1986, 1987, 1988, 1989, 1990, 1991, 1992, 1993, 1994, 1995, 1996, 1997, 1998, 1999, 2000, 2001, 2002, 2003, 2004, 2005],
+      "Modeled": [10.0694, 16.8952, 19.3146, 17.4758, 21.6536, 24.4226, 24.3101, 27.617, 30.3215, 31.9724, 33.3371, 11.5959, 15.2301, 8.7214, 9.3047, 12.9814, 14.6843, 8.8684, 0.6322, 1.3155, 2.1898, 3.451, 5.3045, 7.9483, 11.2827, 16.0679],
+      "Observed": [10.0694, 17.7236, 23.8276, 19.4181, 15.6354, 32.4596, 21.5567, 34.1938, 18.8708, 27.3176, 44.3301, 13.3275, 11.3741, 8.3362, 15.207, 12.443, 11.0666, 10.6442, 2.3628, 2.76, 3.7236, 7.0355, 10.2239, 8.4754, 9.0819, 13.7314]
+    },
+    "slow_pred": {
+      "Year": [1980, 1981, 1982, 1983, 1984, 1985, 1986, 1987, 1988, 1989, 1990, 1991, 1992, 1993, 1994, 1995, 1996, 1997, 1998, 1999, 2000, 2001, 2002, 2003, 2004, 2005],
+      "Modeled": [12.7726, 14.044, 13.8985, 12.5701, 12.8859, 12.8352, 12.2351, 12.3117, 12.34, 12.2733, 12.2197, 10.3371, 10.6809, 9.3454, 9.1268, 9.5682, 9.167, 6.9306, 3.414, 3.6993, 3.9927, 4.2976, 4.6001, 4.8858, 5.0834, 5.3551],
+      "Observed": [12.7726, 16.4147, 12.7773, 12.2798, 15.1152, 12.8194, 10.4631, 9.7251, 13.2014, 16.4512, 11.1393, 18.0832, 11.5223, 8.51, 9.1622, 5.3353, 8.6044, 7.2781, 2.629, 4.6951, 1.5948, 5.2172, 2.6041, 3.3618, 7.3289, 4.4014]
+    }
+  }
+}
+JSON_REPORT_END[0m
+[93m[PID 2509594] R script stdout END <<<[0m
+[93m[PID 2509594] R script stderr BEGIN >>>[0m
+[0mLoading required package: TMB
+Loading required package: jsonlite
+here() starts at /home/spi085/Documents/_Projects/EMs-with-LLMs
+using C++ compiler: ‘g++ (Ubuntu 13.3.0-6ubuntu2~24.04) 13.3.0’
+Warning message:
+`aes_string()` was deprecated in ggplot2 3.0.0.
+ℹ Please use tidy evaluation idioms with `aes()`.
+ℹ See also `vignette("ggplot2-in-packages")` for more information.[0m
+[93m[PID 2509594] R script stderr END <<<[0m
+[96m[PID 2509594] JSON detected, parsing...[0m
+[96m[PID 2509594] Writing model report...[0m
+[94m[PID 2509594] Objective value: 0.5002[0m
+[96m[PID 2509594] Generating plots...[0m
+[94m[PID 2509594] Objective Value: 0.5002[0m
+[92m[PID 2509594] Successful model run[0m
+[0m----------------------------------------------[0m
+FINAL MODEL RUN FINISHED
+Final model run successful. Objective value: 0.5002
