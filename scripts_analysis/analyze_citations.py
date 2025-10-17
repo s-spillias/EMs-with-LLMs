@@ -12,10 +12,10 @@ This script:
 import json
 import os
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, Set
 import matplotlib.pyplot as plt
 import numpy as np
-
+import subprocess
 
 def get_population_type(population_metadata: Dict) -> str:
     """
@@ -121,7 +121,35 @@ def analyze_individual(individual_dir: Path) -> Dict:
     }
 
 
-def analyze_population(population_dir: Path) -> Dict:
+def load_best_performers() -> Dict[str, str]:
+    """
+    Load the best performing individuals from populations_analysis.json.
+    Returns a dict mapping population_id -> best_individual_id
+    """
+    populations_analysis_path = Path("Results/populations_analysis.json")
+    
+    if not populations_analysis_path.exists():
+        print(f"Warning: {populations_analysis_path} not found. Cannot identify best performers.")
+        return {}
+    
+    with open(populations_analysis_path, 'r') as f:
+        data = json.load(f)
+    
+    best_performers = {}
+    
+    # Get best performers from populations_overview
+    if "populations_overview" in data:
+        for pop_key, pop_data in data["populations_overview"].items():
+            pop_num = pop_data["population"]
+            pop_id = f"POPULATION_{pop_num:04d}"
+            best_individual = pop_data["best_individual"]
+            individual_id = f"INDIVIDUAL_{best_individual}"
+            best_performers[pop_id] = individual_id
+    
+    return best_performers
+
+
+def analyze_population(population_dir: Path, best_performers: Dict[str, str]) -> Dict:
     """Analyze a population directory and count citations."""
     population_metadata_path = population_dir / "population_metadata.json"
     
@@ -134,6 +162,9 @@ def analyze_population(population_dir: Path) -> Dict:
     # Determine population type
     pop_type = get_population_type(population_metadata)
     
+    # Get the best performer for this population
+    best_performer_id = best_performers.get(population_dir.name, None)
+    
     # Analyze all individuals in this population
     individuals_analysis = []
     
@@ -143,6 +174,8 @@ def analyze_population(population_dir: Path) -> Dict:
     
     for individual_dir in sorted(individual_dirs):
         individual_analysis = analyze_individual(individual_dir)
+        # Mark if this is the best performer
+        individual_analysis["is_best_performer"] = (individual_dir.name == best_performer_id)
         individuals_analysis.append(individual_analysis)
     
     # Calculate population-level statistics
@@ -191,23 +224,43 @@ def create_boxplot(all_populations: List[Dict], output_path: Path):
     npz_docstore = []
     cots_docstore = []
     
+    # Best performers only (single value per model type)
+    npz_no_citations_best = None
+    cots_no_citations_best = None
+    npz_semantic_best = None
+    cots_semantic_best = None
+    npz_docstore_best = None
+    cots_docstore_best = None
+    
     for pop in all_populations:
         for ind in pop['individuals']:
             if ind['parameters_metadata_exists'] and ind['total_params'] > 0:
                 # Calculate no citations percentage
                 no_cit_pct = 100.0 - ind['citation_percentage']
                 
+                is_best = ind.get('is_best_performer', False)
+                
                 if pop['population_type'] == 'NPZ':
                     npz_no_citations.append(no_cit_pct)
                     npz_semantic.append(ind['semantic_percentage'])
                     npz_docstore.append(ind['docstore_percentage'])
+                    
+                    if is_best:
+                        npz_no_citations_best = no_cit_pct
+                        npz_semantic_best = ind['semantic_percentage']
+                        npz_docstore_best = ind['docstore_percentage']
                 else:
                     cots_no_citations.append(no_cit_pct)
                     cots_semantic.append(ind['semantic_percentage'])
                     cots_docstore.append(ind['docstore_percentage'])
+                    
+                    if is_best:
+                        cots_no_citations_best = no_cit_pct
+                        cots_semantic_best = ind['semantic_percentage']
+                        cots_docstore_best = ind['docstore_percentage']
     
-    # Create figure with subplots - now 4 panels
-    fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+    # Create figure with subplots
+    fig, axes = plt.subplots(2, 2, figsize=(12, 10))
     axes = axes.flatten()
     
     tick_labels = ['COTS', 'NPZ']
@@ -219,19 +272,29 @@ def create_boxplot(all_populations: List[Dict], output_path: Path):
     bp = ax.boxplot(data_to_plot, tick_labels=tick_labels, patch_artist=True,
                     showmeans=True, meanline=True)
     
-    colors = ['#cccccc', '#999999']
+    colors = ['#ffcccc', '#ccccff']
     for patch, color in zip(bp['boxes'], colors):
         patch.set_facecolor(color)
-        patch.set_alpha(0.7)
+        patch.set_alpha(0.6)
+    
+    # Add asterisks for best performers
+    if cots_no_citations_best is not None:
+        ax.scatter([1], [cots_no_citations_best], marker='*', s=300, c='gold', 
+                  edgecolors='black', linewidths=1.5, zorder=5, label='Best Performer')
+    if npz_no_citations_best is not None:
+        ax.scatter([2], [npz_no_citations_best], marker='*', s=300, c='gold', 
+                  edgecolors='black', linewidths=1.5, zorder=5)
     
     ax.yaxis.grid(True, linestyle='--', alpha=0.3)
     ax.set_ylabel('% of Parameters', fontsize=12)
     ax.set_xlabel('Model Type', fontsize=12)
     ax.set_title('No Citations', fontsize=14, fontweight='bold')
+    if cots_no_citations_best is not None or npz_no_citations_best is not None:
+        ax.legend(loc='best', fontsize=9)
     
     for i, (label, data) in enumerate(zip(tick_labels, data_to_plot)):
         ax.text(i + 1, ax.get_ylim()[1] * 0.95, f'n={len(data)}',
-                ha='center', va='top', fontsize=10)
+                ha='center', va='top', fontsize=9)
     
     # Plot 2: Semantic Scholar citations (top right)
     ax = axes[1]
@@ -240,19 +303,29 @@ def create_boxplot(all_populations: List[Dict], output_path: Path):
     bp = ax.boxplot(data_to_plot, tick_labels=tick_labels, patch_artist=True,
                     showmeans=True, meanline=True)
     
-    colors = ['#ffcc99', '#99ccff']
+    colors = ['#ffcccc', '#ccccff']
     for patch, color in zip(bp['boxes'], colors):
         patch.set_facecolor(color)
-        patch.set_alpha(0.7)
+        patch.set_alpha(0.6)
+    
+    # Add asterisks for best performers
+    if cots_semantic_best is not None:
+        ax.scatter([1], [cots_semantic_best], marker='*', s=300, c='gold', 
+                  edgecolors='black', linewidths=1.5, zorder=5, label='Best Performer')
+    if npz_semantic_best is not None:
+        ax.scatter([2], [npz_semantic_best], marker='*', s=300, c='gold', 
+                  edgecolors='black', linewidths=1.5, zorder=5)
     
     ax.yaxis.grid(True, linestyle='--', alpha=0.3)
     ax.set_ylabel('% of Parameters', fontsize=12)
     ax.set_xlabel('Model Type', fontsize=12)
     ax.set_title('Semantic Scholar Citations', fontsize=14, fontweight='bold')
+    if cots_semantic_best is not None or npz_semantic_best is not None:
+        ax.legend(loc='best', fontsize=9)
     
     for i, (label, data) in enumerate(zip(tick_labels, data_to_plot)):
         ax.text(i + 1, ax.get_ylim()[1] * 0.95, f'n={len(data)}',
-                ha='center', va='top', fontsize=10)
+                ha='center', va='top', fontsize=9)
     
     # Plot 3: doc_store citations (bottom left)
     ax = axes[2]
@@ -261,19 +334,29 @@ def create_boxplot(all_populations: List[Dict], output_path: Path):
     bp = ax.boxplot(data_to_plot, tick_labels=tick_labels, patch_artist=True,
                     showmeans=True, meanline=True)
     
-    colors = ['#ff99cc', '#99ffcc']
+    colors = ['#ffcccc', '#ccccff']
     for patch, color in zip(bp['boxes'], colors):
         patch.set_facecolor(color)
-        patch.set_alpha(0.7)
+        patch.set_alpha(0.6)
+    
+    # Add asterisks for best performers
+    if cots_docstore_best is not None:
+        ax.scatter([1], [cots_docstore_best], marker='*', s=300, c='gold', 
+                  edgecolors='black', linewidths=1.5, zorder=5, label='Best Performer')
+    if npz_docstore_best is not None:
+        ax.scatter([2], [npz_docstore_best], marker='*', s=300, c='gold', 
+                  edgecolors='black', linewidths=1.5, zorder=5)
     
     ax.yaxis.grid(True, linestyle='--', alpha=0.3)
     ax.set_ylabel('% of Parameters', fontsize=12)
     ax.set_xlabel('Model Type', fontsize=12)
     ax.set_title('Local doc_store Citations', fontsize=14, fontweight='bold')
+    if cots_docstore_best is not None or npz_docstore_best is not None:
+        ax.legend(loc='best', fontsize=9)
     
     for i, (label, data) in enumerate(zip(tick_labels, data_to_plot)):
         ax.text(i + 1, ax.get_ylim()[1] * 0.95, f'n={len(data)}',
-                ha='center', va='top', fontsize=10)
+                ha='center', va='top', fontsize=9)
     
     # Plot 4: Stacked bar chart showing average breakdown (bottom right)
     ax = axes[3]
@@ -285,30 +368,24 @@ def create_boxplot(all_populations: List[Dict], output_path: Path):
     x = np.arange(2)
     width = 0.6
     
-    p1 = ax.bar(x, [cots_means[0], npz_means[0]], width, label='No Citations', color='#cccccc')
-    p2 = ax.bar(x, [cots_means[1], npz_means[1]], width, bottom=[cots_means[0], npz_means[0]], 
-                label='Semantic Scholar', color='#99ccff')
-    p3 = ax.bar(x, [cots_means[2], npz_means[2]], width, 
-                bottom=[cots_means[0]+cots_means[1], npz_means[0]+npz_means[1]], 
-                label='Local doc_store', color='#99ffcc')
+    means_list = [cots_means, npz_means]
+    
+    # Plot stacked bars
+    bottoms = [0, 0]
+    for i, label in enumerate(['No Citations', 'Semantic Scholar', 'Local doc_store']):
+        heights = [means[i] for means in means_list]
+        colors_map = ['#ffcccc', '#ccccff']
+        ax.bar(x, heights, width, bottom=bottoms, label=label, 
+               color=colors_map, alpha=0.6)
+        bottoms = [b + h for b, h in zip(bottoms, heights)]
     
     ax.set_ylabel('% of Parameters', fontsize=12)
     ax.set_xlabel('Model Type', fontsize=12)
     ax.set_title('Average Citation Source Breakdown', fontsize=14, fontweight='bold')
     ax.set_xticks(x)
-    ax.set_xticklabels(tick_labels)
-    ax.legend(loc='lower right')
+    ax.set_xticklabels(['COTS', 'NPZ'], fontsize=10)
+    ax.legend(loc='upper right', fontsize=9)
     ax.yaxis.grid(True, linestyle='--', alpha=0.3)
-    
-    # Add percentage labels on bars
-    for i, (c_vals, n_vals) in enumerate(zip([cots_means], [npz_means])):
-        for j, (c, n) in enumerate(zip(c_vals, n_vals)):
-            if c > 5:  # Only show label if segment is large enough
-                y_pos = sum(cots_means[:j]) + c/2
-                ax.text(0, y_pos, f'{c:.1f}%', ha='center', va='center', fontsize=10, fontweight='bold')
-            if n > 5:
-                y_pos = sum(npz_means[:j]) + n/2
-                ax.text(1, y_pos, f'{n:.1f}%', ha='center', va='center', fontsize=10, fontweight='bold')
     
     plt.tight_layout()
     plt.savefig(output_path, dpi=300, bbox_inches='tight')
@@ -326,8 +403,13 @@ def main():
     
     print("=" * 80)
     print("POPULATION CITATION ANALYSIS (NPZ vs COTS)")
+    print("Including Best Performers from populations_analysis.json")
     print("=" * 80)
     print()
+    
+    # Load best performers
+    best_performers = load_best_performers()
+    print(f"Loaded {len(best_performers)} best performers from populations_analysis.json\n")
     
     # Get all population directories
     population_dirs = [d for d in populations_dir.iterdir() 
@@ -336,7 +418,7 @@ def main():
     all_populations = []
     
     for population_dir in sorted(population_dirs):
-        population_analysis = analyze_population(population_dir)
+        population_analysis = analyze_population(population_dir, best_performers)
         
         if population_analysis:
             all_populations.append(population_analysis)
@@ -412,6 +494,30 @@ def main():
     print("SUMMARY STATISTICS (% of total parameters)")
     print("=" * 80)
     
+    # Calculate best performer summaries
+    npz_best_params = 0
+    npz_best_citations = 0
+    npz_best_semantic = 0
+    npz_best_docstore = 0
+    cots_best_params = 0
+    cots_best_citations = 0
+    cots_best_semantic = 0
+    cots_best_docstore = 0
+    
+    for pop in all_populations:
+        for ind in pop['individuals']:
+            if ind.get('is_best_performer', False) and ind['parameters_metadata_exists']:
+                if pop['population_type'] == 'NPZ':
+                    npz_best_params += ind['total_params']
+                    npz_best_citations += ind['params_with_citations']
+                    npz_best_semantic += ind['params_with_semantic']
+                    npz_best_docstore += ind['params_with_docstore']
+                else:
+                    cots_best_params += ind['total_params']
+                    cots_best_citations += ind['params_with_citations']
+                    cots_best_semantic += ind['params_with_semantic']
+                    cots_best_docstore += ind['params_with_docstore']
+    
     # NPZ summary
     if npz_populations:
         npz_params = sum(pop['total_params_all_individuals'] for pop in npz_populations)
@@ -426,12 +532,28 @@ def main():
         npz_no_citations_pct = (npz_no_citations / npz_params * 100) if npz_params > 0 else 0.0
         
         print(f"\nNPZ Populations ({len(npz_populations)} total):")
-        print(f"  Total parameters: {npz_params}")
-        print(f"  Breakdown:")
-        print(f"    - No citations: {npz_no_citations} ({npz_no_citations_pct:.2f}%)")
-        print(f"    - Semantic Scholar: {npz_semantic} ({npz_semantic_pct:.2f}%)")
-        print(f"    - Local doc_store: {npz_docstore} ({npz_docstore_pct:.2f}%)")
-        print(f"  Total with ANY citations: {npz_citations} ({npz_percentage:.2f}%)")
+        print(f"  All Individuals:")
+        print(f"    Total parameters: {npz_params}")
+        print(f"    Breakdown:")
+        print(f"      - No citations: {npz_no_citations} ({npz_no_citations_pct:.2f}%)")
+        print(f"      - Semantic Scholar: {npz_semantic} ({npz_semantic_pct:.2f}%)")
+        print(f"      - Local doc_store: {npz_docstore} ({npz_docstore_pct:.2f}%)")
+        print(f"    Total with ANY citations: {npz_citations} ({npz_percentage:.2f}%)")
+        
+        if npz_best_params > 0:
+            npz_best_no_citations = npz_best_params - npz_best_citations
+            npz_best_percentage = (npz_best_citations / npz_best_params * 100)
+            npz_best_semantic_pct = (npz_best_semantic / npz_best_params * 100)
+            npz_best_docstore_pct = (npz_best_docstore / npz_best_params * 100)
+            npz_best_no_citations_pct = (npz_best_no_citations / npz_best_params * 100)
+            
+            print(f"  Best Performers Only:")
+            print(f"    Total parameters: {npz_best_params}")
+            print(f"    Breakdown:")
+            print(f"      - No citations: {npz_best_no_citations} ({npz_best_no_citations_pct:.2f}%)")
+            print(f"      - Semantic Scholar: {npz_best_semantic} ({npz_best_semantic_pct:.2f}%)")
+            print(f"      - Local doc_store: {npz_best_docstore} ({npz_best_docstore_pct:.2f}%)")
+            print(f"    Total with ANY citations: {npz_best_citations} ({npz_best_percentage:.2f}%)")
     
     # COTS summary
     if cots_populations:
@@ -447,12 +569,28 @@ def main():
         cots_no_citations_pct = (cots_no_citations / cots_params * 100) if cots_params > 0 else 0.0
         
         print(f"\nCOTS Populations ({len(cots_populations)} total):")
-        print(f"  Total parameters: {cots_params}")
-        print(f"  Breakdown:")
-        print(f"    - No citations: {cots_no_citations} ({cots_no_citations_pct:.2f}%)")
-        print(f"    - Semantic Scholar: {cots_semantic} ({cots_semantic_pct:.2f}%)")
-        print(f"    - Local doc_store: {cots_docstore} ({cots_docstore_pct:.2f}%)")
-        print(f"  Total with ANY citations: {cots_citations} ({cots_percentage:.2f}%)")
+        print(f"  All Individuals:")
+        print(f"    Total parameters: {cots_params}")
+        print(f"    Breakdown:")
+        print(f"      - No citations: {cots_no_citations} ({cots_no_citations_pct:.2f}%)")
+        print(f"      - Semantic Scholar: {cots_semantic} ({cots_semantic_pct:.2f}%)")
+        print(f"      - Local doc_store: {cots_docstore} ({cots_docstore_pct:.2f}%)")
+        print(f"    Total with ANY citations: {cots_citations} ({cots_percentage:.2f}%)")
+        
+        if cots_best_params > 0:
+            cots_best_no_citations = cots_best_params - cots_best_citations
+            cots_best_percentage = (cots_best_citations / cots_best_params * 100)
+            cots_best_semantic_pct = (cots_best_semantic / cots_best_params * 100)
+            cots_best_docstore_pct = (cots_best_docstore / cots_best_params * 100)
+            cots_best_no_citations_pct = (cots_best_no_citations / cots_best_params * 100)
+            
+            print(f"  Best Performers Only:")
+            print(f"    Total parameters: {cots_best_params}")
+            print(f"    Breakdown:")
+            print(f"      - No citations: {cots_best_no_citations} ({cots_best_no_citations_pct:.2f}%)")
+            print(f"      - Semantic Scholar: {cots_best_semantic} ({cots_best_semantic_pct:.2f}%)")
+            print(f"      - Local doc_store: {cots_best_docstore} ({cots_best_docstore_pct:.2f}%)")
+            print(f"    Total with ANY citations: {cots_best_citations} ({cots_best_percentage:.2f}%)")
     
     # Overall summary
     total_params = sum(pop['total_params_all_individuals'] for pop in all_populations)
@@ -515,6 +653,28 @@ def main():
                     "semantic_percentage": cots_semantic_pct if cots_populations else 0.0,
                     "docstore_percentage": cots_docstore_pct if cots_populations else 0.0,
                     "no_citations_percentage": cots_no_citations_pct if cots_populations else 0.0
+                },
+                "npz_best_performers_summary": {
+                    "total_parameters": npz_best_params,
+                    "params_with_citations": npz_best_citations,
+                    "params_with_semantic": npz_best_semantic,
+                    "params_with_docstore": npz_best_docstore,
+                    "params_no_citations": npz_best_params - npz_best_citations,
+                    "citation_percentage": (npz_best_citations / npz_best_params * 100) if npz_best_params > 0 else 0.0,
+                    "semantic_percentage": (npz_best_semantic / npz_best_params * 100) if npz_best_params > 0 else 0.0,
+                    "docstore_percentage": (npz_best_docstore / npz_best_params * 100) if npz_best_params > 0 else 0.0,
+                    "no_citations_percentage": ((npz_best_params - npz_best_citations) / npz_best_params * 100) if npz_best_params > 0 else 0.0
+                },
+                "cots_best_performers_summary": {
+                    "total_parameters": cots_best_params,
+                    "params_with_citations": cots_best_citations,
+                    "params_with_semantic": cots_best_semantic,
+                    "params_with_docstore": cots_best_docstore,
+                    "params_no_citations": cots_best_params - cots_best_citations,
+                    "citation_percentage": (cots_best_citations / cots_best_params * 100) if cots_best_params > 0 else 0.0,
+                    "semantic_percentage": (cots_best_semantic / cots_best_params * 100) if cots_best_params > 0 else 0.0,
+                    "docstore_percentage": (cots_best_docstore / cots_best_params * 100) if cots_best_params > 0 else 0.0,
+                    "no_citations_percentage": ((cots_best_params - cots_best_citations) / cots_best_params * 100) if cots_best_params > 0 else 0.0
                 }
             }
         }, f, indent=2)
@@ -523,9 +683,15 @@ def main():
     
     # Create boxplot visualization
     if all_populations:
-        boxplot_file = Path("Figures/citations_boxplot.png")
-        create_boxplot(all_populations, boxplot_file)
+        # After writing Results/citations_analysis.json:
+        json_path = Path("Results/citations_analysis.json")
+        out_path = Path("Figures/citations_boxplot.png")
 
+        subprocess.run(
+            ["Rscript", "scripts_analysis/plot_citations.R", str(json_path), str(out_path)],
+            check=True
+        )
+        print(f"Citation breakdown figure saved to: {out_path}")
 
 if __name__ == "__main__":
     main()
