@@ -4,86 +4,289 @@
 
 Before presenting the full code for each model, we analyze the key differences between the best-performing models to understand their ecological approaches and mathematical structures.
 
-\input{supp_comparison}
+% \input{supp_comparison}
 
 \subsection{Detailed Ecological Mechanisms}
 \label{subsec:ecological_mechanisms}
+\begin{landscape}
+\begin{table}[htbp]
+\centering
+\footnotesize
+\setlength{\tabcolsep}{3pt}
+\renewcommand{\arraystretch}{1.2}
+\begin{tabularx}{\linewidth}{@{}lXXXX@{}}
+\toprule
+\textbf{Mechanism (anchored to Human \texttt{CoTSmodel\_v4.cpp})} &
+\textbf{Human v4} &
+\textbf{Google Gemini 2.5 Pro} &
+\textbf{OpenAI GPT--5} &
+\textbf{Anthropic Claude Sonnet 4.5} \\
+\midrule
+\textbf{COTS state structure / life history} &
+\textit{Age-structured (3 classes)}: \(N_{t+1,1} = N_{t,0} e^{-M_0}\); \(N_{t+1,2} = N_{t,1} e^{-f M_1} + N_{t,2} e^{-f M_2}\); recruits form \(N_{t+1,0}\). Age-specific mortality \(M_a = M_{\text{cots}} + \lambda /(1+a)\). &
+\textit{Single compartment} \(C_t\) (no explicit ages). Growth from consumption + modifiers. &
+\textit{Two-stage} (juveniles \(J\) and adults \(C\)): maturation \(m_J J\); juvenile mortality \(\mu_J J\); adult mortality \((\mu_C + \gamma_C C)C\). &
+\textit{Single compartment} with logistic-like adult growth plus additive recruitment pulse; no age classes. \\
+\midrule
+\textbf{COTS stock--recruitment} &
+\textit{Beverton--Holt (BH) from spawners}:
+\(R_{t+1} = \dfrac{\alpha (N_{t+1,2}/K_{\text{sp}})}{\beta + (N_{t+1,2}/K_{\text{sp}})}\),
+with \(\alpha,\beta\) derived from slope steepness \(h\) and \(R_0\). &
+\textit{Not BH}:
+recruitment implicit via \(\big(e_F \cdot \text{Cons}_F + e_S \cdot \text{Cons}_S\big)\)
+\(\times\) Allee \(\times\) temperature Gaussian (no explicit SR function). &
+\textit{BH-like taper on adults}:
+\(\text{Rec} = \alpha_{\text{rec}}\,[ C^\phi /(1 + C/C_{\text{sat}} ) ] \cdot f_{\text{Allee}}(C) \cdot f_T(\text{SST}) \cdot f_{\text{food}}
++ \text{imm}_{t-1}\). &
+\textit{Additive pulse recruitment}:
+\(\text{recruit\_pulse} = R_{\max}\cdot \sigma\!\big(\text{fav}-\tau\big)\cdot \text{fav}\),
+added to adult change; adult growth also logistic-like. \\
+\midrule
+\textbf{COTS immigration \& interannual pulses} &
+\textit{Background immigration} + year-specific deviations:
+\(N_{t+1,0} = (R_{t+1} + \text{Imm}_{\text{CoTS}})\exp(\varepsilon_{t+1} + \sigma^2/2)\);
+\(\varepsilon_t\) applied in specified years. &
+Exogenous additive series \(\text{cotsimm}(t)\) added directly to \(C_t\) dynamics. &
+Exogenous series \(\text{cotsimm}_{t-1}\) added to recruitment (lagged). &
+Used twice:
+(i) normalized within favorability index, and
+(ii) multiplicative \(\text{immigration\_boost} = 1 + \text{effect}\cdot \text{imm}\) on adult growth. \\
+\midrule
+\textbf{COTS mortality and its drivers} &
+\textit{Baseline + age-dependent}, modulated by coral availability:
+effective multiplier \(f = (1 - \tilde p) + \tilde p \cdot \rho\) (see prey switching \(\rho\));
+applied to age-1 and age-2+ mortality; mortality reduced when fast coral abundant. &
+\textit{No age structure};
+mortality = survival Allee
+\(\dfrac{m_{C,\max} C}{1 + C/A_{\text{mort}}}\)
+\(+\) quadratic density dependence \(m_{C,\text{dd}} C^2\);
+not explicitly coral-modulated. &
+\textit{No age structure};
+adult mortality \((\mu_C + \gamma_C C) C\);
+not explicitly coral-modulated. &
+\textit{No age structure};
+baseline + density-dependent mortality,
+\textbf{amplified by starvation}:
+multiplier \(1 + 2\,e^{- (F+S)/5}\) increases mortality when coral scarce. \\
+\midrule
+\textbf{Prey switching / diet preference} &
+\textit{Abundance-driven switching}:
+\(\rho = \exp(-\text{switchSlope}\cdot F/K)\).
+Predation share on fast coral \(\propto (1-\rho)\), on slow \(\propto \rho\).
+As fast coral increases, switch toward fast prey. &
+Implicit via multi-prey Type II with separate \(a_F, a_S\); no explicit \(\rho\) rule. &
+Implicit via Type II/III blend (exponents \(\eta_F,\eta_S\) create low-prey refuge); no explicit \(\rho\). &
+\textit{Preference + availability}:
+weight combines fixed preference with fast-coral proportion (soft switching toward abundant prey). \\
+\midrule
+\textbf{Functional response (COTS $\rightarrow$ coral consumption)} &
+\textit{Sigmoid-saturated vs COTS density}:
+\(Q_F = F\,(1-\rho)\,p_{1F}\,\dfrac{N_{1+2}}{1+\exp\!\big(-N_{1+2}/p_{2F}\big)}\),
+\(Q_M = S\,\rho\,p_{1M}\,\dfrac{N_{1+2}}{1+\exp\!\big(-N_{1+2}/p_{2M}\big)}\). &
+\textit{Multi-prey Holling Type II}:
+per-capita
+\(\dfrac{a_F F}{1 + a_F h F + a_S h S}\),
+\(\dfrac{a_S S}{1 + a_F h F + a_S h S}\);
+totals scale with \(C\). &
+\textit{Type II/III blend}:
+\(\text{Cons}_F = q_F \dfrac{a_F F^{\eta_F} C}{1 + h(a_F F^{\eta_F} + a_S S^{\eta_S})}\),
+\(\text{Cons}_S = q_S \dfrac{a_S S^{\eta_S} C}{1 + h(a_F F^{\eta_F} + a_S S^{\eta_S})}\). &
+\textit{Type II per prey} with separate handling;
+then \textit{preference weighting} mixes fast vs slow consumption. \\
+\midrule
+\textbf{Coral intrinsic growth \& space competition} &
+\textit{Logistic regrowth with shared space}:
+\(\displaystyle F_{t+1} = F_t \Big[1 + \rho_F(\text{SST})\, r_f \Big(1 - \tfrac{F_t + S_t}{K}\Big)\Big] - Q_F - M_{\text{ble},F}\);
+analogous for \(S\). &
+\textit{Logistic regrowth} with shared \(K_{\text{coral}}\);
+losses: predation + bleaching mortality. &
+\textit{Logistic regrowth} with shared \(K_{\text{tot}}\);
+losses: predation + heat-related terms. &
+\textit{Logistic regrowth} with shared \(K_{\text{coral}}\);
+losses: predation + temperature-stress mortality. \\
+\midrule
+\textbf{SST modulation of coral regrowth (performance curve)} &
+\textit{Gaussian performance multiplier}:
+\(\rho_F(\text{SST}) = \exp\!\left[-\dfrac{(\text{SST} - \text{SST0}_f)^2}{2\,\text{SST\_sig}_f^2}\right]\),
+\(\rho_M(\text{SST}) = \exp\!\left[-\dfrac{(\text{SST} - \text{SST0}_m)^2}{2\,\text{SST\_sig}_m^2}\right]\). &
+Not Gaussian on growth; SST enters via \textit{logistic bleaching mortality} (see below). &
+\textit{Heat-stress growth reduction}:
+multiplier \(\exp[-\beta_{\text{bleach}} \max(0, \text{SST} - T_{\text{bleach}})]\) on growth (non-Gaussian). &
+\textit{Threshold stress loss}:
+linear mortality above \(T_{\text{stress}}\); no Gaussian growth multiplier. \\
+\midrule
+\textbf{Coral bleaching mortality} &
+\textit{Logistic bleaching}:
+\(M_{\text{ble},F} = F \cdot \big[1 + \exp\{-\eta_f(\text{SST} - M_{50,F})\}\big]^{-1}\);
+analogous for slow coral (impulse option commented). &
+\textit{Logistic bleaching mortality}:
+\(m_{F,\text{sst}} / \big[1 + \exp\{-k_{\text{bleach}}(\text{SST} - T_{\text{bleach},F})\}\big]\);
+applied proportionally to \(F\); analogous for \(S\). &
+Two components:
+(i) multiplicative \textit{growth reduction} under heat,
+(ii) \textit{additional linear loss} \(m_{\text{bleach}} \cdot \text{heat} \cdot \text{coral}\);
+no logistic 50\% curve. &
+\textit{Temperature-stress mortality} proportional to degrees above threshold;
+no explicit logistic bleaching curve. \\
+\midrule
+\textbf{Coral carrying capacity (space sharing)} &
+\textit{Shared \(K\)} via \(1 - (F+S)/K\) in both coral equations. &
+\textit{Shared \(K_{\text{coral}}\)} in coral logistic growth. &
+\textit{Shared \(K_{\text{tot}}\)} in coral logistic growth. &
+\textit{Shared \(K_{\text{coral}}\)} in coral logistic growth. \\
+\bottomrule
+\end{tabularx}
+\caption{Side-by-side comparison of ecological mechanisms and mathematical implementations across the human-generated reference model (\texttt{CoTSmodel\_v4.cpp}) and three LLM-generated models. The rows are anchored to mechanisms explicitly present in the human model; each LLM implementation is summarized without parameter values. Symbols: \(C\) adult COTS, \(J\) juvenile COTS, \(F,S\) fast/slow coral cover, \(K\) shared coral carrying capacity, \(\text{SST}\) sea surface temperature.}
+\label{tab:mechanism_comparison}
+\end{table}
+\end{landscape}
 
-The models employ distinctly different approaches to represent key ecological processes:
+\begin{landscape}
+\begin{table}[htbp]
+\centering
+\footnotesize
+\renewcommand{\arraystretch}{1.15}
+\setlength{\tabcolsep}{3pt}
+\begin{tabularx}{\linewidth}{@{}l l l l X@{}}
+\toprule
+\textbf{Human (name)} & \textbf{Role / Units} & \textbf{Gemini 2.5 Pro} & \textbf{OpenAI GPT--5} & \textbf{Claude Sonnet 4.5} \\
+\midrule
+\texttt{Mcots} & Baseline instantaneous COTS mortality (yr$^{-1}$) &
+$m_{C,\max}$ (low-density mortality scale); $m_{C,\text{dd}}$ (DD mortality) &
+$\mu_C$ (baseline adult mortality), $\gamma_C$ (DD mortality) &
+$\texttt{log\_mort\_base}$ (baseline), $\texttt{log\_mort\_density}$ (DD) \\
+\texttt{lam} & Age-dependence of mortality, $M_a = M_{\rm cots}+\lambda/(1+a)$ &
+--- (no age structure) & --- (two-stage but no age-specific $M$) & --- (no age structure) \\
+\texttt{ptil} & Fraction of $M$ attributable to fast-coral availability (mortality modulation) &
+--- (no coral-modulated $M$) &
+--- (no coral-modulated $M$) &
+Starvation multiplier $1+2e^{-(F+S)/5}$ (different form) \\
+\texttt{h} (BH steepness) & Shapes SR via $(R_0,h)\rightarrow \alpha,\beta$ &
+--- (no BH SR; growth from consumption) &
+$C_{\text{sat,rec}}$ (BH-like taper), $\alpha_{\rm rec}$, $\phi$ (fecundity exponent) &
+Recruitment pulse parameters: $\texttt{log\_recruit\_max}$, $\texttt{recruit\_threshold}$ \\
+\texttt{R0} & Recruitment at unexploited state (for SR derivation) &
+--- (no explicit $R_0$) &
+$\alpha_{\rm rec}$ (scales juvenile input; closest analogue) &
+$\texttt{log\_recruit\_max}$ (caps pulse magnitude; different structure) \\
+\texttt{Imm\_CoTS} & Background immigration (ind m$^{-2}$ yr$^{-1}$) &
+$\texttt{cotsimm\_dat}(t)$ (added to adults each step) &
+$\texttt{cotsimm\_dat}(t\!-\!1)$ (added into recruitment) &
+$\texttt{cotsimm\_dat}$ used in favorability and as growth boost \\
+\texttt{sigCoTS} & SR process variability (lognormal on recruits) &
+--- (no process noise term; observation SD only) &
+--- (no explicit process noise on SR; observation SDs) &
+--- (no explicit process noise on SR; observation SDs) \\
+\texttt{immigration} & Year-specific recruitment deviations (vector by year) &
+Represent via time series in $\texttt{cotsimm\_dat}$ &
+Represent via time series in $\texttt{cotsimm\_dat}$ &
+Represent via time series in $\texttt{cotsimm\_dat}$ \\
+\texttt{COTS\_init} & Initial COTS abundance (age-2+) &
+Init from first data row (no param) &
+$C0$ (adults), $J0$ (juveniles) &
+Init from first data row (no param) \\
+\bottomrule
+\end{tabularx}
+\caption{COTS demography and recruitment parameter mapping. Human model uses age classes and Beverton--Holt SR; Gemini uses consumption-driven growth; GPT--5 uses BH-like SR on adults with environmental modifiers; Claude adds an episodic recruitment pulse.}
+\label{tab:params_cots}
+\end{table}
+\end{landscape}
 
-\subsubsection{Temperature Dependency}
-\label{subsubsec:temperature_dependency}
+\begin{landscape}
+\begin{table}[htbp]
+\centering
+\footnotesize
+\renewcommand{\arraystretch}{1.15}
+\setlength{\tabcolsep}{3pt}
+\begin{tabularx}{\linewidth}{@{}l l l l X@{}}
+\toprule
+\textbf{Human (name)} & \textbf{Role / Units} & \textbf{Gemini 2.5 Pro} & \textbf{OpenAI GPT--5} & \textbf{Claude Sonnet 4.5} \\
+\midrule
+\texttt{p1f}, \texttt{p1m} & Per-COTS coral loss coefficients (fast/slow), units of \% cover $\cdot$ (ind$^{-1}$ yr$^{-1}$) &
+$a_F,a_S$ (attack), $h$ (handling) with efficiencies $e_F,e_S$ for COTS growth (coral loss $\propto$ consumption) &
+$aF,aS$ (attack), $h$ (handling), $qF,qS$ (loss efficiencies) \quad(Type II/III via $\eta_F,\eta_S$) &
+$\texttt{log\_attack\_fast/slow}$, $\texttt{log\_handling\_fast/slow}$, plus preference weighting \\
+\texttt{p2f}, \texttt{p2m} & Logistic saturation vs COTS density (shape of $Q_F,Q_M$) &
+Denominator $1+a_FhF+a_ShS$ (resource-based saturation; no explicit p2) &
+Denominator $1+h(a_FF^{\eta_F}+a_SS^{\eta_S})$ (no explicit p2) &
+Separate Type-II denominators per prey (no explicit p2) \\
+\texttt{switchSlope} & Controls prey switching: $\rho=\exp(-\text{switchSlope}\cdot F/K)$ &
+--- (no explicit $\rho$) &
+$\eta_F,\eta_S$ (Type-III curvature; soft switching), no $\rho$ &
+$\texttt{preference\_fast}$ blended with fast-coral share (soft switching) \\
+\bottomrule
+\end{tabularx}
+\caption{Predation and prey-switching parameters. Human model uses COTS-density logistic saturation (via $p2$) and an explicit exponential switching function; LLMs use Holling multi-prey forms with handling and (in GPT--5) Type-III exponents; Claude adds an explicit preference term.}
+\label{tab:params_predation}
+\end{table}
+\end{landscape}
 
-\paragraph{Human Model:} Implements temperature effects through two distinct mechanisms: (1) Gaussian functions modifying coral growth rates and (2) a logistic bleaching mortality function with explicit temperature thresholds (M\_SST50\_f, M\_SST50\_m).
+\begin{landscape}
+\begin{table}[htbp]
+\centering
+\footnotesize
+\renewcommand{\arraystretch}{1.15}
+\setlength{\tabcolsep}{3pt}
+\begin{tabularx}{\linewidth}{@{}l l l l X@{}}
+\toprule
+\textbf{Human (name)} & \textbf{Role / Units} & \textbf{Gemini 2.5 Pro} & \textbf{OpenAI GPT--5} & \textbf{Claude Sonnet 4.5} \\
+\midrule
+\texttt{K} & Shared coral carrying capacity (\% cover scale) &
+$K_{\text{coral}}$ (\texttt{log\_K\_coral} parameterized) &
+$K_{\text{tot}}$ &
+$K_{\text{coral}}$ (\texttt{log\_K\_coral}) \\
+\texttt{rf}, \texttt{rm} & Intrinsic regrowth (fast/slow), yr$^{-1}$ &
+$r_F,r_S$ (\texttt{log\_r\_F}, \texttt{log\_r\_S}) &
+$rF,rS$ &
+$r_{\text{fast}},r_{\text{slow}}$ (\texttt{log\_r\_fast}, \texttt{log\_r\_slow}) \\
+\texttt{Cf\_init}, \texttt{Cm\_init} & Initial coral state (fraction of $K$) &
+Init from first data row (no param) &
+$F0,S0$ &
+Init from first data row (no param) \\
+\bottomrule
+\end{tabularx}
+\caption{Coral demography and space limitation. All models use a shared carrying capacity for two coral groups; GPT--5 exposes explicit initial-state parameters.}
+\label{tab:params_coral}
+\end{table}
+\end{landscape}
 
-\paragraph{o3 mini:} Employs an asymmetric Gaussian temperature response with a skew parameter, allowing for non-symmetric responses to temperature deviations.
-
-\paragraph{Claude Sonnet 3.6:} Uses a standard Gaussian temperature effect (temp\_opt = 28°C) similar to the human model but without the explicit bleaching threshold.
-
-\paragraph{Claude Sonnet 3.7:} Implements a Gaussian temperature response with temp\_opt = 28°C and temp\_width = 2°C, affecting COTS recruitment. Also includes a bleaching effect with a threshold of 30°C.
-
-\paragraph{o4 mini:} Does not include explicit temperature dependency for COTS in its core equations, focusing instead on resource limitation and outbreak dynamics.
-
-\paragraph{gpt 4.1:} Implements a linear temperature effect where SST modifies growth (centered at 27°C) through the parameter theta\_sst.
-
-\subsubsection{Predation Formulations}
-\label{subsubsec:predation_formulations}
-
-\paragraph{Human Model:} Features an explicit prey-switching function where COTS predation preference between fast and slow corals depends on the relative abundance of fast-growing coral, with separate parameters for predation intensity (p1f, p1m) and density-dependence (p2f, p2m).
-
-\paragraph{o3 mini:} Implements direct predation with efficiency factors of 0.4 for fast coral and 0.6 for slow coral, with temperature modifying the predation efficiency on slow coral.
-
-\paragraph{Claude Sonnet 3.6:} Uses a simple Type II functional response with grazing rates of 0.1 for fast coral and 0.05 for slow coral, creating a saturating predation effect at high prey densities.
-
-\paragraph{Claude Sonnet 3.7:} Employs a Holling Type II functional response with attack rates of 0.2 for fast coral and 0.05 for slow coral, with handling times for both coral types.
-
-\paragraph{o4 mini:} Implements a Type III functional response with predation efficiency of 0.05, creating a sigmoidal functional response that reduces predation at low prey densities.
-
-\paragraph{gpt 4.1:} Uses a Type II functional response with attack rates of 0.14 for fast coral and 0.08 for slow coral, with predation partitioned by coral type.
-
-\subsubsection{Population Structure}
-\label{subsubsec:population_structure}
-
-\paragraph{Human Model:} Implements an age-structured COTS population with explicit age classes (age-0, age-1, and age-2+), each with age-dependent mortality rates, and uses a Beverton-Holt stock-recruitment relationship.
-
-\paragraph{AI Models:} Generally employ simpler, unstructured population approaches with single-state variables for COTS abundance. The models use various forms of logistic growth (o3 mini, Claude Sonnet 3.7, o4 mini, gpt 4.1) or temperature-modified reproduction functions (Claude Sonnet 3.6, Claude Sonnet 3.7, gpt 4.1).
-
-\subsection{Comparison with Human Model}
-\label{subsec:human_comparison}
-
-The human-generated model provides an important reference point for evaluating the AI-generated models. This expert-developed model incorporates several ecological mechanisms that differ from the AI approaches.
-
-\paragraph{Population structure:}
-Unlike the AI models, the human-generated model implements an age-structured COTS population with explicit age classes (age-0, age-1, and age-2+), each with age-dependent mortality rates. This contrasts with the simpler, unstructured population approaches in the AI models, which generally use single-state variables for COTS abundance.
-
-\paragraph{Stock-recruitment relationship:}
-The human model employs a Beverton-Holt stock-recruitment relationship for COTS reproduction, with parameters derived from unexploited population characteristics. This mechanistic approach differs from the AI models, which typically use simpler logistic growth or temperature-modified reproduction functions.
-
-\paragraph{Prey switching:}
-A distinctive feature of the human model is its explicit prey-switching function, where COTS predation preference between fast and slow corals depends on the relative abundance of fast-growing coral. This creates a dynamic feedback mechanism not fully captured in most AI models, though the o3 mini model implements a somewhat similar approach with its complex feedback mechanisms. The gpt 4.1 model also implements a form of prey partitioning based on relative coral abundance.
-
-\paragraph{Temperature effects:}
-The human model implements temperature effects through two distinct mechanisms: (1) Gaussian functions modifying coral growth rates, similar to Claude Sonnet 3.6 and Claude Sonnet 3.7, and (2) a logistic bleaching mortality function with temperature thresholds, which is also implemented in Claude Sonnet 3.7 with its bleach\_threshold parameter of 30°C.
-
-\paragraph{Parameter differences:}
-The human model uses different parameterization approaches, including:
-\begin{itemize}
-\item Direct parameterization of carrying capacity (K = 3000) rather than log-transformed values used in Claude Sonnet 3.6, Claude Sonnet 3.7, and gpt 4.1
-\item Separate parameters for predation intensity (p1f = 0.15, p1m = 0.06) and density-dependence (p2f, p2m)
-\item Explicit bleaching threshold parameters (M\_SST50\_f, M\_SST50\_m) compared to the single bleach\_threshold in Claude Sonnet 3.7
-\item Age-dependent mortality components for COTS (Mcots = 2.3) compared to simpler mortality formulations in the AI models (e.g., m\_cots = 0.4 in Claude Sonnet 3.7, 0.3 in o4 mini, and 0.37 in gpt 4.1)
-\item Explicit optimal temperatures for both coral types (SST0\_f = 26°C, SST0\_m = 27°C) which are not specified in the AI models
-\end{itemize}
-
-\subsection{Carrying Capacity and Growth Rate Comparison}
-\label{subsec:carrying_capacity_comparison}
-
-The models show variation in their parameterization of carrying capacity and growth rates:
-
-\paragraph{COTS carrying capacity:} Values range from 0.61 individuals/m² (gpt 4.1) to 50 individuals/m² (o4 mini), with Claude Sonnet 3.6 at 2.0 and Claude Sonnet 3.7 at 2.5. This order-of-magnitude difference reflects fundamentally different assumptions about ecosystem capacity.
-
-\paragraph{COTS growth rate:} More consistency is observed in growth rates, with values of 0.8 per year (Claude Sonnet 3.6 and Claude Sonnet 3.7), 0.5 per year (o4 mini and gpt 4.1), compared to the Beverton-Holt approach in the human model.
-
-\paragraph{Coral growth rates:} The models show variation in coral growth parameters, with fast coral growth rates ranging from 0.1 per year (o4 mini) to 0.61 per year (gpt 4.1), and slow coral growth rates from 0.05 per year (o4 mini) to 0.37 per year (gpt 4.1).
-
-\paragraph{Coral carrying capacity:} The models use different approaches to coral carrying capacity, from the shared K = 3000 in the human model to separate values for fast and slow coral in Claude Sonnet 3.7 (K\_fast = 50, K\_slow = 30) and gpt 4.1 (K\_fast = 33.1, K\_slow = 20.1).
+\begin{landscape}
+\begin{table}[htbp]
+\centering
+\footnotesize
+\renewcommand{\arraystretch}{1.15}
+\setlength{\tabcolsep}{3pt}
+\begin{tabularx}{\linewidth}{@{}l l l l X@{}}
+\toprule
+\textbf{Human (name)} & \textbf{Role / Units} & \textbf{Gemini 2.5 Pro} & \textbf{OpenAI GPT--5} & \textbf{Claude Sonnet 4.5} \\
+\midrule
+\texttt{Eta\_f}, \texttt{Eta\_m} & Logistic bleaching slope (fast/slow) &
+$k_{\text{bleach}}$ (common steepness) &
+$\beta_{\text{bleach}}$ (growth reduction) and $m_{\text{bleachF/S}}$ (linear loss) &
+$\texttt{temp\_stress\_rate}$ (linear loss; no logistic) \\
+\texttt{M\_SST50\_f}, \texttt{M\_SST50\_m} & 50\% bleaching SST (fast/slow) &
+$T_{\text{bleach},F/S}$ &
+$T_{\text{opt,bleach}}$ (single threshold) &
+$\texttt{temp\_stress\_threshold}$ (single threshold) \\
+\texttt{Ble\_imp\_f}, \texttt{Ble\_imp\_m} & Optional impulse bleaching toggles &
+--- &
+--- &
+--- \\
+\texttt{SST0\_f}, \texttt{SST0\_m} & Coral Gaussian performance optima (fast/slow) &
+--- (no Gaussian growth multiplier; bleaching only) &
+$T_{\text{opt,bleach}}$ used in heat reduction (not Gaussian peak) &
+--- (no Gaussian growth multiplier) \\
+\texttt{SST\_sig\_f}, \texttt{SST\_sig\_m} & Coral Gaussian performance widths (fast/slow) &
+--- & --- & --- \\
+\addlinespace
+--- (none; human has no COTS thermal term) &
+--- &
+$T_{\text{opt,rec}}, \beta_{\text{rec}}$ (Gaussian on recruitment) &
+$\texttt{log\_temp\_opt},\ \texttt{log\_temp\_width}$ (Gaussian in favorability \& adult growth) &
+$T_{\text{opt,cots}}, T_{\sigma,\text{cots}}$ (Gaussian on COTS reproduction) \\
+\bottomrule
+\end{tabularx}
+\caption{Temperature effects. Human model: Gaussian performance on coral growth + logistic bleaching; LLMs: Gemini logistic bleaching and Gaussian window for COTS reproduction; GPT--5 heat-reduction on coral growth and Gaussian on COTS recruitment; Claude linear heat loss on corals plus Gaussian favorability and adult growth factor.}
+\label{tab:params_temp}
+\end{table}
+\end{landscape}

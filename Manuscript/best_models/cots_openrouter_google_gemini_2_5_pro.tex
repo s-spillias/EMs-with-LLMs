@@ -1,0 +1,531 @@
+\subsection{openrouter:google/gemini-2.5-pro Model (CoTS)}
+This model achieved an objective value of 0.4700 (Population 13).
+
+\subsubsection{Model Intention}
+\begin{lstlisting}
+Model Assessment:
+The current model provides a robust framework for simulating COTS-coral interactions, capturing the essential boom-bust dynamics described in the project context. It correctly implements logistic growth for corals, selective predation by COTS (Holling Type II), and critical COTS life-history traits like reproductive and survival Allee effects. These mechanisms allow the model to simulate population explosions and subsequent crashes.
+
+Identified Weakness:
+The primary weakness is the oversimplification of COTS reproduction. The current growth term is a function of food intake and population density only. It completely omits the strong influence of environmental conditions, such as sea surface temperature (SST), on COTS spawning and larval success. This is a significant gap, as favorable environmental windows are widely considered to be a key trigger for the massive recruitment events that initiate outbreaks.
+
+Proposed Ecological Improvement:
+To address this, I will introduce a temperature-dependent reproductive success term into the COTS growth equation. This term will model reproductive success as a Gaussian (bell-shaped) function of SST. This means reproduction will be highest at an optimal temperature (`T_opt_cots`) and will decrease as temperatures move away from this optimum, constrained by a thermal tolerance width (`T_sigma_cots`).
+
+Justification for Change:
+This change introduces a crucial and realistic environmental driver for COTS outbreaks using an already available data stream (SST). It enhances the model's predictive power by allowing it to capture the timing and magnitude of outbreaks more accurately, as recruitment will now be co-limited by food availability and thermal conditions. This provides a dynamic, internal mechanism for triggering outbreaks, moving beyond a sole reliance on external larval immigration data and better reflecting the complex ecological reality.
+\end{lstlisting}
+
+\subsubsection{Model Implementation}
+\begin{lstlisting}
+#include <TMB.hpp>
+
+template<class Type>
+Type objective_function<Type>::operator() ()
+{
+  // ------------------------------------------------------------------------
+  // DATA
+  // ------------------------------------------------------------------------
+  
+  // Time vector
+  DATA_VECTOR(Year); // Time steps in years
+
+  // Response variables
+  DATA_VECTOR(cots_dat); // Observed COTS density (individuals/m2)
+  DATA_VECTOR(fast_dat); // Observed fast-growing coral cover (%)
+  DATA_VECTOR(slow_dat); // Observed slow-growing coral cover (%)
+
+  // Forcing variables
+  DATA_VECTOR(sst_dat); // Observed sea-surface temperature (Celsius)
+  DATA_VECTOR(cotsimm_dat); // Observed COTS larval immigration (individuals/m2/year)
+
+  // ------------------------------------------------------------------------
+  // PARAMETERS
+  // ------------------------------------------------------------------------
+
+  // Coral dynamics
+  PARAMETER(log_r_F);      // log of intrinsic growth rate of fast-growing corals (year^-1)
+  PARAMETER(log_r_S);      // log of intrinsic growth rate of slow-growing corals (year^-1)
+  PARAMETER(log_K_coral);  // log of total coral carrying capacity (%)
+  PARAMETER(log_m_F_sst);  // log of fast coral mortality rate due to high SST (degree^-1 year^-1)
+  PARAMETER(log_m_S_sst);  // log of slow coral mortality rate due to high SST (degree^-1 year^-1)
+  PARAMETER(T_bleach_F);   // Bleaching temperature threshold for fast corals (Celsius)
+  PARAMETER(T_bleach_S);   // Bleaching temperature threshold for slow corals (Celsius)
+  PARAMETER(log_k_bleach); // log of steepness of the logistic bleaching response
+
+  // COTS dynamics
+  PARAMETER(log_a_F);      // log of COTS attack rate on fast corals (m^2 ind^-1 year^-1)
+  PARAMETER(log_a_S);      // log of COTS attack rate on slow corals (m^2 ind^-1 year^-1)
+  PARAMETER(log_h);        // log of COTS handling time on corals (year)
+  PARAMETER(log_e_F);      // log of COTS conversion efficiency from fast coral to COTS
+  PARAMETER(log_e_S);      // log of COTS conversion efficiency from slow coral to COTS
+  PARAMETER(m_C_max);      // Max COTS per-capita mortality rate at low densities (year^-1)
+  PARAMETER(log_m_C_dd);   // log of COTS density-dependent mortality coefficient (m^2 ind^-1 year^-1)
+  PARAMETER(log_A_allee);  // log of COTS density for reproductive Allee effect half-saturation
+  PARAMETER(log_A_mort_s); // log of COTS density for survival Allee effect half-saturation
+  PARAMETER(T_opt_cots);   // Optimal temperature for COTS reproduction (Celsius)
+  PARAMETER(T_sigma_cots); // Width of COTS reproductive thermal window (Celsius)
+
+  // Observation error
+  PARAMETER(log_sd_cots);  // log of standard deviation for COTS data (log scale)
+  PARAMETER(log_sd_fast);  // log of standard deviation for fast coral data (log scale)
+  PARAMETER(log_sd_slow);  // log of standard deviation for slow coral data (log scale)
+
+  // ------------------------------------------------------------------------
+  // MODEL SETUP
+  // ------------------------------------------------------------------------
+
+  // Unpack parameters
+  Type r_F = exp(log_r_F);
+  Type r_S = exp(log_r_S);
+  Type K_coral = exp(log_K_coral);
+  Type m_F_sst = exp(log_m_F_sst);
+  Type m_S_sst = exp(log_m_S_sst);
+  Type k_bleach = exp(log_k_bleach);
+  Type a_F = exp(log_a_F);
+  Type a_S = exp(log_a_S);
+  Type h = exp(log_h);
+  Type e_F = exp(log_e_F);
+  Type e_S = exp(log_e_S);
+  Type m_C_dd = exp(log_m_C_dd);
+  Type A_allee = exp(log_A_allee);
+  Type A_mort_s = exp(log_A_mort_s);
+  Type sd_cots = exp(log_sd_cots);
+  Type sd_fast = exp(log_sd_fast);
+  Type sd_slow = exp(log_sd_slow);
+
+  // Number of time steps
+  int n_t = Year.size();
+
+  // Prediction vectors
+  vector<Type> cots_pred(n_t);
+  vector<Type> fast_pred(n_t);
+  vector<Type> slow_pred(n_t);
+
+  // Initialize predictions with the first data point
+  cots_pred(0) = cots_dat(0);
+  fast_pred(0) = fast_dat(0);
+  slow_pred(0) = slow_dat(0);
+
+  // Negative log-likelihood
+  Type nll = 0.0;
+
+  // ------------------------------------------------------------------------
+  // EQUATION DESCRIPTIONS
+  // ------------------------------------------------------------------------
+  // 1. COTS Predation (Holling Type II): Predation rate on fast (P_F) and slow (P_S) corals.
+  //    P_coral = (a_coral * Coral) / (1 + a_F * h * FastCoral + a_S * h * SlowCoral)
+  // 2. Total Consumption: Total amount of each coral type consumed by the COTS population.
+  //    Consumed_coral = P_coral * COTS
+  // 3. Coral Bleaching: Temperature-dependent mortality using a logistic function.
+  //    Bleach_Effect = m_sst_coral / (1 + exp(-k_bleach * (SST - T_bleach)))
+  // 4. Fast Coral Dynamics: Logistic growth minus COTS predation and bleaching mortality.
+  //    dF/dt = r_F*F*(1-(F+S)/K) - Consumed_F - Bleach_Effect_F*F
+  // 5. Slow Coral Dynamics: Logistic growth minus COTS predation and bleaching mortality.
+  //    dS/dt = r_S*S*(1-(F+S)/K) - Consumed_S - Bleach_Effect_S*S
+  // 6. COTS Dynamics: Temperature-modulated growth from consumption (reproductive Allee effect) minus mortality (survival Allee effect), plus immigration.
+  //    Reproductive_Allee = C / (C + A_allee)
+  //    Reproductive_Success_Temp = exp(-((SST - T_opt_cots)^2) / (2 * T_sigma_cots^2))
+  //    Survival_Allee_Mortality = (m_C_max * C) / (1 + C / A_mort_s)
+  //    dC/dt = (e_F*Consumed_F + e_S*Consumed_S)*Reproductive_Allee*Reproductive_Success_Temp - Survival_Allee_Mortality - m_C_dd*C^2 + Immigration
+  // ------------------------------------------------------------------------
+
+  // ------------------------------------------------------------------------
+  // PROCESS MODEL
+  // ------------------------------------------------------------------------
+  for (int t = 1; t < n_t; ++t) {
+    // Previous time step values (for readability)
+    Type C_prev = cots_pred(t-1);
+    Type F_prev = fast_pred(t-1);
+    Type S_prev = slow_pred(t-1);
+    Type SST_curr = sst_dat(t);
+
+    // Numerical stability constant
+    Type epsilon = 1e-8;
+
+    // 1. COTS Predation (Holling Type II functional response)
+    Type predation_denominator = 1.0 + a_F * h * F_prev + a_S * h * S_prev;
+    Type consumed_per_capita_F = (a_F * F_prev) / (predation_denominator + epsilon);
+    Type consumed_per_capita_S = (a_S * S_prev) / (predation_denominator + epsilon);
+
+    // 2. Total Consumption by COTS population
+    Type total_consumption_F = consumed_per_capita_F * C_prev;
+    Type total_consumption_S = consumed_per_capita_S * C_prev;
+
+    // 3. Coral Bleaching mortality from SST
+    Type bleach_effect_F = m_F_sst / (1.0 + exp(-k_bleach * (SST_curr - T_bleach_F)));
+    Type bleach_effect_S = m_S_sst / (1.0 + exp(-k_bleach * (SST_curr - T_bleach_S)));
+    Type bleaching_loss_F = bleach_effect_F * F_prev;
+    Type bleaching_loss_S = bleach_effect_S * S_prev;
+
+    // 4. Fast Coral Dynamics
+    Type fast_growth = r_F * F_prev * (1.0 - (F_prev + S_prev) / (K_coral + epsilon));
+    fast_pred(t) = F_prev + fast_growth - total_consumption_F - bleaching_loss_F;
+
+    // 5. Slow Coral Dynamics
+    Type slow_growth = r_S * S_prev * (1.0 - (F_prev + S_prev) / (K_coral + epsilon));
+    slow_pred(t) = S_prev + slow_growth - total_consumption_S - bleaching_loss_S;
+
+    // 6. COTS Dynamics
+    // Temperature effect on COTS reproduction (Gaussian response)
+    Type temp_diff = SST_curr - T_opt_cots;
+    Type cots_repro_success = exp(-(temp_diff * temp_diff) / (2.0 * T_sigma_cots * T_sigma_cots));
+    
+    Type cots_growth_potential = e_F * total_consumption_F + e_S * total_consumption_S;
+    Type allee_effect = C_prev / (C_prev + A_allee + epsilon);
+    Type cots_growth = cots_growth_potential * allee_effect * cots_repro_success;
+    // Mortality includes survival Allee effect (predator satiation) and density-dependence
+    Type survival_allee_mortality = (m_C_max * C_prev) / (1.0 + C_prev / (A_mort_s + epsilon));
+    Type cots_mortality = survival_allee_mortality + m_C_dd * C_prev * C_prev;
+    cots_pred(t) = C_prev + cots_growth - cots_mortality + cotsimm_dat(t);
+
+    // Ensure predictions are non-negative
+    cots_pred(t) = CppAD::CondExpGe(cots_pred(t), Type(0.0), cots_pred(t), Type(0.0));
+    fast_pred(t) = CppAD::CondExpGe(fast_pred(t), Type(0.0), fast_pred(t), Type(0.0));
+    slow_pred(t) = CppAD::CondExpGe(slow_pred(t), Type(0.0), slow_pred(t), Type(0.0));
+  }
+
+  // ------------------------------------------------------------------------
+  // LIKELIHOOD
+  // ------------------------------------------------------------------------
+  
+  // Add a small constant to prevent issues with log(0) and small SDs
+  Type min_sd = 1e-4;
+  Type log_epsilon = 1e-8;
+
+  // Lognormal distribution for all observations
+  // This is equivalent to a normal distribution on the log-transformed data
+  for (int t = 0; t < n_t; ++t) {
+    nll -= dnorm(log(cots_dat(t) + log_epsilon), log(cots_pred(t) + log_epsilon), sd_cots + min_sd, true);
+    nll -= dnorm(log(fast_dat(t) + log_epsilon), log(fast_pred(t) + log_epsilon), sd_fast + min_sd, true);
+    nll -= dnorm(log(slow_dat(t) + log_epsilon), log(slow_pred(t) + log_epsilon), sd_slow + min_sd, true);
+  }
+
+  // ------------------------------------------------------------------------
+  // REPORTING
+  // ------------------------------------------------------------------------
+  
+  // Report predictions
+  REPORT(cots_pred);
+  REPORT(fast_pred);
+  REPORT(slow_pred);
+
+  // Report transformed parameters for interpretation
+  REPORT(r_F);
+  REPORT(r_S);
+  REPORT(K_coral);
+  REPORT(m_F_sst);
+  REPORT(m_S_sst);
+  REPORT(k_bleach);
+  REPORT(a_F);
+  REPORT(a_S);
+  REPORT(h);
+  REPORT(e_F);
+  REPORT(e_S);
+  REPORT(m_C_max);
+  REPORT(m_C_dd);
+  REPORT(A_allee);
+  REPORT(A_mort_s);
+  REPORT(T_opt_cots);
+  REPORT(T_sigma_cots);
+  REPORT(sd_cots);
+  REPORT(sd_fast);
+  REPORT(sd_slow);
+
+  return nll;
+}
+\end{lstlisting}
+
+\subsubsection{Model Parameters}
+\begin{lstlisting}
+{
+    "parameters": [
+        {
+            "parameter": "log_r_F",
+            "value": -0.51,
+            "description": "log of intrinsic growth rate of fast-growing corals (Acropora)",
+            "source": "literature",
+            "import_type": "PARAMETER",
+            "priority": 1,
+            "lower_bound": -3.0,
+            "upper_bound": 1.0,
+            "enhanced_semantic_description": "Intrinsic growth rate of fast-growing Acropora corals",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "log_r_S",
+            "value": -1.9,
+            "description": "log of intrinsic growth rate of slow-growing corals (Faviidae, Porites)",
+            "source": "literature",
+            "import_type": "PARAMETER",
+            "priority": 1,
+            "lower_bound": -4.0,
+            "upper_bound": 0.5,
+            "enhanced_semantic_description": "Intrinsic growth rate of slow-growing Faviidae and Porites corals",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "log_K_coral",
+            "value": 4.38,
+            "description": "log of total coral carrying capacity (% cover)",
+            "source": "initial estimate",
+            "import_type": "PARAMETER",
+            "priority": 2,
+            "lower_bound": 3.0,
+            "upper_bound": 6.0,
+            "enhanced_semantic_description": "Total coral community carrying capacity as percent cover",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "log_m_F_sst",
+            "value": -0.69,
+            "description": "log of fast coral mortality rate due to high SST",
+            "source": "initial estimate",
+            "import_type": "PARAMETER",
+            "priority": 3,
+            "lower_bound": -5.0,
+            "upper_bound": 1.0,
+            "enhanced_semantic_description": "Mortality rate of fast corals due to elevated sea surface temperature",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "log_m_S_sst",
+            "value": -1.2,
+            "description": "log of slow coral mortality rate due to high SST",
+            "source": "initial estimate",
+            "import_type": "PARAMETER",
+            "priority": 3,
+            "lower_bound": -5.0,
+            "upper_bound": 1.0,
+            "enhanced_semantic_description": "Mortality rate of slow corals due to elevated sea surface temperature",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "T_bleach_F",
+            "value": 30.0,
+            "description": "Bleaching temperature threshold for fast corals (Celsius)",
+            "source": "literature",
+            "import_type": "PARAMETER",
+            "priority": 3,
+            "lower_bound": 27.0,
+            "upper_bound": 35.0,
+            "enhanced_semantic_description": "Bleaching temperature threshold for fast-growing corals (\u00b0C)",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "T_bleach_S",
+            "value": 30.5,
+            "description": "Bleaching temperature threshold for slow corals (Celsius)",
+            "source": "literature",
+            "import_type": "PARAMETER",
+            "priority": 3,
+            "lower_bound": 27.0,
+            "upper_bound": 35.0,
+            "enhanced_semantic_description": "Bleaching temperature threshold for slow-growing corals (\u00b0C)",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "log_k_bleach",
+            "value": 0.69,
+            "description": "log of steepness of the logistic bleaching response",
+            "source": "initial estimate",
+            "import_type": "PARAMETER",
+            "priority": 3,
+            "lower_bound": 0.0,
+            "upper_bound": 5.0,
+            "enhanced_semantic_description": "Steepness of logistic coral bleaching mortality response",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "log_a_F",
+            "value": -2.3,
+            "description": "log of COTS attack rate on fast corals",
+            "source": "literature",
+            "import_type": "PARAMETER",
+            "priority": 1,
+            "lower_bound": -5.0,
+            "upper_bound": 2.0,
+            "enhanced_semantic_description": "COTS attack rate on fast-growing corals (m\u00b2 per individual per year)",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "log_a_S",
+            "value": -3.0,
+            "description": "log of COTS attack rate on slow corals",
+            "source": "literature",
+            "import_type": "PARAMETER",
+            "priority": 1,
+            "lower_bound": -5.0,
+            "upper_bound": 2.0,
+            "enhanced_semantic_description": "COTS attack rate on slow-growing corals (m\u00b2 per individual per year)",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "log_h",
+            "value": -3.0,
+            "description": "log of COTS handling time on corals",
+            "source": "initial estimate",
+            "import_type": "PARAMETER",
+            "priority": 2,
+            "lower_bound": -3.0,
+            "upper_bound": 1.0,
+            "enhanced_semantic_description": "Handling time of COTS feeding on corals (years per prey item)",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "log_e_F",
+            "value": -2.3,
+            "description": "log of COTS conversion efficiency from fast coral to COTS biomass",
+            "source": "literature",
+            "import_type": "PARAMETER",
+            "priority": 1,
+            "lower_bound": -5.0,
+            "upper_bound": 0.0,
+            "enhanced_semantic_description": "Conversion efficiency from consumed fast-growing coral to COTS biomass",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "log_e_S",
+            "value": -2.8,
+            "description": "log of COTS conversion efficiency from slow coral to COTS biomass",
+            "source": "initial estimate",
+            "import_type": "PARAMETER",
+            "priority": 1,
+            "lower_bound": -5.0,
+            "upper_bound": 0.0,
+            "enhanced_semantic_description": "Conversion efficiency from consumed slow-growing coral to COTS biomass",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "m_C_max",
+            "value": 1.74,
+            "description": "Max COTS per-capita mortality rate at low densities (year\u207b\u00b9)",
+            "source": "initial estimate",
+            "import_type": "PARAMETER",
+            "priority": 1,
+            "lower_bound": 0.5,
+            "upper_bound": 3.0,
+            "enhanced_semantic_description": "Maximum per-capita mortality rate of COTS at low densities, representing high predation pressure (year\u207b\u00b9)",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "log_m_C_dd",
+            "value": -2.3,
+            "description": "log of COTS density-dependent mortality coefficient",
+            "source": "initial estimate",
+            "import_type": "PARAMETER",
+            "priority": 2,
+            "lower_bound": -5.0,
+            "upper_bound": 1.0,
+            "enhanced_semantic_description": "Density-dependent mortality coefficient for COTS (m\u00b2 ind\u207b\u00b9 year\u207b\u00b9)",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "log_A_allee",
+            "value": -1.6,
+            "description": "log of COTS density for reproductive Allee effect half-saturation",
+            "source": "initial estimate",
+            "import_type": "PARAMETER",
+            "priority": 2,
+            "lower_bound": -5.0,
+            "upper_bound": 1.0,
+            "enhanced_semantic_description": "COTS density at which reproductive efficiency is half its maximum, due to mate-finding limitation (ind m\u207b\u00b2)",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "log_A_mort_s",
+            "value": -1.6,
+            "description": "log of COTS density for survival Allee effect half-saturation",
+            "source": "initial estimate",
+            "import_type": "PARAMETER",
+            "priority": 2,
+            "lower_bound": -5.0,
+            "upper_bound": 1.0,
+            "enhanced_semantic_description": "COTS density where predation mortality is halved due to satiation/dilution effects (ind m\u207b\u00b2)",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "log_sd_cots",
+            "value": -1.6,
+            "description": "log of observation error standard deviation for COTS data",
+            "source": "initial estimate",
+            "import_type": "PARAMETER",
+            "priority": 4,
+            "lower_bound": -5.0,
+            "upper_bound": 1.0,
+            "enhanced_semantic_description": "Observation error SD for COTS density (log scale)",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "log_sd_fast",
+            "value": -1.6,
+            "description": "log of observation error standard deviation for fast coral data",
+            "source": "initial estimate",
+            "import_type": "PARAMETER",
+            "priority": 4,
+            "lower_bound": -5.0,
+            "upper_bound": 1.0,
+            "enhanced_semantic_description": "Observation error SD for fast coral cover (log scale)",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "log_sd_slow",
+            "value": -1.6,
+            "description": "log of observation error standard deviation for slow coral data",
+            "source": "initial estimate",
+            "import_type": "PARAMETER",
+            "priority": 4,
+            "lower_bound": -5.0,
+            "upper_bound": 1.0,
+            "enhanced_semantic_description": "Observation error SD for slow coral cover (log scale)",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "T_opt_cots",
+            "value": 28.0,
+            "description": "Optimal temperature for COTS reproduction (Celsius)",
+            "source": "initial estimate",
+            "import_type": "PARAMETER",
+            "priority": 2,
+            "lower_bound": 25.0,
+            "upper_bound": 32.0,
+            "enhanced_semantic_description": "Optimal sea surface temperature for COTS spawning and larval success (\u00b0C)",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "T_sigma_cots",
+            "value": 2.0,
+            "description": "Width of COTS reproductive thermal window (Celsius)",
+            "source": "initial estimate",
+            "import_type": "PARAMETER",
+            "priority": 2,
+            "lower_bound": 0.5,
+            "upper_bound": 5.0,
+            "enhanced_semantic_description": "Standard deviation of the Gaussian thermal window for COTS reproduction, indicating tolerance (\u00b0C)",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        }
+    ]
+}
+\end{lstlisting}

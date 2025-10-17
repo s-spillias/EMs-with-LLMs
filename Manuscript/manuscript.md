@@ -757,7 +757,7 @@ interventions. The collection encompasses several key research areas:
 -   COTS Management and Ecology:
     [@Pratchett_Caballes_Wilmes_Matthews_Mellin_Sweatman_Nadler_Brodie_Thompson_Hoey_et_al_2017]
     provided a comprehensive thirty-year review of COTS research.
-    [@Morello_Plaganyi_Babcock_Sweatman_Hillary_Punt_2014] developed
+    [@morello2014model] developed
     models for COTS outbreak management, while [@Rogers_Plaganyi_2022]
     analyzed corallivore culling impacts under bleaching scenarios.
 

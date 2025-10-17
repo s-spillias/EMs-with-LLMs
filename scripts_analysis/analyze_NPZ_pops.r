@@ -811,11 +811,11 @@ llm_models <- do.call(rbind, llm_models_list)
 results_dir <- "Results/ecology_analysis"
 dir.create(results_dir, recursive = TRUE, showWarnings = FALSE)
 
-write.csv(
-  llm_models %>% arrange(llm_short),
-  file.path(results_dir, "modeling_by_llm_LINEAR_capped_fits.csv"),
-  row.names = FALSE
-)
+# write.csv(
+#   llm_models %>% arrange(llm_short),
+#   file.path(results_dir, "modeling_by_llm_LINEAR_capped_fits.csv"),
+#   row.names = FALSE
+# )
 
 overall_out <- data.frame(
   n = nrow(df_fit),
@@ -826,7 +826,7 @@ overall_out <- data.frame(
   p_value_slope = overall_sum$coefficients[2, "Pr(>|t|)"],
   stringsAsFactors = FALSE
 )
-write.csv(overall_out, file.path(results_dir, "modeling_overall_LINEAR_capped_fits.csv"), row.names = FALSE)
+# write.csv(overall_out, file.path(results_dir, "modeling_overall_LINEAR_capped_fits.csv"), row.names = FALSE)
 
 # --- Unified line predictions (clamped to [0, 1]) ---
 grid_eco <- seq(0, 1, length.out = 200)
@@ -962,7 +962,7 @@ suppressPackageStartupMessages({
 })
 
 
-results_dir <- "Results/ecology_analysis"
+results_dir <- "Results"
 dir.create(results_dir, recursive = TRUE, showWarnings = FALSE)
 
 # Safety: short_llm() should exist already; define if missing.
@@ -1015,10 +1015,10 @@ mechanism_cols <- c(
 )
 mechanism_cols <- mechanism_cols[mechanism_cols %in% colnames(summary_df)]
 
-# Threshold to consider a mechanism "embedded" (you can tune this)
+# Threshold to consider a mechanism "embedded" 
 mech_high_thr <- 0.75
 
-sink(file.path(results_dir, "analysis_summary_ALL.txt"))
+sink(file.path(results_dir, "NPZ_ecology.txt"))
 
 cat("Analysis Summary (ALL NPZ populations)\n")
 cat("================\n\n")
@@ -1272,23 +1272,23 @@ for (llm_name in llm_levels) {
 
 sink()
 
-# ---- Save per‑mechanism summary CSV across all LLMs ----
-if (length(per_mech_rows) > 0) {
-  per_mech_df <- do.call(rbind, per_mech_rows)
-  write.csv(per_mech_df, file.path(results_dir, "per_mechanism_summary_by_llm.csv"), row.names = FALSE)
-} else {
-  # still create an empty file with header for consistency
-  per_mech_df <- data.frame(
-    llm_short = character(), mechanism = character(), n = integer(),
-    mean = double(), sd = double(), median = double(),
-    min = double(), max = double(),
-    n_high = integer(), high_threshold = double(),
-    best_individual = character(), best_score = double(), best_objective = double(),
-    worst_individual = character(), worst_score = double(), worst_objective = double(),
-    stringsAsFactors = FALSE
-  )
-  write.csv(per_mech_df, file.path(results_dir, "per_mechanism_summary_by_llm.csv"), row.names = FALSE)
-}
+# # ---- Save per‑mechanism summary CSV across all LLMs ----
+# if (length(per_mech_rows) > 0) {
+#   per_mech_df <- do.call(rbind, per_mech_rows)
+#   write.csv(per_mech_df, file.path(results_dir, "per_mechanism_summary_by_llm.csv"), row.names = FALSE)
+# } else {
+#   # still create an empty file with header for consistency
+#   per_mech_df <- data.frame(
+#     llm_short = character(), mechanism = character(), n = integer(),
+#     mean = double(), sd = double(), median = double(),
+#     min = double(), max = double(),
+#     n_high = integer(), high_threshold = double(),
+#     best_individual = character(), best_score = double(), best_objective = double(),
+#     worst_individual = character(), worst_score = double(), worst_objective = double(),
+#     stringsAsFactors = FALSE
+#   )
+#   write.csv(per_mech_df, file.path(results_dir, "per_mechanism_summary_by_llm.csv"), row.names = FALSE)
+# }
 
 message("analysis_summary_ALL.txt written with per‑LLM and per‑mechanism statistics; CSV saved: Results/ecology_analysis/per_mechanism_summary_by_llm.csv")
 # ==== END analysis_summary_ALL.txt extension ====

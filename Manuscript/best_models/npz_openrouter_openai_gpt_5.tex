@@ -1,0 +1,721 @@
+\subsection{openrouter:openai/gpt-5 Model (NPZ)}
+This model achieved an objective value of 0.0035 (Population 15).
+
+\subsubsection{Model Intention}
+\begin{lstlisting}
+Assessment and rationale for model improvement
+
+1) Fit evaluation
+- The residuals file was not included in this chat, so I cannot compute or visualize misfit. Typical issues in NPZ models with instantaneous recycling include:
+  - N rebounds too quickly after blooms (positive early residuals in N, negative later).
+  - P/Z peaks occur too early or with too sharp amplitudes due to the lack of lagged recycling.
+  - Autocorrelated residuals indicating missing slow pathway(s).
+
+Please provide the residuals to refine the diagnosis and parameter ranges.
+
+2) Alignment with project context
+- The current model targets mixed-layer NPZ dynamics and already includes:
+  - Temperature (Q10) and light (saturating) modifiers on primary production.
+  - Monod nutrient limitation; Holling type III grazing.
+  - Mixing-driven nutrient supply.
+  - Lognormal observation error.
+- These are appropriate for the stated project context.
+
+3) Missing/oversimplified processes
+- Detrital loop: All losses (unassimilated ingestion and mortality fractions) were recycled immediately to inorganic nutrient (N). In the oceanic mixed layer, a substantial portion of lost biomass is routed through particulate/dissolved organic pools and is remineralized over finite time scales; a fraction also sinks/export out of the mixed layer.
+- Consequences of omission: unrealistically fast nutrient recycling and insufficient lag between P/Z loss and N recovery, often producing phase errors and damped oscillations.
+
+Chosen improvement: add a detritus pool (D)
+- Ecological reasoning:
+  - Introduces a realistic time delay in nutrient recycling, improving phase relationships among N, P, and Z.
+  - Captures export via sinking, which reduces immediate availability of recycled nutrients in the mixed layer.
+  - Adds minimal complexity (one new state, two rates) for a substantial gain in realism.
+- Mathematical formulation (per day):
+  - U = mu_max * f_T * f_I * (N/(K_N+N)) * P
+  - G = g_max * f_T * (P^h / (K_G^h + P^h)) * Z
+  - Zg = e_Z * G
+  - RgD = (1 - e_Z) * G
+  - RpN = r_P * m_P * P; RpD = (1 - r_P) * m_P * P
+  - RzN = r_Z * m_Z * Z; RzD = (1 - r_Z) * m_Z * Z
+  - Ex = ex_Z * Z
+  - Mx = k_mix * (N_star - N)
+  - Rem = k_rem * D; Snk = k_sink * D
+  - dN/dt = -U + RpN + RzN + Ex + Mx + Rem
+  - dP/dt =  U - G - m_P * P
+  - dZ/dt =  Zg - m_Z * Z - gamma_Z * Z^2
+  - dD/dt =  RgD + RpD + RzD - Rem - Snk
+- Observation model remains unchanged (N, P, Z only); D is reported for diagnostics.
+
+Parameter review and updates
+- Several parameters defined on the log scale had bounds specified on the natural scale. To maintain consistency with the model parameterization, bounds were converted to log units in parameters.json:
+  - log_K_N, log_K_I, log_g_max, log_K_G, log_m_P, log_m_Z, log_gamma_Z, log_ex_Z, log_k_mix.
+- Two new parameters were added:
+  - log_k_rem (Detritus remineralization rate): suggested bounds ln(0.01) to ln(1.0), default value ln(0.1).
+  - log_k_sink (Detritus sinking/export rate): suggested bounds ln(1e-6) to ln(1.0), default value ln(0.01).
+- Note: excretion (Ex) is kept as a direct nutrient flux, consistent with ammonium excretion by zooplankton; this avoids confounding of k_rem with Ex.
+
+Implementation notes and safeguards
+- Euler forward stepping, same as the existing scheme, using previous-step predictions only (no data leakage).
+- Smooth non-negativity constraints applied to the new D state.
+- Smooth penalties added for k_rem and k_sink.
+- Report D_pred for diagnostic use.
+
+Next steps
+- Refit the model and examine residuals and state trajectories. If residuals remain autocorrelated, consider:
+  - Applying temperature scaling to remineralization (k_rem) and possibly mortality.
+  - Allowing time-varying light I(t) if a time series is available.
+  - Testing alternative grazing forms (e.g., Ivlev) or variable assimilation efficiency tied to food quality.
+\end{lstlisting}
+
+\subsubsection{Model Implementation}
+\begin{lstlisting}
+#include <TMB.hpp>
+
+// Helper: softplus for smooth positivity (AD-compatible)
+template<class Type>
+Type softplus(Type x) {
+  // Numerically stable softplus without log1p (works for AD types):
+  // softplus(x) = log(1 + exp(-|x|)) + max(x, 0)
+  Type zero = Type(0.0);
+  Type one  = Type(1.0);
+  Type ax   = CppAD::abs(x);
+  return log(one + exp(-ax)) + CppAD::CondExpGt(x, zero, x, zero);
+}
+
+// Helper: smooth non-negative transform approximating max(x, 0) without kinks
+template<class Type>
+Type soft_relu(Type x, Type eps) {
+  // Returns ~max(x,0) but smooth near 0; eps sets smoothness scale
+  return (x + sqrt(x * x + eps)) / Type(2.0);
+}
+
+// Helper: safe division
+template<class Type>
+Type safediv(Type num, Type den, Type tiny) {
+  return num / (den + tiny);
+}
+
+// Helper: smooth penalty if parameter outside [lo, hi]
+template<class Type>
+Type smooth_bound_penalty(Type x, Type lo, Type hi, Type scale) {
+  // Zero-ish inside bounds; increases smoothly outside via softplus
+  // Note: softplus of negative values is near zero, positive side penalizes out-of-bounds.
+  return softplus((lo - x) / scale) + softplus((x - hi) / scale);
+}
+
+/*
+Equations (per time step, Euler-forward with dt):
+
+Let f_T = q10^((T_C - T_ref)/10)                  [temperature modifier, dimensionless]
+    f_I = I / (K_I + I)                           [light limitation, dimensionless]
+    f_N = N / (K_N + N)                           [nutrient limitation, dimensionless]
+    mu  = mu_max * f_T * f_I * f_N                [d^-1, realized phyto growth rate]
+    g   = g_max * f_T * (P^h / (K_G^h + P^h))     [d^-1, grazing rate per Z]
+
+Flows (g C m^-3 d^-1):
+  1) Primary production:           U   = mu * P
+  2) Grazing flux (ingestion):     G   = g * Z
+  3) Z production (assim.):        Zg  = e_Z * G
+  4) Unassimilated to detritus:    RgD = (1 - e_Z) * G
+  5) P mortality split:            RpN = r_P * m_P * P (to N), RpD = (1 - r_P) * m_P * P (to D)
+  6) Z mortality split:            RzN = r_Z * m_Z * Z (to N), RzD = (1 - r_Z) * m_Z * Z (to D)
+  7) Z excretion to N:             Ex  = ex_Z * Z
+  8) Mixing supply to N:           Mx  = k_mix * (N_star - N)
+  9) Detritus remineralization:    Rem = k_rem * D (to N)
+ 10) Detritus sinking/export:      Snk = k_sink * D (out of mixed layer)
+
+Dynamics:
+  dN/dt = -U + RpN + RzN + Ex + Mx + Rem
+  dP/dt =  U - G - m_P * P
+  dZ/dt =  Zg - m_Z * Z - gamma_Z * Z^2
+  dD/dt =  RgD + RpD + RzD - Rem - Snk
+
+All states are kept non-negative using a smooth rectifier. Initial conditions:
+  N_pred(0) = N_dat(0), P_pred(0) = P_dat(0), Z_pred(0) = Z_dat(0), D_pred(0) = 0.
+Observation model (for i = 0..T-1):
+  log(N_dat[i]) ~ Normal(log(N_pred[i]), sigma_N) and similarly for P, Z.
+*/
+
+template<class Type>
+Type objective_function<Type>::operator() () {
+  // -----------------------------
+  // Data
+  // -----------------------------
+  // Use the exact time variable name provided by the data layer: "Time"
+  DATA_VECTOR(Time);   // Time in days, strictly increasing
+  DATA_VECTOR(N_dat);  // Observed nutrient concentration (g C m^-3)
+  DATA_VECTOR(P_dat);  // Observed phytoplankton concentration (g C m^-3)
+  DATA_VECTOR(Z_dat);  // Observed zooplankton concentration (g C m^-3)
+
+  int Tn = N_dat.size(); // Number of time points
+  // Safety: all vectors should be same length
+  if (P_dat.size() != Tn || Z_dat.size() != Tn || Time.size() != Tn) {
+    error("All data vectors must have the same length.");
+  }
+
+  // -----------------------------
+  // Parameters (all transformed to their natural scales where needed)
+  // -----------------------------
+  // Growth and limitation parameters
+  PARAMETER(log_mu_max);    // log of maximum phyto growth rate (d^-1); expected ~ log(0.1-2 d^-1)
+  PARAMETER(log_K_N);       // log of half-saturation for nutrient (g C m^-3); expected ~ log(0.01-0.5)
+  PARAMETER(I);             // Irradiance proxy (W m^-2), treated as constant over period
+  PARAMETER(log_K_I);       // log of light half-saturation (W m^-2)
+
+  // Grazing parameters
+  PARAMETER(log_g_max);     // log of max grazing rate per Z biomass (d^-1)
+  PARAMETER(log_K_G);       // log of P half-saturation for grazing (g C m^-3)
+  PARAMETER(h_grazing);     // Holling type III shape exponent h (dimensionless, >=1)
+
+  // Efficiencies and losses
+  PARAMETER(logit_e_Z);     // logit of Z assimilation efficiency (0..1), dimensionless
+  PARAMETER(log_m_P);       // log of P linear mortality rate (d^-1)
+  PARAMETER(log_m_Z);       // log of Z linear mortality rate (d^-1)
+  PARAMETER(log_gamma_Z);   // log of Z quadratic self-limitation coefficient ((g C m^-3)^-1 d^-1)
+  PARAMETER(logit_r_P);     // logit of fraction of P mortality remineralized to N (0..1)
+  PARAMETER(logit_r_Z);     // logit of fraction of Z mortality remineralized to N (0..1)
+  PARAMETER(log_ex_Z);      // log of Z excretion rate to N (d^-1)
+
+  // Physical supply
+  PARAMETER(log_k_mix);     // log of mixing rate (d^-1)
+  PARAMETER(N_star);        // Deep/source nutrient concentration (g C m^-3)
+
+  // Temperature modifier
+  PARAMETER(log_q10);       // log of Q10 (dimensionless), e.g., log(2)
+  PARAMETER(T_C);           // Ambient temperature (deg C)
+  PARAMETER(T_ref);         // Reference temperature for Q10 (deg C)
+
+  // Detritus pathway parameters (new)
+  PARAMETER(log_k_rem);     // log of detritus remineralization rate (d^-1)
+  PARAMETER(log_k_sink);    // log of detritus sinking/export rate (d^-1)
+
+  // Observation error (lognormal SDs)
+  PARAMETER(log_sigma_N);   // log of observation SD on log-scale for N
+  PARAMETER(log_sigma_P);   // log of observation SD on log-scale for P
+  PARAMETER(log_sigma_Z);   // log of observation SD on log-scale for Z
+
+  // -----------------------------
+  // Transforms and constants
+  // -----------------------------
+  Type tiny = Type(1e-8);            // Small constant to avoid division by zero
+  Type pos_eps = Type(1e-12);        // For smooth non-negativity
+  Type pen_scale = Type(0.05);       // Scale for smooth bound penalties (larger = gentler)
+  Type pen_weight = Type(10.0);      // Weight for penalties in NLL
+
+  Type mu_max  = exp(log_mu_max);    // d^-1
+  Type K_N     = exp(log_K_N);       // g C m^-3
+  Type K_I     = exp(log_K_I);       // W m^-2
+  Type g_max   = exp(log_g_max);     // d^-1
+  Type K_G     = exp(log_K_G);       // g C m^-3
+  Type e_Z     = Type(1.0) / (Type(1.0) + exp(-logit_e_Z)); // (0,1)
+  Type m_P     = exp(log_m_P);       // d^-1
+  Type m_Z     = exp(log_m_Z);       // d^-1
+  Type gamma_Z = exp(log_gamma_Z);   // (g C m^-3)^-1 d^-1
+  Type r_P     = Type(1.0) / (Type(1.0) + exp(-logit_r_P)); // (0,1)
+  Type r_Z     = Type(1.0) / (Type(1.0) + exp(-logit_r_Z)); // (0,1)
+  Type ex_Z    = exp(log_ex_Z);      // d^-1
+  Type k_mix   = exp(log_k_mix);     // d^-1
+  Type q10     = exp(log_q10);       // dimensionless
+  Type k_rem   = exp(log_k_rem);     // d^-1
+  Type k_sink  = exp(log_k_sink);    // d^-1
+
+  // Temperature and light modifiers
+  // f_T applies to biological rates; f_I saturates with I
+  Type f_T = pow(q10, (T_C - T_ref) / Type(10.0));           // dimensionless
+  Type f_I = safediv(I, (K_I + I), tiny);                    // dimensionless, in (0,1)
+
+  // Observation SDs with minimum floors for stability
+  Type min_sd = Type(0.05); // Minimum SD on log-scale
+  Type sigma_N = exp(log_sigma_N) + min_sd;
+  Type sigma_P = exp(log_sigma_P) + min_sd;
+  Type sigma_Z = exp(log_sigma_Z) + min_sd;
+
+  // -----------------------------
+  // State predictions
+  // -----------------------------
+  vector<Type> N_pred(Tn);
+  vector<Type> P_pred(Tn);
+  vector<Type> Z_pred(Tn);
+  vector<Type> D_pred(Tn);
+
+  // Initial conditions from data (no leakage beyond t=0)
+  N_pred(0) = N_dat(0);
+  P_pred(0) = P_dat(0);
+  Z_pred(0) = Z_dat(0);
+  D_pred(0) = Type(0.0); // Unobserved detritus initial state; set to zero
+
+  // -----------------------------
+  // Likelihood
+  // -----------------------------
+  Type nll = Type(0);
+
+  // Penalize parameter bounds smoothly (suggested biological ranges)
+  // mu_max: [0.05, 2] d^-1
+  nll += pen_weight * smooth_bound_penalty(mu_max, Type(0.05), Type(2.0), pen_scale);
+  // K_N: [0.001, 1] g C m^-3
+  nll += pen_weight * smooth_bound_penalty(K_N, Type(0.001), Type(1.0), pen_scale);
+  // I: [0, 500] W m^-2
+  nll += pen_weight * smooth_bound_penalty(I, Type(0.0), Type(500.0), pen_scale);
+  // K_I: [1, 300] W m^-2
+  nll += pen_weight * smooth_bound_penalty(K_I, Type(1.0), Type(300.0), pen_scale);
+  // g_max: [0.05, 2] d^-1
+  nll += pen_weight * smooth_bound_penalty(g_max, Type(0.05), Type(2.0), pen_scale);
+  // K_G: [0.001, 1] g C m^-3
+  nll += pen_weight * smooth_bound_penalty(K_G, Type(0.001), Type(1.0), pen_scale);
+  // h_grazing: [1, 3]
+  nll += pen_weight * smooth_bound_penalty(h_grazing, Type(1.0), Type(3.0), pen_scale);
+  // e_Z: [0.3, 0.9]
+  nll += pen_weight * smooth_bound_penalty(e_Z, Type(0.3), Type(0.9), pen_scale);
+  // m_P: [0.001, 0.3] d^-1
+  nll += pen_weight * smooth_bound_penalty(m_P, Type(0.001), Type(0.3), pen_scale);
+  // m_Z: [0.001, 0.3] d^-1
+  nll += pen_weight * smooth_bound_penalty(m_Z, Type(0.001), Type(0.3), pen_scale);
+  // gamma_Z: [1e-4, 0.2] (g C m^-3)^-1 d^-1
+  nll += pen_weight * smooth_bound_penalty(gamma_Z, Type(1e-4), Type(0.2), pen_scale);
+  // r_P: [0.3, 1]
+  nll += pen_weight * smooth_bound_penalty(r_P, Type(0.3), Type(1.0), pen_scale);
+  // r_Z: [0.3, 1]
+  nll += pen_weight * smooth_bound_penalty(r_Z, Type(0.3), Type(1.0), pen_scale);
+  // ex_Z: [0.0, 0.2] d^-1
+  nll += pen_weight * smooth_bound_penalty(ex_Z, Type(0.0), Type(0.2), pen_scale);
+  // k_mix: [0.0, 0.5] d^-1
+  nll += pen_weight * smooth_bound_penalty(k_mix, Type(0.0), Type(0.5), pen_scale);
+  // N_star: [0.0, 2.0] g C m^-3
+  nll += pen_weight * smooth_bound_penalty(N_star, Type(0.0), Type(2.0), pen_scale);
+  // q10: [1.3, 3.0]
+  nll += pen_weight * smooth_bound_penalty(q10, Type(1.3), Type(3.0), pen_scale);
+  // T_C, T_ref: [0, 35] deg C
+  nll += pen_weight * smooth_bound_penalty(T_C, Type(0.0), Type(35.0), pen_scale);
+  nll += pen_weight * smooth_bound_penalty(T_ref, Type(0.0), Type(35.0), pen_scale);
+  // k_rem: [0.01, 1.0] d^-1
+  nll += pen_weight * smooth_bound_penalty(k_rem, Type(0.01), Type(1.0), pen_scale);
+  // k_sink: [0.0, 1.0] d^-1
+  nll += pen_weight * smooth_bound_penalty(k_sink, Type(0.0), Type(1.0), pen_scale);
+
+  // -----------------------------
+  // Time stepping
+  // -----------------------------
+  for (int i = 1; i < Tn; i++) {
+    Type dt = Time(i) - Time(i - 1);
+    // Enforce positive dt smoothly
+    if (dt <= Type(0)) dt = tiny;
+
+    // State at previous step (predictions only—no data leakage)
+    Type Np = N_pred(i - 1);
+    Type Pp = P_pred(i - 1);
+    Type Zp = Z_pred(i - 1);
+    Type Dp = D_pred(i - 1);
+
+    // Limitation functions (use small constants for stability)
+    Type f_N = safediv(Np, (K_N + Np), tiny);                                // [0,1]
+    Type mu  = mu_max * f_T * f_I * f_N;                                     // d^-1
+    Type holl_num = pow(Pp + tiny, h_grazing);                               // P^h
+    Type holl_den = pow(K_G + tiny, h_grazing) + holl_num;                   // K^h + P^h
+    Type g_rate   = g_max * f_T * safediv(holl_num, holl_den, tiny);         // d^-1
+
+    // Fluxes
+    Type U    = mu * Pp;                   // Primary production (g C m^-3 d^-1)
+    Type G    = g_rate * Zp;               // Grazing ingestion (g C m^-3 d^-1)
+    Type Zg   = e_Z * G;                   // Z growth (g C m^-3 d^-1)
+    Type RgD  = (Type(1.0) - e_Z) * G;     // Unassimilated to detritus
+    Type RpN  = r_P * m_P * Pp;            // P mortality directly to N
+    Type RpD  = (Type(1.0) - r_P) * m_P * Pp; // P mortality to detritus
+    Type RzN  = r_Z * m_Z * Zp;            // Z mortality directly to N
+    Type RzD  = (Type(1.0) - r_Z) * m_Z * Zp; // Z mortality to detritus
+    Type Ex   = ex_Z * Zp;                 // Z excretion to N
+    Type Mx   = k_mix * (N_star - Np);     // Mixing supply to N
+    Type Rem  = k_rem * Dp;                // Detritus remineralization to N
+    Type Snk  = k_sink * Dp;               // Detritus sinking/export
+
+    // Euler updates
+    Type dN = -U + RpN + RzN + Ex + Mx + Rem;
+    Type dP =  U - G - m_P * Pp;
+    Type dZ =  Zg - m_Z * Zp - gamma_Z * Zp * Zp;
+    Type dD =  RgD + RpD + RzD - Rem - Snk;
+
+    Type N_next_raw = Np + dt * dN;
+    Type P_next_raw = Pp + dt * dP;
+    Type Z_next_raw = Zp + dt * dZ;
+    Type D_next_raw = Dp + dt * dD;
+
+    // Smooth non-negativity
+    N_pred(i) = soft_relu(N_next_raw, pos_eps);
+    P_pred(i) = soft_relu(P_next_raw, pos_eps);
+    Z_pred(i) = soft_relu(Z_next_raw, pos_eps);
+    D_pred(i) = soft_relu(D_next_raw, pos_eps);
+  }
+
+  // -----------------------------
+  // Observation likelihood (lognormal)
+  // -----------------------------
+  for (int i = 0; i < Tn; i++) {
+    // Add tiny offsets to ensure positivity inside logs
+    Type lnN_obs = log(N_dat(i) + tiny);
+    Type lnP_obs = log(P_dat(i) + tiny);
+    Type lnZ_obs = log(Z_dat(i) + tiny);
+
+    Type lnN_pred = log(N_pred(i) + tiny);
+    Type lnP_pred = log(P_pred(i) + tiny);
+    Type lnZ_pred = log(Z_pred(i) + tiny);
+
+    nll -= dnorm(lnN_obs, lnN_pred, sigma_N, true);
+    nll -= dnorm(lnP_obs, lnP_pred, sigma_P, true);
+    nll -= dnorm(lnZ_obs, lnZ_pred, sigma_Z, true);
+  }
+
+  // -----------------------------
+  // Reporting
+  // -----------------------------
+  REPORT(N_pred); // Model predictions for Nutrient (g C m^-3)
+  REPORT(P_pred); // Model predictions for Phytoplankton (g C m^-3)
+  REPORT(Z_pred); // Model predictions for Zooplankton (g C m^-3)
+  REPORT(D_pred); // Model predictions for Detritus (g C m^-3)
+
+  return nll;
+}
+\end{lstlisting}
+
+\subsubsection{Model Parameters}
+\begin{lstlisting}
+{
+    "parameters": [
+        {
+            "parameter": "log_mu_max",
+            "value": -0.02041099726012755,
+            "units": "day^-1 (log scale)",
+            "description": "Log of maximum phytoplankton growth rate at reference conditions (day^-1).",
+            "source": "literature",
+            "import_type": "PARAMETER",
+            "priority": 1,
+            "lower_bound": -0.2231435513142097,
+            "upper_bound": 0.1823215567939546,
+            "enhanced_semantic_description": "Maximum phytoplankton growth rate (per day)",
+            "updated_from_literature": true,
+            "updated_fields_from_literature": [
+                "lower_bound",
+                "upper_bound"
+            ]
+        },
+        {
+            "parameter": "log_K_N",
+            "value": -2.9957322736,
+            "units": "g C m^-3 (log scale)",
+            "description": "Log of half-saturation constant for nutrient uptake (g C m^-3).",
+            "source": "literature",
+            "import_type": "PARAMETER",
+            "priority": 2,
+            "lower_bound": -6.907755278982137,
+            "upper_bound": 0.0,
+            "enhanced_semantic_description": "Half-saturation nutrient concentration for uptake (g C/m\u00b3)",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "I",
+            "value": 150.0,
+            "units": "W m^-2",
+            "description": "Mean photosynthetically active irradiance proxy over the modeled period.",
+            "source": "initial estimate",
+            "import_type": "PARAMETER",
+            "priority": 3,
+            "lower_bound": 0.0,
+            "upper_bound": 500.0,
+            "enhanced_semantic_description": "Mean photosynthetically active irradiance (W/m\u00b2)",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "log_K_I",
+            "value": 4.3174881135,
+            "units": "W m^-2 (log scale)",
+            "description": "Log of light half-saturation constant for photosynthesis (W m^-2).",
+            "source": "literature",
+            "import_type": "PARAMETER",
+            "priority": 3,
+            "lower_bound": 0.0,
+            "upper_bound": 5.703782474656201,
+            "enhanced_semantic_description": "Half-saturation light intensity for photosynthesis (W/m\u00b2)",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "log_g_max",
+            "value": -0.6931471806,
+            "units": "day^-1 (log scale)",
+            "description": "Log of maximum zooplankton grazing rate per unit Z biomass (day^-1).",
+            "source": "literature",
+            "import_type": "PARAMETER",
+            "priority": 1,
+            "lower_bound": -2.995732273553991,
+            "upper_bound": 0.6931471805599453,
+            "enhanced_semantic_description": "Maximum zooplankton grazing rate per biomass (per day)",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "log_K_G",
+            "value": -2.302585093,
+            "units": "g C m^-3 (log scale)",
+            "description": "Log of P half-saturation constant for grazing functional response (g C m^-3).",
+            "source": "literature",
+            "import_type": "PARAMETER",
+            "priority": 2,
+            "lower_bound": -6.907755278982137,
+            "upper_bound": 0.0,
+            "enhanced_semantic_description": "Half-saturation phytoplankton for grazing (g C/m\u00b3)",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "h_grazing",
+            "value": 2.0,
+            "units": "dimensionless",
+            "description": "Holling type III shape exponent (h >= 1).",
+            "source": "literature",
+            "import_type": "PARAMETER",
+            "priority": 2,
+            "lower_bound": 1.0,
+            "upper_bound": 3.0,
+            "enhanced_semantic_description": "Holling type III grazing shape exponent (dimensionless)",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "logit_e_Z",
+            "value": 0.0,
+            "units": "dimensionless (logit scale)",
+            "description": "Logit of zooplankton assimilation efficiency (e_Z in (0,1)); e_Z = 0.5 at value 0.",
+            "source": "literature",
+            "import_type": "PARAMETER",
+            "priority": 2,
+            "enhanced_semantic_description": "Zooplankton assimilation efficiency (proportion 0\u20131)",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "log_m_P",
+            "value": -2.9957322736,
+            "units": "day^-1 (log scale)",
+            "description": "Log of phytoplankton linear mortality rate (day^-1).",
+            "source": "literature",
+            "import_type": "PARAMETER",
+            "priority": 2,
+            "lower_bound": -6.907755278982137,
+            "upper_bound": -1.2039728043259361,
+            "enhanced_semantic_description": "Phytoplankton linear mortality rate (per day)",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "log_m_Z",
+            "value": -3.5065578973,
+            "units": "day^-1 (log scale)",
+            "description": "Log of zooplankton linear mortality rate (day^-1).",
+            "source": "literature",
+            "import_type": "PARAMETER",
+            "priority": 2,
+            "lower_bound": -6.907755278982137,
+            "upper_bound": -1.2039728043259361,
+            "enhanced_semantic_description": "Zooplankton linear mortality rate (per day)",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "log_gamma_Z",
+            "value": -4.605170186,
+            "units": "(g C m^-3)^-1 day^-1 (log scale)",
+            "description": "Log of zooplankton quadratic self-limitation coefficient ((g C m^-3)^-1 day^-1).",
+            "source": "initial estimate",
+            "import_type": "PARAMETER",
+            "priority": 4,
+            "lower_bound": -9.210340371976184,
+            "upper_bound": -1.6094379124341003,
+            "enhanced_semantic_description": "Zooplankton quadratic self-limitation coefficient (per g C/m\u00b3/day)",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "logit_r_P",
+            "value": 0.8472978604,
+            "units": "dimensionless (logit scale)",
+            "description": "Logit of fraction of P mortality that is remineralized to N (0..1).",
+            "source": "literature",
+            "import_type": "PARAMETER",
+            "priority": 3,
+            "enhanced_semantic_description": "Fraction of phytoplankton mortality remineralized to nutrients",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "logit_r_Z",
+            "value": 0.8472978604,
+            "units": "dimensionless (logit scale)",
+            "description": "Logit of fraction of Z mortality that is remineralized to N (0..1).",
+            "source": "literature",
+            "import_type": "PARAMETER",
+            "priority": 3,
+            "enhanced_semantic_description": "Fraction of zooplankton mortality remineralized to nutrients",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "log_ex_Z",
+            "value": -4.605170186,
+            "units": "day^-1 (log scale)",
+            "description": "Log of zooplankton excretion rate to nutrients (day^-1).",
+            "source": "initial estimate",
+            "import_type": "PARAMETER",
+            "priority": 4,
+            "lower_bound": -13.815510557964274,
+            "upper_bound": -1.6094379124341003,
+            "enhanced_semantic_description": "Zooplankton excretion rate to nutrients (per day)",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "log_k_mix",
+            "value": -3.9120230054,
+            "units": "day^-1 (log scale)",
+            "description": "Log of vertical mixing rate driving nutrients toward N_star (day^-1).",
+            "source": "initial estimate",
+            "import_type": "PARAMETER",
+            "priority": 3,
+            "lower_bound": -13.815510557964274,
+            "upper_bound": -0.6931471805599453,
+            "enhanced_semantic_description": "Vertical mixing rate driving nutrient supply (per day)",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "N_star",
+            "value": 0.3,
+            "units": "g C m^-3",
+            "description": "Deep/source nutrient concentration towards which mixing relaxes the system.",
+            "source": "initial estimate",
+            "import_type": "PARAMETER",
+            "priority": 4,
+            "lower_bound": 0.0,
+            "upper_bound": 2.0,
+            "enhanced_semantic_description": "Deep ocean nutrient concentration (g C/m\u00b3)",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "log_q10",
+            "value": 0.659,
+            "units": "dimensionless (log scale)",
+            "description": "Log of Q10 temperature scaling factor (dimensionless), typical Q10 ~ 2.",
+            "source": "literature",
+            "import_type": "PARAMETER",
+            "priority": 3,
+            "lower_bound": 0.606,
+            "upper_bound": 0.711,
+            "enhanced_semantic_description": "Q10 temperature coefficient for biological rates (dimensionless)",
+            "updated_from_literature": true,
+            "updated_fields_from_literature": [
+                "value",
+                "lower_bound",
+                "upper_bound"
+            ]
+        },
+        {
+            "parameter": "T_C",
+            "value": 15.0,
+            "units": "deg C",
+            "description": "Ambient temperature used for Q10 scaling (deg C).",
+            "source": "initial estimate",
+            "import_type": "PARAMETER",
+            "priority": 4,
+            "lower_bound": 0.0,
+            "upper_bound": 35.0,
+            "enhanced_semantic_description": "Ambient temperature for rate scaling (\u00b0C)",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "T_ref",
+            "value": 15.0,
+            "units": "deg C",
+            "description": "Reference temperature for Q10 scaling (deg C).",
+            "source": "literature",
+            "import_type": "PARAMETER",
+            "priority": 4,
+            "lower_bound": 0.0,
+            "upper_bound": 35.0,
+            "enhanced_semantic_description": "Reference temperature for Q10 scaling (\u00b0C)",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "log_k_rem",
+            "value": -2.302585093,
+            "units": "day^-1 (log scale)",
+            "description": "Log of detritus remineralization rate to nutrients (day^-1).",
+            "source": "conceptual addition",
+            "import_type": "PARAMETER",
+            "priority": 3,
+            "lower_bound": -4.605170186,
+            "upper_bound": 0.0,
+            "enhanced_semantic_description": "Detritus remineralization rate (per day)",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "log_k_sink",
+            "value": -4.605170186,
+            "units": "day^-1 (log scale)",
+            "description": "Log of detritus sinking/export rate out of mixed layer (day^-1).",
+            "source": "conceptual addition",
+            "import_type": "PARAMETER",
+            "priority": 3,
+            "lower_bound": -13.815510557964274,
+            "upper_bound": 0.0,
+            "enhanced_semantic_description": "Detritus sinking/export rate out of mixed layer (per day)",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "log_sigma_N",
+            "value": -2.302585093,
+            "units": "log-scale SD",
+            "description": "Log of observation SD for N on the log scale.",
+            "source": "initial estimate",
+            "import_type": "PARAMETER",
+            "priority": 1,
+            "lower_bound": -5.0,
+            "upper_bound": 2.0,
+            "enhanced_semantic_description": "Observation log-scale standard deviation for nutrient",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "log_sigma_P",
+            "value": -2.302585093,
+            "units": "log-scale SD",
+            "description": "Log of observation SD for P on the log scale.",
+            "source": "initial estimate",
+            "import_type": "PARAMETER",
+            "priority": 1,
+            "lower_bound": -5.0,
+            "upper_bound": 2.0,
+            "enhanced_semantic_description": "Observation log-scale standard deviation for phytoplankton",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "log_sigma_Z",
+            "value": -2.302585093,
+            "units": "log-scale SD",
+            "description": "Log of observation SD for Z on the log scale.",
+            "source": "initial estimate",
+            "import_type": "PARAMETER",
+            "priority": 1,
+            "lower_bound": -5.0,
+            "upper_bound": 2.0,
+            "enhanced_semantic_description": "Observation log-scale standard deviation for zooplankton",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        }
+    ]
+}
+\end{lstlisting}

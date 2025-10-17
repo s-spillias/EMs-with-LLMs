@@ -1,0 +1,817 @@
+\subsection{Best Out-of-Sample Test Model}
+The best out-of-sample model is from Population 7 (COTS), with objective value 0.2858 and \texttt{train\_test\_split} = 0.700.
+
+\subsubsection{Model Intention}
+\begin{lstlisting}
+Assessment and rationale
+
+Update after compile error
+- The previous version introduced a new required data vector (food_dat) for bottom-up resource limitation. The current data pipeline does not provide this field, causing a runtime error when constructing TMB data.
+- To restore compatibility, the model now compiles without requiring food_dat. The food limitation modifier f_food defaults to 1.0 (neutral), so recruitment is unaffected by a missing food driver. The parameter K_food remains scaffolded for future use when a suitable driver is added.
+
+1) Model fit to data
+- Quantitative fit cannot be evaluated here because a residuals file was referenced but not provided with this code snapshot. The existing likelihood structure (lognormal for COTS; logit-normal for coral %) is reasonable and stabilised by sd floors. However, without residuals we cannot verify bias, autocorrelation, or variance mis-specification.
+- Please provide the residuals (or their file path) so we can examine patterns such as: outbreak peak mis-timing, under/over-prediction at low/high densities, or misfit during heatwaves.
+
+2) Alignment with PROJECT CONTEXT (NPZ: Nutrient–Phytoplankton–Zooplankton)
+- The current process model represents a COTS–coral system, not an NPZ compartment model. There is no explicit nutrient or plankton state.
+- Nonetheless, NPZ dynamics are ecologically linked to COTS via bottom-up control: phytoplankton/nutrient conditions influence larval survival and thus recruitment. The model currently lacks this pathway.
+
+3) Missing or oversimplified ecological processes
+- No bottom-up resource limitation on COTS recruitment (missing link from nutrient/phytoplankton availability to larval survival).
+- Temperature effects on recruitment are present (Gaussian), but food/energy constraints are absent, which can cause overprediction of recruitment during low-food periods and underprediction during high-food pulses.
+- Coral-side processes include space limitation, bleaching modifiers, and predation, which are reasonable for the coral dynamics component.
+
+4) Parameter review
+- Many parameters are broad and plausible. Some values labelled “literature” (e.g., T_opt_rec, T_opt_bleach, rF, rS) look reasonable as priors but do not by themselves imply structural changes.
+- No evidence provided here suggests the current fecundity taper or mortality forms are inconsistent with literature. Without residuals, we avoid restructuring these components.
+
+Chosen improvement
+
+Approach: Resource limitation mechanism (environmental modifier of recruitment)
+- Intended addition: a bottom-up resource limitation term on COTS recruitment using an exogenous food/nutrient proxy (food_dat), representing phytoplankton (chl-a) or a nutrient index.
+- Mathematical form (when a driver is available): Monod saturation f_food = food / (K_food + food), evaluated at t-1 to avoid data leakage.
+- Recruitment becomes: Rec_t = alpha_rec * [C_{t-1}^phi / (1 + C_{t-1}/C_sat_rec)] * f_Allee(C_{t-1}) * exp(-beta_rec (SST_{t-1}-T_opt_rec)^2) * f_food(food_{t-1}) + cotsimm_{t-1}.
+- Current implementation: since food_dat is not available in the data feed, f_food is set to 1.0 (neutral). This keeps the model structure intact and compilable, while leaving K_food as a parameter for future activation.
+
+Ecological justification
+- Empirical studies associate COTS outbreaks with nutrient enrichment and phytoplankton blooms, which enhance larval survival. This bottom-up linkage is consistent with NPZ theory and improves ecological realism without overcomplicating the existing model.
+- The Monod form captures diminishing returns at high resource levels and is identifiable with standardised drivers.
+
+Data and implementation notes
+- When an exogenous non-negative time series of larval food proxy (e.g., chl-a, nutrient index) becomes available, reintroduce food_dat as a DATA_VECTOR and compute f_food = food / (K_food + food) using only t-1 values to avoid data leakage.
+- Until then, f_food=1.0 ensures the model matches the current data structure and avoids runtime errors.
+- The change is tightly scoped: it affects only recruitment, keeps existing likelihoods intact, and avoids using current observed response values in prediction steps.
+
+Next steps
+- Provide the residuals to confirm whether this addition (once activated with a driver) reduces bias during recruitment-sensitive periods.
+- If residuals still show systematic errors (e.g., phase lag), consider additional timing structure (e.g., lagged food indices or cohort delays) as a subsequent, justified enhancement.
+\end{lstlisting}
+
+\subsubsection{Model Implementation}
+\begin{lstlisting}
+#include <TMB.hpp>
+
+// Smooth positive part to avoid hard cutoffs and preserve differentiability
+template<class Type>
+inline Type pospart(const Type& x) {
+  return (x + CppAD::sqrt(x * x + Type(1e-8))) / Type(2.0); // smooth ReLU, epsilon prevents NaN
+}
+
+// Smooth quadratic penalty for parameters outside [lo, hi]
+template<class Type>
+inline Type range_penalty(const Type& x, const Type& lo, const Type& hi, const Type& w) {
+  Type below = pospart(lo - x);    // >0 when x < lo
+  Type above = pospart(x - hi);    // >0 when x > hi
+  return w * (below * below + above * above); // quadratic penalty outside range
+}
+
+// Logit transform for % cover (0-100), kept strictly inside bounds
+template<class Type>
+inline Type logit_pct(const Type& x) {
+  Type a = Type(1e-6); // small constant to avoid 0/100
+  Type p = (x + a) / (Type(100.0) + Type(2.0) * a); // map [0,100] -> (0,1)
+  return log(p / (Type(1.0) - p));
+}
+
+// Clamp percentage to [0,100] smoothly using pospart
+template<class Type>
+inline Type clamp_pct(const Type& x) {
+  return Type(100.0) - pospart(Type(100.0) - pospart(x));
+}
+
+template<class Type>
+Type objective_function<Type>::operator() () {
+  // ------------------------
+  // DATA
+  // ------------------------
+  DATA_VECTOR(Year);        // calendar year (integer-valued, but numeric vector)
+  DATA_VECTOR(cots_dat);    // Adult COTS abundance (ind/m^2), strictly positive
+  DATA_VECTOR(fast_dat);    // Fast coral cover (Acropora spp.) in %, bounded [0,100]
+  DATA_VECTOR(slow_dat);    // Slow coral cover (Faviidae/Porites) in %, bounded [0,100]
+  DATA_VECTOR(sst_dat);     // Sea Surface Temperature (°C)
+  DATA_VECTOR(cotsimm_dat); // COTS larval immigration (ind/m^2/year)
+  // Note: food_dat intentionally omitted to compile with existing data pipeline.
+  // The food limitation term f_food defaults to 1 (neutral) unless a driver is provided upstream.
+
+  int T = Year.size(); // number of time steps (years)
+
+  // ------------------------
+  // PARAMETERS
+  // ------------------------
+  // Initial states
+  PARAMETER(C0);  // initial adult COTS (ind/m^2)
+  PARAMETER(J0);  // initial juvenile pool (ind/m^2)
+  PARAMETER(F0);  // initial fast coral cover (%)
+  PARAMETER(S0);  // initial slow coral cover (%)
+
+  // COTS recruitment scaling (juvenile inputs at unit modifiers)
+  PARAMETER(alpha_rec);   // Recruitment productivity scaling to juveniles (units: ind m^-2 yr^-1); sets outbreak potential; initial estimate
+  // Density-dependent fecundity exponent (dimensionless), >=1 increases superlinear recruitment
+  PARAMETER(phi);         // Fecundity density exponent (unitless); shapes recruitment curvature; literature/initial estimate
+  // Smooth Allee effect parameters
+  PARAMETER(k_allee);     // Allee logistic steepness (m^2 ind^-1); higher values -> sharper threshold; initial estimate
+  PARAMETER(C_allee);     // Allee threshold density (ind m^-2); density at which mating success rises; literature/initial estimate
+  // Stock–recruitment high-density taper (Beverton–Holt scale)
+  PARAMETER(C_sat_rec);   // Adult density scale for stock–recruitment taper (ind m^-2); proposed improvement
+  // Mortality terms (adult)
+  PARAMETER(muC);         // Baseline adult mortality (yr^-1); initial estimate
+  PARAMETER(gammaC);      // Density-dependent mortality (m^2 ind^-1 yr^-1); drives busts at high density; initial estimate
+  // Juvenile stage dynamics
+  PARAMETER(mJ);          // Annual maturation fraction from juvenile to adult (yr^-1, 0-1); initial estimate
+  PARAMETER(muJ);         // Juvenile proportional mortality (yr^-1, 0-1); initial estimate
+  // Temperature effect on recruitment (Gaussian peak)
+  PARAMETER(T_opt_rec);   // Optimal SST for recruitment (°C); literature
+  PARAMETER(beta_rec);    // Curvature of Gaussian temperature effect (°C^-2); larger -> narrower peak; initial estimate
+  // Environmental food limitation on recruitment (Monod half-saturation)
+  PARAMETER(K_food);      // Half-saturation constant for larval food limitation (units match would-be food driver); scaffolded; neutral if no driver
+  // Temperature effect on coral (bleaching loss above threshold)
+  PARAMETER(T_opt_bleach); // Onset SST for bleaching loss (°C); literature
+  PARAMETER(beta_bleach);  // Multiplier on growth under heat stress (unitless >=0); initial estimate
+  PARAMETER(m_bleachF);    // Additional fast coral proportional loss per °C above threshold (yr^-1 °C^-1); initial estimate
+  PARAMETER(m_bleachS);    // Additional slow coral proportional loss per °C above threshold (yr^-1 °C^-1); initial estimate
+  // Coral intrinsic regrowth and space competition
+  PARAMETER(rF);          // Fast coral intrinsic regrowth (yr^-1 on % scale); literature/initial
+  PARAMETER(rS);          // Slow coral intrinsic regrowth (yr^-1 on % scale); literature/initial
+  PARAMETER(K_tot);       // Total coral carrying capacity (% cover for fast+slow), <=100; literature/initial
+  // COTS functional response on corals (multi-prey Holling with Type II/III blend)
+  PARAMETER(aF);          // Attack/encounter parameter on fast coral (yr^-1 %^-etaF m^2 ind^-1 scaled); initial estimate
+  PARAMETER(aS);          // Attack/encounter parameter on slow coral (yr^-1 %^-etaS m^2 ind^-1 scaled); initial estimate
+  PARAMETER(etaF);        // Shape exponent for fast coral (>=1: Type-III-like at low cover); unitless; initial estimate
+  PARAMETER(etaS);        // Shape exponent for slow coral (>=1: Type-III-like at low cover); unitless; initial estimate
+  PARAMETER(h);           // Handling/satiation time scaler (yr %^-1); increases saturation with coral cover; initial estimate
+  PARAMETER(qF);          // Efficiency converting feeding to % cover loss for fast (unitless, 0-1); literature/initial
+  PARAMETER(qS);          // Efficiency converting feeding to % cover loss for slow (unitless, 0-1); literature/initial
+  // Observation error parameters
+  PARAMETER(sigma_cots);  // Lognormal sd for COTS (log-space); initial estimate
+  PARAMETER(sigma_fast);  // Normal sd for logit(% fast); initial estimate
+  PARAMETER(sigma_slow);  // Normal sd for logit(% slow); initial estimate
+
+  // ------------------------
+  // EQUATION DEFINITIONS (discrete-time, yearly)
+  //
+  // 1) Smooth Allee function f_Allee = 1 / (1 + exp(-k_allee*(C - C_allee)))
+  // 2) Temperature effect on COTS recruitment: f_Trec = exp( -beta_rec * (SST - T_opt_rec)^2 )
+  // 3) Juvenile recruitment (plus immigration forcing): Rec = alpha_rec * [C^phi / (1 + C/C_sat_rec)] * f_Allee * f_Trec * f_food + cotsimm
+  //       with f_food defaulting to 1.0 (neutral) unless an exogenous food driver is supplied upstream.
+  // 4) Adult mortality: Mort_adult = (muC + gammaC * C) * C
+  // 5) Juvenile maturation flux: Mat = mJ * J; juvenile mortality: Mort_juv = muJ * J
+  // 6) Adult update: C_t = C + Mat - Mort_adult
+  // 7) Juvenile update: J_t = J + Rec - Mat - Mort_juv
+  // 8) Coral growth (shared space K_tot): G_{fast,slow} = r * Coral * (1 - (F+S)/K_tot) * exp(-beta_bleach * pos(SST - T_opt_bleach))
+  // 9) Bleaching loss (additional): B_{fast} = m_bleachF * pos(SST - T_opt_bleach) * Fast; similarly for slow
+  // 10) Multi-prey functional response (Type II/III blend):
+  //     denom = 1 + h*(aF*F^etaF + aS*S^etaS)
+  //     Cons_fast = qF * (aF * F^etaF * C) / denom; Cons_slow = qS * (aS * S^etaS * C) / denom
+  // 11) Coral state updates:
+  //     F_t = F + G_fast - Cons_fast - B_fast
+  //     S_t = S + G_slow - Cons_slow - B_slow
+  // Notes:
+  // - All state updates use t-1 values (no data leakage of response variables).
+  // - Small constants avoid division-by-zero and ensure smoothness.
+  // ------------------------
+
+  // Negative log-likelihood accumulator
+  Type nll = 0.0;
+  const Type eps = Type(1e-8);      // small epsilon to stabilize divisions/logs
+  const Type sd_floor = Type(0.05); // minimum sd used in likelihood for stability
+
+  // Suggested biological ranges for smooth penalties (very broad, weakly enforced)
+  // Weight w_pen controls strength; kept small to avoid dominating data likelihood
+  const Type w_pen = Type(1e-3);
+
+  // Apply smooth range penalties to keep parameters within plausible bounds (do not hard-constrain)
+  nll += range_penalty(alpha_rec, Type(0.0),   Type(10.0),   w_pen);
+  nll += range_penalty(phi,       Type(1.0),   Type(3.0),    w_pen);
+  nll += range_penalty(k_allee,   Type(0.01),  Type(20.0),   w_pen);
+  nll += range_penalty(C_allee,   Type(0.0),   Type(5.0),    w_pen);
+  nll += range_penalty(C_sat_rec, Type(0.01),  Type(50.0),   w_pen);
+  nll += range_penalty(muC,       Type(0.0),   Type(3.0),    w_pen);
+  nll += range_penalty(gammaC,    Type(0.0),   Type(10.0),   w_pen);
+  nll += range_penalty(mJ,        Type(0.0),   Type(1.0),    w_pen);
+  nll += range_penalty(muJ,       Type(0.0),   Type(1.0),    w_pen);
+  nll += range_penalty(T_opt_rec, Type(20.0),  Type(34.0),   w_pen);
+  nll += range_penalty(beta_rec,  Type(0.0),   Type(2.0),    w_pen);
+  nll += range_penalty(K_food,    Type(0.001), Type(1000.0), w_pen);
+  nll += range_penalty(T_opt_bleach, Type(20.0), Type(34.0), w_pen);
+  nll += range_penalty(beta_bleach,  Type(0.0),  Type(5.0),  w_pen);
+  nll += range_penalty(m_bleachF,    Type(0.0),  Type(2.0),  w_pen);
+  nll += range_penalty(m_bleachS,    Type(0.0),  Type(2.0),  w_pen);
+  nll += range_penalty(rF,           Type(0.0),  Type(2.0),  w_pen);
+  nll += range_penalty(rS,           Type(0.0),  Type(2.0),  w_pen);
+  nll += range_penalty(K_tot,        Type(10.0), Type(100.0), w_pen);
+  nll += range_penalty(aF,           Type(0.0),  Type(1.0),  w_pen);
+  nll += range_penalty(aS,           Type(0.0),  Type(1.0),  w_pen);
+  nll += range_penalty(etaF,         Type(1.0),  Type(3.0),  w_pen);
+  nll += range_penalty(etaS,         Type(1.0),  Type(3.0),  w_pen);
+  nll += range_penalty(h,            Type(0.0),  Type(1.0),  w_pen);
+  nll += range_penalty(qF,           Type(0.0),  Type(1.0),  w_pen);
+  nll += range_penalty(qS,           Type(0.0),  Type(1.0),  w_pen);
+  nll += range_penalty(sigma_cots,   Type(0.01), Type(2.0),  w_pen);
+  nll += range_penalty(sigma_fast,   Type(0.01), Type(2.0),  w_pen);
+  nll += range_penalty(sigma_slow,   Type(0.01), Type(2.0),  w_pen);
+
+  // ------------------------
+  // STATE VECTORS
+  // ------------------------
+  vector<Type> cots_pred(T); // adult COTS
+  vector<Type> J_pred(T);    // juveniles
+  vector<Type> fast_pred(T); // fast coral %
+  vector<Type> slow_pred(T); // slow coral %
+
+  // Initialize states (clamp corals to [0,100], keep densities >=0)
+  cots_pred(0) = pospart(C0);
+  J_pred(0)    = pospart(J0);
+  fast_pred(0) = clamp_pct(F0);
+  slow_pred(0) = clamp_pct(S0);
+
+  // ------------------------
+  // FORWARD SIMULATION (use t-1 states to compute t)
+  // ------------------------
+  for (int t = 1; t < T; ++t) {
+    // Previous states
+    Type C = cots_pred(t - 1);
+    Type J = J_pred(t - 1);
+    Type F = fast_pred(t - 1);
+    Type S = slow_pred(t - 1);
+
+    // Exogenous drivers at t-1 to avoid leakage
+    Type sst = sst_dat(t - 1);
+    Type cotsimm = cotsimm_dat(t - 1);
+
+    // 1) Allee effect (smooth logistic)
+    Type f_Allee = Type(1.0) / (Type(1.0) + exp(-k_allee * (C - C_allee)));
+
+    // 2) Temperature effect on recruitment
+    Type dT = sst - T_opt_rec;
+    Type f_Trec = exp(-beta_rec * dT * dT);
+
+    // 2b) Food limitation on recruitment
+    // Default neutral modifier (no exogenous food driver available in current pipeline).
+    Type f_food = Type(1.0);
+
+    // 3) Recruitment with Beverton–Holt taper and environmental modifiers
+    Type stock = pow(C + Type(1e-8), phi) / (Type(1.0) + C / (C_sat_rec + Type(1e-8)));
+    Type Rec = alpha_rec * stock * f_Allee * f_Trec * f_food + cotsimm;
+
+    // 4) Adult mortality (baseline + density-dependent)
+    Type Mort_adult = (muC + gammaC * C) * C;
+
+    // 5) Juvenile flows
+    Type Mat = mJ * J;
+    Type Mort_juv = muJ * J;
+
+    // 6) Adult update
+    Type C_next = C + Mat - Mort_adult;
+    C_next = pospart(C_next);
+
+    // 7) Juvenile update
+    Type J_next = J + Rec - Mat - Mort_juv;
+    J_next = pospart(J_next);
+
+    // 8) Coral growth with shared space and bleaching growth reduction
+    Type heat = pospart(sst - T_opt_bleach);
+    Type growth_mod = exp(-beta_bleach * heat);
+    Type space_term = Type(1.0) - (F + S) / (K_tot + Type(1e-8));
+
+    Type G_fast = rF * F * space_term * growth_mod;
+    Type G_slow = rS * S * space_term * growth_mod;
+
+    // 9) Bleaching additional losses
+    Type B_fast = m_bleachF * heat * F;
+    Type B_slow = m_bleachS * heat * S;
+
+    // 10) Multi-prey functional response (Type II/III blend)
+    Type Fp = pospart(F);
+    Type Sp = pospart(S);
+    Type denom = Type(1.0) + h * (aF * pow(Fp + Type(1e-8), etaF) + aS * pow(Sp + Type(1e-8), etaS));
+    Type Cons_fast = qF * (aF * pow(Fp + Type(1e-8), etaF) * C) / denom;
+    Type Cons_slow = qS * (aS * pow(Sp + Type(1e-8), etaS) * C) / denom;
+
+    // 11) Coral updates and clamping to [0,100]
+    Type F_next = F + G_fast - Cons_fast - B_fast;
+    Type S_next = S + G_slow - Cons_slow - B_slow;
+    F_next = clamp_pct(F_next);
+    S_next = clamp_pct(S_next);
+
+    // Store next-step predictions
+    cots_pred(t) = C_next;
+    J_pred(t)    = J_next;
+    fast_pred(t) = F_next;
+    slow_pred(t) = S_next;
+  }
+
+  // ------------------------
+  // OBSERVATION MODEL
+  // ------------------------
+  // Smooth max with floor using pospart to keep AD-friendly
+  Type sd_cots = sigma_cots + pospart(sd_floor - sigma_cots);
+  Type sd_fast = sigma_fast + pospart(sd_floor - sigma_fast);
+  Type sd_slow = sigma_slow + pospart(sd_floor - sigma_slow);
+
+  for (int t = 0; t < T; ++t) {
+    // COTS: lognormal error with Jacobian
+    Type yC = cots_dat(t);
+    Type muCpred = cots_pred(t);
+    // Ensure positivity in log
+    Type logy = log(yC + Type(1e-8));
+    Type logmu = log(muCpred + Type(1e-8));
+    nll -= dnorm(logy, logmu, sd_cots, true);
+    nll += log(yC + Type(1e-8)); // Jacobian
+
+    // Coral fast: normal on logit(%)
+    Type yF = fast_dat(t);
+    Type muF = clamp_pct(fast_pred(t));
+    nll -= dnorm(logit_pct(yF), logit_pct(muF), sd_fast, true);
+
+    // Coral slow: normal on logit(%)
+    Type yS = slow_dat(t);
+    Type muS = clamp_pct(slow_pred(t));
+    nll -= dnorm(logit_pct(yS), logit_pct(muS), sd_slow, true);
+  }
+
+  // ------------------------
+  // REPORTING
+  // ------------------------
+  REPORT(cots_pred);
+  REPORT(J_pred);
+  REPORT(fast_pred);
+  REPORT(slow_pred);
+
+  ADREPORT(cots_pred);
+  ADREPORT(fast_pred);
+  ADREPORT(slow_pred);
+
+  return nll;
+}
+\end{lstlisting}
+
+\subsubsection{Model Parameters}
+\begin{lstlisting}
+{
+    "parameters": [
+        {
+            "parameter": "C0",
+            "value": 0.1,
+            "units": "ind m^-2",
+            "description": "Initial adult COTS density at first time step",
+            "source": "initial estimate",
+            "import_type": "PARAMETER",
+            "priority": 1,
+            "lower_bound": 0.0,
+            "upper_bound": 50.0,
+            "enhanced_semantic_description": "Initial condition for adult COTS density (ind/m^2) at t=0",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "J0",
+            "value": 0.1,
+            "units": "ind m^-2",
+            "description": "Initial juvenile COTS pool at first time step",
+            "source": "initial estimate",
+            "import_type": "PARAMETER",
+            "priority": 1,
+            "lower_bound": 0.0,
+            "upper_bound": 50.0,
+            "enhanced_semantic_description": "Initial condition for juvenile COTS pool (ind/m^2) at t=0",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "F0",
+            "value": 30.0,
+            "units": "% cover",
+            "description": "Initial fast coral (Acropora) cover at first time step",
+            "source": "initial estimate",
+            "import_type": "PARAMETER",
+            "priority": 1,
+            "lower_bound": 0.0,
+            "upper_bound": 100.0,
+            "enhanced_semantic_description": "Initial condition for fast coral cover (%) at t=0",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "S0",
+            "value": 30.0,
+            "units": "% cover",
+            "description": "Initial slow coral (Faviidae/Porites) cover at first time step",
+            "source": "initial estimate",
+            "import_type": "PARAMETER",
+            "priority": 1,
+            "lower_bound": 0.0,
+            "upper_bound": 100.0,
+            "enhanced_semantic_description": "Initial condition for slow coral cover (%) at t=0",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "alpha_rec",
+            "value": 1.0,
+            "units": "ind m^-2 yr^-1",
+            "description": "Recruitment productivity scaling controlling outbreak potential (to juvenile pool)",
+            "source": "initial estimate",
+            "import_type": "PARAMETER",
+            "priority": 1,
+            "lower_bound": 0.0,
+            "upper_bound": 10.0,
+            "enhanced_semantic_description": "Scaling factor for COTS larval/settler recruitment rate into the juvenile stage",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "phi",
+            "value": 1.5,
+            "units": "dimensionless",
+            "description": "Fecundity density exponent shaping recruitment curvature",
+            "source": "initial estimate",
+            "import_type": "PARAMETER",
+            "priority": 2,
+            "lower_bound": 1.0,
+            "upper_bound": 3.0,
+            "enhanced_semantic_description": "Exponent controlling density dependence in fecundity",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "k_allee",
+            "value": 2.0,
+            "units": "m^2 ind^-1",
+            "description": "Steepness of smooth Allee effect on recruitment",
+            "source": "initial estimate",
+            "import_type": "PARAMETER",
+            "priority": 2,
+            "lower_bound": 0.01,
+            "upper_bound": 20.0,
+            "enhanced_semantic_description": "Steepness parameter for smooth Allee effect threshold",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "C_allee",
+            "value": 0.2,
+            "units": "ind m^-2",
+            "description": "Allee density where mating success increases rapidly",
+            "source": "initial estimate",
+            "import_type": "PARAMETER",
+            "priority": 2,
+            "lower_bound": 0.0,
+            "upper_bound": 5.0,
+            "enhanced_semantic_description": "Adult COTS density threshold for mating success increase",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "C_sat_rec",
+            "value": 2.0,
+            "units": "ind m^-2",
+            "description": "Adult density scale for stock\u2013recruitment taper (Beverton\u2013Holt) preventing runaway recruitment at high density",
+            "source": "proposed structural improvement",
+            "import_type": "PARAMETER",
+            "priority": 2,
+            "lower_bound": 0.01,
+            "upper_bound": 50.0,
+            "enhanced_semantic_description": "Characteristic adult COTS density at which recruitment begins to saturate in the stock\u2013recruitment function",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "muC",
+            "value": 0.6,
+            "units": "yr^-1",
+            "description": "Baseline adult COTS mortality rate",
+            "source": "initial estimate",
+            "import_type": "PARAMETER",
+            "priority": 1,
+            "lower_bound": 0.0,
+            "upper_bound": 3.0,
+            "enhanced_semantic_description": "Baseline adult COTS mortality rate per year",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "gammaC",
+            "value": 0.5,
+            "units": "m^2 ind^-1 yr^-1",
+            "description": "Density-dependent mortality coefficient generating busts at high density",
+            "source": "initial estimate",
+            "import_type": "PARAMETER",
+            "priority": 1,
+            "lower_bound": 0.0,
+            "upper_bound": 10.0,
+            "enhanced_semantic_description": "Density-dependent mortality coefficient for adult COTS",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "mJ",
+            "value": 0.5,
+            "units": "yr^-1",
+            "description": "Annual maturation fraction of juvenile COTS into adults",
+            "source": "initial estimate",
+            "import_type": "PARAMETER",
+            "priority": 2,
+            "lower_bound": 0.0,
+            "upper_bound": 1.0,
+            "enhanced_semantic_description": "Proportion of juvenile pool maturing into adults each year (0-1)",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "muJ",
+            "value": 0.5,
+            "units": "yr^-1",
+            "description": "Annual proportional mortality of juvenile COTS",
+            "source": "initial estimate",
+            "import_type": "PARAMETER",
+            "priority": 2,
+            "lower_bound": 0.0,
+            "upper_bound": 1.0,
+            "enhanced_semantic_description": "Proportion of juvenile pool lost to mortality each year (0-1)",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "T_opt_rec",
+            "value": 26.5,
+            "units": "degC",
+            "description": "Optimal SST for COTS recruitment success",
+            "source": "literature",
+            "import_type": "PARAMETER",
+            "priority": 2,
+            "lower_bound": 20.0,
+            "upper_bound": 34.0,
+            "enhanced_semantic_description": "Optimal sea surface temperature for COTS recruitment (\u00b0C)",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "beta_rec",
+            "value": 0.2,
+            "units": "degC^-2",
+            "description": "Curvature of Gaussian temperature effect on recruitment",
+            "source": "initial estimate",
+            "import_type": "PARAMETER",
+            "priority": 2,
+            "lower_bound": 0.0,
+            "upper_bound": 2.0,
+            "enhanced_semantic_description": "Gaussian curvature controlling temperature recruitment peak",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "T_opt_bleach",
+            "value": 32.65,
+            "units": "degC",
+            "description": "SST threshold where bleaching stress starts impacting coral",
+            "source": "literature",
+            "import_type": "PARAMETER",
+            "priority": 2,
+            "lower_bound": 31.0,
+            "upper_bound": 34.3,
+            "enhanced_semantic_description": "SST threshold initiating coral bleaching stress (\u00b0C)",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "beta_bleach",
+            "value": 0.5,
+            "units": "dimensionless",
+            "description": "Multiplier controlling growth reduction under heat stress (higher means stronger reduction)",
+            "source": "initial estimate",
+            "import_type": "PARAMETER",
+            "priority": 3,
+            "lower_bound": 0.0,
+            "upper_bound": 5.0,
+            "enhanced_semantic_description": "Multiplier reducing coral growth under heat stress",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "m_bleachF",
+            "value": 0.2,
+            "units": "yr^-1 degC^-1",
+            "description": "Additional proportional loss of fast coral per \u00b0C above threshold",
+            "source": "initial estimate",
+            "import_type": "PARAMETER",
+            "priority": 2,
+            "lower_bound": 0.0,
+            "upper_bound": 2.0,
+            "enhanced_semantic_description": "Fast coral proportional loss rate per \u00b0C above bleaching threshold",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "m_bleachS",
+            "value": 0.1,
+            "units": "yr^-1 degC^-1",
+            "description": "Additional proportional loss of slow coral per \u00b0C above threshold",
+            "source": "initial estimate",
+            "import_type": "PARAMETER",
+            "priority": 2,
+            "lower_bound": 0.0,
+            "upper_bound": 2.0,
+            "enhanced_semantic_description": "Slow coral proportional loss rate per \u00b0C above bleaching threshold",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "rF",
+            "value": 0.5,
+            "units": "yr^-1",
+            "description": "Intrinsic regrowth rate of fast coral on % scale with shared space limits",
+            "source": "literature",
+            "import_type": "PARAMETER",
+            "priority": 2,
+            "lower_bound": 0.0,
+            "upper_bound": 2.0,
+            "enhanced_semantic_description": "Intrinsic regrowth rate of fast coral cover (% per year)",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "rS",
+            "value": 0.2,
+            "units": "yr^-1",
+            "description": "Intrinsic regrowth rate of slow coral on % scale with shared space limits",
+            "source": "literature",
+            "import_type": "PARAMETER",
+            "priority": 2,
+            "lower_bound": 0.0,
+            "upper_bound": 2.0,
+            "enhanced_semantic_description": "Intrinsic regrowth rate of slow coral cover (% per year)",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "K_tot",
+            "value": 70.0,
+            "units": "% cover",
+            "description": "Total carrying capacity for combined coral cover (fast + slow)",
+            "source": "literature",
+            "import_type": "PARAMETER",
+            "priority": 2,
+            "lower_bound": 10.0,
+            "upper_bound": 100.0,
+            "enhanced_semantic_description": "Maximum combined coral cover capacity (%)",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "aF",
+            "value": 0.02,
+            "units": "yr^-1 %^-etaF m^2 ind^-1 (scaled)",
+            "description": "Encounter/attack parameter on fast coral in the multi-prey response",
+            "source": "initial estimate",
+            "import_type": "PARAMETER",
+            "priority": 1,
+            "lower_bound": 0.0,
+            "upper_bound": 1.0,
+            "enhanced_semantic_description": "Attack rate parameter on fast coral by COTS",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "aS",
+            "value": 0.01,
+            "units": "yr^-1 %^-etaS m^2 ind^-1 (scaled)",
+            "description": "Encounter/attack parameter on slow coral in the multi-prey response",
+            "source": "initial estimate",
+            "import_type": "PARAMETER",
+            "priority": 1,
+            "lower_bound": 0.0,
+            "upper_bound": 1.0,
+            "enhanced_semantic_description": "Attack rate parameter on slow coral by COTS",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "etaF",
+            "value": 1.5,
+            "units": "dimensionless",
+            "description": "Shape exponent for fast coral (>=1 implies Type-III-like at low cover)",
+            "source": "initial estimate",
+            "import_type": "PARAMETER",
+            "priority": 3,
+            "lower_bound": 1.0,
+            "upper_bound": 3.0,
+            "enhanced_semantic_description": "Shape exponent for fast coral functional response (\u22651)",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "etaS",
+            "value": 1.2,
+            "units": "dimensionless",
+            "description": "Shape exponent for slow coral (>=1 implies Type-III-like at low cover)",
+            "source": "initial estimate",
+            "import_type": "PARAMETER",
+            "priority": 3,
+            "lower_bound": 1.0,
+            "upper_bound": 3.0,
+            "enhanced_semantic_description": "Shape exponent for slow coral functional response (\u22651)",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "h",
+            "value": 0.02,
+            "units": "yr %^-1",
+            "description": "Handling/satiation scaler controlling saturation in multi-prey response",
+            "source": "initial estimate",
+            "import_type": "PARAMETER",
+            "priority": 3,
+            "lower_bound": 0.0,
+            "upper_bound": 1.0,
+            "enhanced_semantic_description": "Handling time scaler controlling feeding saturation",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "qF",
+            "value": 0.8,
+            "units": "dimensionless (0-1)",
+            "description": "Efficiency converting fast coral feeding into % cover loss",
+            "source": "literature",
+            "import_type": "PARAMETER",
+            "priority": 1,
+            "lower_bound": 0.0,
+            "upper_bound": 1.0,
+            "enhanced_semantic_description": "Conversion efficiency of feeding to fast coral cover loss",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "qS",
+            "value": 0.5,
+            "units": "dimensionless (0-1)",
+            "description": "Efficiency converting slow coral feeding into % cover loss",
+            "source": "literature",
+            "import_type": "PARAMETER",
+            "priority": 1,
+            "lower_bound": 0.0,
+            "upper_bound": 1.0,
+            "enhanced_semantic_description": "Conversion efficiency of feeding to slow coral cover loss",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "sigma_cots",
+            "value": 0.5,
+            "units": "log-space SD",
+            "description": "Observation/process error SD for COTS (lognormal)",
+            "source": "initial estimate",
+            "import_type": "PARAMETER",
+            "priority": 1,
+            "lower_bound": 0.01,
+            "upper_bound": 2.0,
+            "enhanced_semantic_description": "Standard deviation of lognormal observation error for COTS",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "sigma_fast",
+            "value": 0.3,
+            "units": "logit-space SD",
+            "description": "Observation/process error SD for fast coral (% on logit scale)",
+            "source": "initial estimate",
+            "import_type": "PARAMETER",
+            "priority": 1,
+            "lower_bound": 0.01,
+            "upper_bound": 2.0,
+            "enhanced_semantic_description": "Standard deviation of logit-normal error for fast coral cover",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "sigma_slow",
+            "value": 0.3,
+            "units": "logit-space SD",
+            "description": "Observation/process error SD for slow coral (% on logit scale)",
+            "source": "initial estimate",
+            "import_type": "PARAMETER",
+            "priority": 1,
+            "lower_bound": 0.01,
+            "upper_bound": 2.0,
+            "enhanced_semantic_description": "Standard deviation of logit-normal error for slow coral cover",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "K_food",
+            "value": 1.0,
+            "units": "units of food_dat",
+            "description": "Half-saturation constant for larval food limitation on recruitment; controls resource limitation strength via f_food = food / (K_food + food)",
+            "source": "proposed structural improvement (bottom-up control via NPZ linkage)",
+            "import_type": "PARAMETER",
+            "priority": 2,
+            "lower_bound": 0.001,
+            "upper_bound": 100.0,
+            "enhanced_semantic_description": "Half-saturation parameter in a Monod function mapping an exogenous phytoplankton/nutrient proxy (food_dat) to larval survival during recruitment",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        }
+    ]
+}
+\end{lstlisting}

@@ -1,0 +1,871 @@
+\subsection{openrouter:anthropic/claude-sonnet-4.5 Model (CoTS)}
+This model achieved an objective value of 0.3314 (Population 24).
+
+\subsubsection{Model Intention}
+\begin{lstlisting}
+MODEL ASSESSMENT AND IMPROVEMENT PLAN
+
+=== CURRENT MODEL EVALUATION ===
+
+Strengths:
+1. Comprehensive COTS-coral predator-prey dynamics with two coral functional groups
+2. Allee effects and temperature dependencies appropriately included
+3. Type II functional responses capture predation saturation
+4. Recruitment pulse mechanism (Equations 11-16) attempts to capture episodic outbreak initiation
+5. Immigration effects and density-dependent mortality included
+
+Structural Concerns:
+1. Recruitment pulse uses steep threshold activation (Equation 15) creating abrupt on/off dynamics
+2. Food favorability (Equation 13) is monotonically increasing with coral cover
+3. Updated parameter values (especially log_mort_base with tight bounds 0.3-0.6 year⁻¹) suggest original equations may need refinement
+4. Missing critical ecological feedback: substrate limitation for larval settlement
+
+=== KEY MISSING ECOLOGICAL PROCESS ===
+
+SUBSTRATE-LIMITED LARVAL SETTLEMENT:
+- COTS larvae settle preferentially on crustose coralline algae (CCA) and bare substrate
+- High coral cover reduces available settlement substrate by overgrowing CCA
+- Low coral cover provides poor post-settlement food for juveniles
+- Intermediate coral cover is OPTIMAL: sufficient settlement substrate + adequate food
+- This creates a unimodal (hump-shaped) relationship between coral cover and recruitment success
+
+Ecological Justification:
+- Pratchett et al. (2014) show COTS settlement requires specific substrate conditions
+- Outbreaks often initiate when coral cover is recovering (20-40%), not at maximum
+- Very high coral cover (>60%) can suppress recruitment despite high food availability
+- This mechanism helps explain outbreak timing and the characteristic boom-bust pattern
+
+=== PROPOSED IMPROVEMENT ===
+
+Replace linear food favorability (Equation 13) with UNIMODAL SUBSTRATE-FOOD RELATIONSHIP:
+
+OLD (Equation 13):
+food_favorability = total_coral / (K_coral + eps)
+- Monotonically increases with coral cover
+- Maximum favorability at carrying capacity
+- Ignores settlement substrate limitation
+
+NEW (Modified Equation 13):
+substrate_food_favorability = (total_coral / optimal_coral) * exp(1.0 - total_coral / optimal_coral)
+- Peaks at optimal_coral (new parameter, ~30-40% cover)
+- Declines at very low coral (poor food) AND very high coral (limited substrate)
+- Unimodal curve captures settlement-survival tradeoff
+- Mathematically: f(x) = (x/x_opt) * exp(1 - x/x_opt), maximum at x = x_opt
+
+New Parameter Required:
+- log_optimal_coral: Log of optimal coral cover for COTS recruitment
+  * Initial value: 3.4 (log(30%) - intermediate coral cover)
+  * Units: log(percent)
+  * Bounds: 2.5 to 3.9 (12% to 50%)
+  * Ecological range: Outbreaks typically initiate during coral recovery phase
+  * Source: Literature on COTS settlement ecology
+
+Expected Improvements:
+1. More realistic outbreak timing (during recovery, not at peak coral)
+2. Better capture of boom-bust cycles
+3. Reduced sensitivity to threshold parameter
+4. Improved model fit during inter-outbreak periods
+5. Mechanistic explanation for why outbreaks don't occur at maximum coral cover
+
+=== IMPLEMENTATION DETAILS ===
+
+Changes to model.cpp:
+1. Add new parameter log_optimal_coral with transformation
+2. Replace Equation 13 with unimodal substrate-food relationship
+3. Update Equation 14 (composite favorability) to use new term
+4. Maintain all other equations unchanged
+5. Add REPORT for new parameter
+
+Changes to parameters.json:
+1. Add log_optimal_coral entry with ecological justification
+2. Set appropriate bounds based on COTS settlement ecology
+3. Priority level 2 (important for outbreak dynamics)
+
+This improvement maintains model parsimony while adding critical ecological realism for capturing episodic outbreak dynamics in the PROJECT CONTEXT.
+\end{lstlisting}
+
+\subsubsection{Model Implementation}
+\begin{lstlisting}
+#include <TMB.hpp>
+
+template<class Type>
+Type objective_function<Type>::operator() ()
+{
+  // DATA INPUTS - Time series observations
+  DATA_VECTOR(Year);                    // Time vector (years)
+  DATA_VECTOR(cots_dat);                // Observed COTS abundance (individuals/m2)
+  DATA_VECTOR(fast_dat);                // Observed fast-growing coral cover (%)
+  DATA_VECTOR(slow_dat);                // Observed slow-growing coral cover (%)
+  DATA_VECTOR(sst_dat);                 // Sea surface temperature (Celsius)
+  DATA_VECTOR(cotsimm_dat);             // COTS larval immigration rate (individuals/m2/year)
+  
+  // COTS POPULATION PARAMETERS
+  PARAMETER(log_r_cots);                // Log intrinsic growth rate of COTS (year^-1)
+  PARAMETER(log_K_cots);                // Log carrying capacity of COTS (individuals/m2)
+  PARAMETER(log_allee_threshold);       // Log Allee threshold density (individuals/m2)
+  PARAMETER(allee_strength);            // Allee effect strength (dimensionless, 0-1)
+  PARAMETER(log_mort_base);             // Log baseline mortality rate (year^-1)
+  PARAMETER(log_mort_density);          // Log density-dependent mortality coefficient (m2/individuals/year)
+  PARAMETER(log_temp_opt);              // Log optimal temperature for COTS recruitment (Celsius)
+  PARAMETER(log_temp_width);            // Log temperature tolerance width (Celsius)
+  PARAMETER(immigration_effect);        // Immigration enhancement factor (dimensionless)
+  PARAMETER(log_recruit_max);           // Log maximum recruitment rate during pulse events (individuals/m2/year)
+  PARAMETER(recruit_threshold);         // Favorability threshold for recruitment pulse activation (0-1)
+  PARAMETER(log_optimal_coral);         // Log optimal coral cover for COTS settlement and survival (%)
+  
+  // CORAL DYNAMICS PARAMETERS
+  PARAMETER(log_r_fast);                // Log intrinsic growth rate of fast coral (year^-1)
+  PARAMETER(log_r_slow);                // Log intrinsic growth rate of slow coral (year^-1)
+  PARAMETER(log_K_coral);               // Log carrying capacity for total coral (%)
+  PARAMETER(log_temp_stress_threshold); // Log temperature threshold for coral stress (Celsius)
+  PARAMETER(temp_stress_rate);          // Temperature stress mortality rate (year^-1/Celsius)
+  
+  // PREDATION PARAMETERS
+  PARAMETER(log_attack_fast);           // Log attack rate on fast coral (m2/individuals/year)
+  PARAMETER(log_attack_slow);           // Log attack rate on slow coral (m2/individuals/year)
+  PARAMETER(log_handling_fast);         // Log handling time for fast coral (year)
+  PARAMETER(log_handling_slow);         // Log handling time for slow coral (year)
+  PARAMETER(log_conversion_eff);        // Log conversion efficiency of coral to COTS (dimensionless)
+  PARAMETER(preference_fast);           // Preference for fast coral (dimensionless, 0-1)
+  
+  // OBSERVATION ERROR PARAMETERS
+  PARAMETER(log_sigma_cots);            // Log observation error SD for COTS
+  PARAMETER(log_sigma_fast);            // Log observation error SD for fast coral
+  PARAMETER(log_sigma_slow);            // Log observation error SD for slow coral
+  
+  // Transform parameters from log scale
+  Type r_cots = exp(log_r_cots);                           // Intrinsic growth rate of COTS (year^-1)
+  Type K_cots = exp(log_K_cots);                           // Carrying capacity of COTS (individuals/m2)
+  Type allee_threshold = exp(log_allee_threshold);         // Allee threshold (individuals/m2)
+  Type mort_base = exp(log_mort_base);                     // Baseline mortality (year^-1)
+  Type mort_density = exp(log_mort_density);               // Density-dependent mortality (m2/individuals/year)
+  Type temp_opt = exp(log_temp_opt);                       // Optimal temperature (Celsius)
+  Type temp_width = exp(log_temp_width);                   // Temperature width (Celsius)
+  Type recruit_max = exp(log_recruit_max);                 // Maximum recruitment rate (individuals/m2/year)
+  Type optimal_coral = exp(log_optimal_coral);             // Optimal coral cover for COTS recruitment (%)
+  Type r_fast = exp(log_r_fast);                           // Fast coral growth rate (year^-1)
+  Type r_slow = exp(log_r_slow);                           // Slow coral growth rate (year^-1)
+  Type K_coral = exp(log_K_coral);                         // Coral carrying capacity (%)
+  Type temp_stress_threshold = exp(log_temp_stress_threshold); // Temperature stress threshold (Celsius)
+  Type attack_fast = exp(log_attack_fast);                 // Attack rate on fast coral (m2/individuals/year)
+  Type attack_slow = exp(log_attack_slow);                 // Attack rate on slow coral (m2/individuals/year)
+  Type handling_fast = exp(log_handling_fast);             // Handling time fast coral (year)
+  Type handling_slow = exp(log_handling_slow);             // Handling time slow coral (year)
+  Type conversion_eff = exp(log_conversion_eff);           // Conversion efficiency (dimensionless)
+  Type sigma_cots = exp(log_sigma_cots);                   // Observation error COTS
+  Type sigma_fast = exp(log_sigma_fast);                   // Observation error fast coral
+  Type sigma_slow = exp(log_sigma_slow);                   // Observation error slow coral
+  
+  // Small constant for numerical stability
+  Type eps = Type(1e-8);                                    // Small constant to prevent division by zero
+  
+  // Minimum standard deviations for likelihood
+  Type min_sigma = Type(0.01);                              // Minimum SD to prevent numerical issues
+  Type sigma_cots_use = sigma_cots + min_sigma;             // Effective SD for COTS
+  Type sigma_fast_use = sigma_fast + min_sigma;             // Effective SD for fast coral
+  Type sigma_slow_use = sigma_slow + min_sigma;             // Effective SD for slow coral
+  
+  // Get number of time steps
+  int n = Year.size();                                      // Number of time steps
+  
+  // Initialize prediction vectors
+  vector<Type> cots_pred(n);
+  vector<Type> fast_pred(n);
+  vector<Type> slow_pred(n);
+  
+  // Set initial conditions from observations
+  for(int t = 0; t < n; t++) {
+    cots_pred(t) = Type(0.0);
+    fast_pred(t) = Type(0.0);
+    slow_pred(t) = Type(0.0);
+  }
+  
+  cots_pred(0) = cots_dat(0);
+  fast_pred(0) = fast_dat(0);
+  slow_pred(0) = slow_dat(0);
+  
+  // Calculate reference values for standardization in recruitment pulse
+  Type max_immigration = Type(0.0);                         // Maximum immigration in dataset
+  for(int t = 0; t < n; t++) {
+    if(cotsimm_dat(t) > max_immigration) max_immigration = cotsimm_dat(t);
+  }
+  max_immigration += eps;                                   // Prevent division by zero
+  
+  // TIME LOOP - Forward simulation to generate predictions
+  for(int t = 1; t < n; t++) {
+    
+    // Previous time step values (using predictions, not observations)
+    Type cots_prev = cots_pred(t-1);                        // COTS at t-1
+    Type fast_prev = fast_pred(t-1);                        // Fast coral at t-1
+    Type slow_prev = slow_pred(t-1);                        // Slow coral at t-1
+    Type sst_curr = sst_dat(t);                             // Current SST
+    Type immigration = cotsimm_dat(t);                      // Current immigration
+    
+    // EQUATION 1: Allee effect function
+    // Reduces recruitment at low densities due to reduced mating success
+    Type allee_factor = Type(1.0) - allee_strength * exp(-cots_prev / (allee_threshold + eps));
+    allee_factor = allee_factor / (Type(1.0) + eps);        // Normalize and stabilize
+    
+    // EQUATION 2: Temperature effect on COTS recruitment
+    // Gaussian function centered on optimal temperature
+    Type temp_diff = sst_curr - temp_opt;                   // Deviation from optimum
+    Type temp_effect = exp(-Type(0.5) * pow(temp_diff / (temp_width + eps), 2)); // Gaussian temperature response
+    
+    // EQUATION 3: Immigration enhancement
+    // Larval immigration boosts local recruitment
+    Type immigration_boost = Type(1.0) + immigration_effect * immigration; // Immigration multiplier
+    
+    // EQUATION 4: Type II functional response for fast coral predation
+    // Captures saturation in consumption rate at high prey densities
+    Type consumption_fast = (attack_fast * fast_prev * cots_prev) / 
+                           (Type(1.0) + attack_fast * handling_fast * fast_prev + eps); // Fast coral consumption (% cover/year)
+    
+    // EQUATION 5: Type II functional response for slow coral predation
+    // COTS switch to slow coral when fast coral is depleted
+    Type consumption_slow = (attack_slow * slow_prev * cots_prev) / 
+                           (Type(1.0) + attack_slow * handling_slow * slow_prev + eps); // Slow coral consumption (% cover/year)
+    
+    // EQUATION 6: Prey preference and switching
+    // COTS prefer fast coral but switch when it becomes scarce
+    Type total_coral = fast_prev + slow_prev + eps;         // Total coral available
+    Type fast_proportion = fast_prev / total_coral;         // Proportion of fast coral
+    Type preference_weight = preference_fast * fast_proportion + 
+                            (Type(1.0) - preference_fast) * (Type(1.0) - fast_proportion); // Weighted preference
+    
+    // EQUATION 7: Weighted consumption rates
+    Type consumption_fast_weighted = consumption_fast * preference_weight; // Adjusted fast consumption
+    Type consumption_slow_weighted = consumption_slow * (Type(1.0) - preference_weight); // Adjusted slow consumption
+    
+    // EQUATION 8: Total food intake for COTS
+    Type total_consumption = consumption_fast_weighted + consumption_slow_weighted; // Total coral consumed
+    
+    // EQUATION 9: Density-dependent mortality
+    // Increases with crowding (disease, competition)
+    Type mortality_dd = mort_base + mort_density * cots_prev; // Total mortality rate (year^-1)
+    
+    // EQUATION 10: Starvation effect
+    // Mortality increases when coral resources are depleted
+    Type starvation_factor = Type(1.0) + Type(2.0) * exp(-total_coral / Type(5.0)); // Starvation multiplier
+    Type mortality_total = mortality_dd * starvation_factor; // Combined mortality (year^-1)
+    
+    // EQUATION 11: Recruitment pulse mechanism - Temperature favorability
+    // Optimal temperature promotes larval development and settlement
+    Type temp_favorability = temp_effect;                   // Temperature component (0-1)
+    
+    // EQUATION 12: Recruitment pulse mechanism - Immigration favorability
+    // High larval supply increases probability of mass settlement
+    Type immigration_favorability = immigration / max_immigration; // Immigration component (0-1)
+    
+    // EQUATION 13: MODIFIED - Substrate-food favorability with unimodal relationship
+    // COTS larvae require settlement substrate (CCA, bare space) AND post-settlement food
+    // Low coral: poor food availability for juveniles
+    // High coral: reduced settlement substrate (coral overgrows CCA)
+    // Optimal at intermediate coral cover (~30-40%)
+    // Mathematical form: f(x) = (x/x_opt) * exp(1 - x/x_opt)
+    // This peaks at x = x_opt and declines on both sides
+    Type coral_ratio = total_coral / (optimal_coral + eps); // Ratio to optimal
+    Type substrate_food_favorability = coral_ratio * exp(Type(1.0) - coral_ratio); // Unimodal curve
+    // Bound between 0 and 1 for numerical stability
+    if(substrate_food_favorability > Type(1.0)) substrate_food_favorability = Type(1.0);
+    if(substrate_food_favorability < Type(0.0)) substrate_food_favorability = Type(0.0);
+    
+    // EQUATION 14: Composite favorability index for recruitment
+    // Multiplicative combination allows partial compensation among factors
+    // All three must be reasonably high for mass recruitment
+    Type favorability_index = temp_favorability * immigration_favorability * substrate_food_favorability;
+    
+    // EQUATION 15: Recruitment pulse activation
+    // Sigmoidal threshold function creates episodic recruitment events
+    // Steep slope (factor of 20) ensures sharp transition at threshold
+    Type recruit_activation = Type(1.0) / (Type(1.0) + exp(-Type(20.0) * (favorability_index - recruit_threshold)));
+    
+    // EQUATION 16: Recruitment pulse flux
+    // Mass recruitment of larvae when conditions are favorable
+    // This is the primary mechanism driving outbreak initiation
+    Type recruitment_pulse = recruit_max * recruit_activation * favorability_index;
+    
+    // EQUATION 17: COTS population growth from existing adults
+    // Standard logistic growth with Allee effect, temperature, and immigration modifiers
+    // Plus growth from converting consumed coral to new biomass
+    Type cots_growth_adults = r_cots * cots_prev * allee_factor * temp_effect * immigration_boost * 
+                             (Type(1.0) - cots_prev / (K_cots + eps)) + // Logistic growth with modifiers
+                             conversion_eff * total_consumption; // Growth from coral consumption
+    
+    // EQUATION 18: Total COTS population change
+    // Combines adult growth, recruitment pulse, and mortality
+    // Recruitment pulse is ADDITIVE (new individuals), not multiplicative
+    Type cots_change = cots_growth_adults + recruitment_pulse - mortality_total * cots_prev;
+    
+    // EQUATION 19: COTS PREDICTION - Update COTS abundance for time t
+    cots_pred(t) = cots_prev + cots_change;                 // COTS at time t
+    cots_pred(t) = cots_pred(t) / (Type(1.0) + eps);        // Stabilize
+    if(cots_pred(t) < Type(0.0)) cots_pred(t) = Type(1e-6); // Prevent negative values
+    
+    // EQUATION 20: Temperature stress on corals
+    // Warm temperatures reduce coral growth and increase mortality
+    Type temp_stress = Type(0.0);                           // Initialize stress
+    if(sst_curr > temp_stress_threshold) {
+      temp_stress = temp_stress_rate * (sst_curr - temp_stress_threshold); // Stress mortality (year^-1)
+    }
+    
+    // EQUATION 21: Fast coral dynamics
+    // Logistic growth reduced by COTS predation and temperature stress
+    Type fast_growth = r_fast * fast_prev * (Type(1.0) - (fast_prev + slow_prev) / (K_coral + eps)) - 
+                      consumption_fast_weighted - // COTS predation loss
+                      temp_stress * fast_prev; // Temperature stress loss
+    
+    // EQUATION 22: FAST CORAL PREDICTION - Update fast coral cover for time t
+    fast_pred(t) = fast_prev + fast_growth;                 // Fast coral at time t
+    fast_pred(t) = fast_pred(t) / (Type(1.0) + eps);        // Stabilize
+    if(fast_pred(t) < Type(0.0)) fast_pred(t) = Type(1e-6); // Prevent negative values
+    if(fast_pred(t) > K_coral) fast_pred(t) = K_coral;     // Cap at carrying capacity
+    
+    // EQUATION 23: Slow coral dynamics
+    // Slower growth but more resistant to disturbance
+    Type slow_growth = r_slow * slow_prev * (Type(1.0) - (fast_prev + slow_prev) / (K_coral + eps)) - 
+                      consumption_slow_weighted - // COTS predation loss
+                      Type(0.5) * temp_stress * slow_prev; // Reduced temperature sensitivity
+    
+    // EQUATION 24: SLOW CORAL PREDICTION - Update slow coral cover for time t
+    slow_pred(t) = slow_prev + slow_growth;                 // Slow coral at time t
+    slow_pred(t) = slow_pred(t) / (Type(1.0) + eps);        // Stabilize
+    if(slow_pred(t) < Type(0.0)) slow_pred(t) = Type(1e-6); // Prevent negative values
+    if(slow_pred(t) > K_coral) slow_pred(t) = K_coral;     // Cap at carrying capacity
+  }
+  
+  // LIKELIHOOD CALCULATION
+  Type nll = Type(0.0);                                     // Initialize negative log-likelihood
+  
+  // EQUATION 25: COTS observation likelihood
+  // Lognormal distribution for strictly positive abundance data
+  for(int t = 0; t < n; t++) {
+    Type log_cots_pred = log(cots_pred(t) + eps);          // Log predicted COTS
+    Type log_cots_obs = log(cots_dat(t) + eps);            // Log observed COTS
+    nll -= dnorm(log_cots_obs, log_cots_pred, sigma_cots_use, true); // Lognormal likelihood
+  }
+  
+  // EQUATION 26: Fast coral observation likelihood
+  // Normal distribution for percentage cover data
+  for(int t = 0; t < n; t++) {
+    nll -= dnorm(fast_dat(t), fast_pred(t), sigma_fast_use, true); // Normal likelihood
+  }
+  
+  // EQUATION 27: Slow coral observation likelihood
+  // Normal distribution for percentage cover data
+  for(int t = 0; t < n; t++) {
+    nll -= dnorm(slow_dat(t), slow_pred(t), sigma_slow_use, true); // Normal likelihood
+  }
+  
+  // EQUATION 28: Soft parameter bounds using penalties
+  // Allee strength bounded between 0 and 1
+  Type penalty = Type(0.0);                                 // Initialize penalty
+  if(allee_strength < Type(0.0)) penalty += Type(100.0) * pow(allee_strength, 2);
+  if(allee_strength > Type(1.0)) penalty += Type(100.0) * pow(allee_strength - Type(1.0), 2);
+  
+  // EQUATION 29: Preference parameter bounded between 0 and 1
+  if(preference_fast < Type(0.0)) penalty += Type(100.0) * pow(preference_fast, 2);
+  if(preference_fast > Type(1.0)) penalty += Type(100.0) * pow(preference_fast - Type(1.0), 2);
+  
+  // EQUATION 30: Conversion efficiency bounded between 0 and 1
+  if(conversion_eff < Type(0.0)) penalty += Type(100.0) * pow(conversion_eff, 2);
+  if(conversion_eff > Type(1.0)) penalty += Type(100.0) * pow(conversion_eff - Type(1.0), 2);
+  
+  // EQUATION 31: Recruitment threshold bounded between 0 and 1
+  if(recruit_threshold < Type(0.0)) penalty += Type(100.0) * pow(recruit_threshold, 2);
+  if(recruit_threshold > Type(1.0)) penalty += Type(100.0) * pow(recruit_threshold - Type(1.0), 2);
+  
+  nll += penalty;                                           // Add penalties to likelihood
+  
+  // REPORTING
+  REPORT(cots_pred);                                        // Report predicted COTS
+  REPORT(fast_pred);                                        // Report predicted fast coral
+  REPORT(slow_pred);                                        // Report predicted slow coral
+  REPORT(r_cots);                                           // Report COTS growth rate
+  REPORT(K_cots);                                           // Report COTS carrying capacity
+  REPORT(allee_threshold);                                  // Report Allee threshold
+  REPORT(allee_strength);                                   // Report Allee strength
+  REPORT(mort_base);                                        // Report baseline mortality
+  REPORT(mort_density);                                     // Report density-dependent mortality
+  REPORT(temp_opt);                                         // Report optimal temperature
+  REPORT(temp_width);                                       // Report temperature width
+  REPORT(immigration_effect);                               // Report immigration effect
+  REPORT(recruit_max);                                      // Report maximum recruitment rate
+  REPORT(recruit_threshold);                                // Report recruitment threshold
+  REPORT(optimal_coral);                                    // Report optimal coral cover for recruitment
+  REPORT(r_fast);                                           // Report fast coral growth
+  REPORT(r_slow);                                           // Report slow coral growth
+  REPORT(K_coral);                                          // Report coral carrying capacity
+  REPORT(temp_stress_threshold);                            // Report temperature stress threshold
+  REPORT(temp_stress_rate);                                 // Report temperature stress rate
+  REPORT(attack_fast);                                      // Report attack rate fast
+  REPORT(attack_slow);                                      // Report attack rate slow
+  REPORT(handling_fast);                                    // Report handling time fast
+  REPORT(handling_slow);                                    // Report handling time slow
+  REPORT(conversion_eff);                                   // Report conversion efficiency
+  REPORT(preference_fast);                                  // Report preference for fast coral
+  REPORT(sigma_cots);                                       // Report COTS observation error
+  REPORT(sigma_fast);                                       // Report fast coral observation error
+  REPORT(sigma_slow);                                       // Report slow coral observation error
+  
+  return nll;                                               // Return negative log-likelihood
+}
+\end{lstlisting}
+
+\subsubsection{Model Parameters}
+\begin{lstlisting}
+{
+    "parameters": [
+        {
+            "parameter": "Year",
+            "value": 0,
+            "units": "years",
+            "description": "Time vector in years",
+            "source": "data",
+            "import_type": "DATA_VECTOR",
+            "priority": 1,
+            "lower_bound": null,
+            "upper_bound": null,
+            "enhanced_semantic_description": "Annual time points for model simulation",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "cots_dat",
+            "value": 0,
+            "units": "individuals/m^2",
+            "description": "Observed Crown-of-Thorns starfish abundance",
+            "source": "data",
+            "import_type": "DATA_VECTOR",
+            "priority": 1,
+            "lower_bound": 0.0,
+            "upper_bound": null,
+            "enhanced_semantic_description": "Observed Crown-of-Thorns starfish density (individuals/m\u00b2)",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "fast_dat",
+            "value": 0,
+            "units": "percent",
+            "description": "Observed fast-growing coral (Acropora) cover",
+            "source": "data",
+            "import_type": "DATA_VECTOR",
+            "priority": 1,
+            "lower_bound": 0.0,
+            "upper_bound": null,
+            "enhanced_semantic_description": "Observed fast-growing coral cover percentage (%)",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "slow_dat",
+            "value": 0,
+            "units": "percent",
+            "description": "Observed slow-growing coral (Faviidae, Porites) cover",
+            "source": "data",
+            "import_type": "DATA_VECTOR",
+            "priority": 1,
+            "lower_bound": 0.0,
+            "upper_bound": null,
+            "enhanced_semantic_description": "Observed slow-growing coral cover percentage (%)",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "sst_dat",
+            "value": 0,
+            "units": "Celsius",
+            "description": "Sea surface temperature",
+            "source": "data",
+            "import_type": "DATA_VECTOR",
+            "priority": 1,
+            "lower_bound": -2.0,
+            "upper_bound": null,
+            "enhanced_semantic_description": "Sea surface temperature in degrees Celsius",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "cotsimm_dat",
+            "value": 0,
+            "units": "individuals/m^2/year",
+            "description": "Crown-of-Thorns larval immigration rate",
+            "source": "data",
+            "import_type": "DATA_VECTOR",
+            "priority": 1,
+            "lower_bound": 0.0,
+            "upper_bound": null,
+            "enhanced_semantic_description": "Larval immigration rate of COTS (individuals/m\u00b2/year)",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "log_r_cots",
+            "value": -0.693,
+            "units": "log(year^-1)",
+            "description": "Log intrinsic growth rate of COTS population (untransformed: ~0.5 year^-1)",
+            "source": "literature",
+            "import_type": "PARAMETER",
+            "priority": 1,
+            "lower_bound": -3.0,
+            "upper_bound": 1.0,
+            "enhanced_semantic_description": "Log intrinsic growth rate of COTS population (year\u207b\u00b9)",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "log_K_cots",
+            "value": 1.609,
+            "units": "log(individuals/m^2)",
+            "description": "Log carrying capacity of COTS (untransformed: ~5 individuals/m^2)",
+            "source": "literature",
+            "import_type": "PARAMETER",
+            "priority": 2,
+            "lower_bound": 0.0,
+            "upper_bound": 3.0,
+            "enhanced_semantic_description": "Log carrying capacity of COTS (individuals/m\u00b2)",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "log_allee_threshold",
+            "value": -1.609,
+            "units": "log(individuals/m^2)",
+            "description": "Log Allee threshold density below which reproduction is impaired (untransformed: ~0.2 individuals/m^2)",
+            "source": "literature",
+            "import_type": "PARAMETER",
+            "priority": 2,
+            "lower_bound": -3.0,
+            "upper_bound": 0.0,
+            "enhanced_semantic_description": "Log Allee threshold density for COTS reproduction (individuals/m\u00b2)",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "allee_strength",
+            "value": 0.5,
+            "units": "dimensionless",
+            "description": "Strength of Allee effect (0 = no effect, 1 = maximum effect)",
+            "source": "initial estimate",
+            "import_type": "PARAMETER",
+            "priority": 3,
+            "lower_bound": 0.0,
+            "upper_bound": 1.0,
+            "enhanced_semantic_description": "Strength of Allee effect on COTS recruitment (0-1)",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "log_mort_base",
+            "value": -0.857,
+            "units": "log(year^-1)",
+            "description": "Log baseline mortality rate of COTS (untransformed: ~0.3 year^-1)",
+            "source": "literature",
+            "import_type": "PARAMETER",
+            "priority": 2,
+            "lower_bound": -1.204,
+            "upper_bound": -0.511,
+            "enhanced_semantic_description": "Log baseline mortality rate of COTS (year\u207b\u00b9)",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "log_mort_density",
+            "value": -1.609,
+            "units": "log(m^2/individuals/year)",
+            "description": "Log density-dependent mortality coefficient (untransformed: ~0.2 m^2/individuals/year)",
+            "source": "literature",
+            "import_type": "PARAMETER",
+            "priority": 2,
+            "lower_bound": -3.0,
+            "upper_bound": 1.0,
+            "enhanced_semantic_description": "Log density-dependent mortality coefficient (m\u00b2/individual/year)",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "log_temp_opt",
+            "value": 3.3495,
+            "units": "log(Celsius)",
+            "description": "Log optimal temperature for COTS recruitment (untransformed: ~28\u00b0C)",
+            "source": "literature",
+            "import_type": "PARAMETER",
+            "priority": 2,
+            "lower_bound": 3.332,
+            "upper_bound": 3.367,
+            "enhanced_semantic_description": "Log optimal temperature for COTS recruitment (\u00b0C)",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "log_temp_width",
+            "value": 0.693,
+            "units": "log(Celsius)",
+            "description": "Log temperature tolerance width (untransformed: ~2\u00b0C)",
+            "source": "literature",
+            "import_type": "PARAMETER",
+            "priority": 3,
+            "lower_bound": -1.0,
+            "upper_bound": 2.0,
+            "enhanced_semantic_description": "Log temperature tolerance width for COTS recruitment (\u00b0C)",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "immigration_effect",
+            "value": 0.5,
+            "units": "dimensionless",
+            "description": "Enhancement factor for larval immigration on local recruitment",
+            "source": "initial estimate",
+            "import_type": "PARAMETER",
+            "priority": 3,
+            "lower_bound": 0.0,
+            "upper_bound": 2.0,
+            "enhanced_semantic_description": "Effect multiplier of larval immigration on recruitment",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "log_recruit_max",
+            "value": 0.0,
+            "units": "log(individuals/m^2/year)",
+            "description": "Log maximum recruitment rate during favorable pulse events (untransformed: ~1.0 individuals/m^2/year)",
+            "source": "initial estimate",
+            "import_type": "PARAMETER",
+            "priority": 2,
+            "lower_bound": -1.0,
+            "upper_bound": 2.0,
+            "enhanced_semantic_description": "Log peak recruitment flux when temperature, immigration, and food conditions are all optimal for mass larval settlement and juvenile survival",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "recruit_threshold",
+            "value": 0.6,
+            "units": "dimensionless",
+            "description": "Composite favorability threshold (0-1) above which recruitment pulse mechanism activates",
+            "source": "initial estimate",
+            "import_type": "PARAMETER",
+            "priority": 2,
+            "lower_bound": 0.4,
+            "upper_bound": 0.8,
+            "enhanced_semantic_description": "Minimum multiplicative favorability index (temperature \u00d7 immigration \u00d7 food) required to trigger episodic mass recruitment events characteristic of COTS outbreaks",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "log_optimal_coral",
+            "value": 3.4,
+            "units": "log(percent)",
+            "description": "Log optimal total coral cover for COTS larval settlement and juvenile survival (untransformed: ~30%)",
+            "source": "literature",
+            "import_type": "PARAMETER",
+            "priority": 2,
+            "lower_bound": 2.5,
+            "upper_bound": 3.9,
+            "enhanced_semantic_description": "Log optimal coral cover balancing settlement substrate availability (favored by lower cover exposing crustose coralline algae) and post-settlement food availability (favored by higher cover). COTS outbreaks typically initiate during coral recovery phase at intermediate cover (20-40%), not at maximum coral density. This unimodal relationship captures the ecological tradeoff between substrate limitation at high coral cover and food limitation at low coral cover.",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "log_r_fast",
+            "value": -0.357,
+            "units": "log(year^-1)",
+            "description": "Log intrinsic growth rate of fast-growing coral (untransformed: ~0.7 year^-1)",
+            "source": "literature",
+            "import_type": "PARAMETER",
+            "priority": 1,
+            "lower_bound": -2.0,
+            "upper_bound": 0.5,
+            "enhanced_semantic_description": "Log intrinsic growth rate of fast-growing coral (year\u207b\u00b9)",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "log_r_slow",
+            "value": -1.609,
+            "units": "log(year^-1)",
+            "description": "Log intrinsic growth rate of slow-growing coral (untransformed: ~0.2 year^-1)",
+            "source": "literature",
+            "import_type": "PARAMETER",
+            "priority": 1,
+            "lower_bound": -3.0,
+            "upper_bound": 0.0,
+            "enhanced_semantic_description": "Log intrinsic growth rate of slow-growing coral (year\u207b\u00b9)",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "log_K_coral",
+            "value": 4.094,
+            "units": "log(percent)",
+            "description": "Log carrying capacity for total coral cover (untransformed: ~60%)",
+            "source": "literature",
+            "import_type": "PARAMETER",
+            "priority": 2,
+            "lower_bound": 3.5,
+            "upper_bound": 4.5,
+            "enhanced_semantic_description": "Log carrying capacity for total coral cover (%)",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "log_temp_stress_threshold",
+            "value": 3.502,
+            "units": "log(Celsius)",
+            "description": "Log temperature threshold for coral stress (untransformed: ~29\u00b0C)",
+            "source": "literature",
+            "import_type": "PARAMETER",
+            "priority": 2,
+            "lower_bound": 3.367,
+            "upper_bound": 3.637,
+            "enhanced_semantic_description": "Log temperature threshold triggering coral stress (\u00b0C)",
+            "updated_from_literature": true,
+            "updated_fields_from_literature": [
+                "value",
+                "upper_bound"
+            ]
+        },
+        {
+            "parameter": "temp_stress_rate",
+            "value": 0.2,
+            "units": "year^-1/Celsius",
+            "description": "Temperature stress mortality rate per degree above threshold",
+            "source": "literature",
+            "import_type": "PARAMETER",
+            "priority": 3,
+            "lower_bound": 0.0,
+            "upper_bound": 1.0,
+            "enhanced_semantic_description": "Coral mortality rate per \u00b0C above stress threshold (year\u207b\u00b9/\u00b0C)",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "log_attack_fast",
+            "value": 0.693,
+            "units": "log(m^2/individuals/year)",
+            "description": "Log attack rate on fast-growing coral (untransformed: ~2.0 m^2/individuals/year)",
+            "source": "literature",
+            "import_type": "PARAMETER",
+            "priority": 1,
+            "lower_bound": -1.0,
+            "upper_bound": 2.5,
+            "enhanced_semantic_description": "Log COTS attack rate on fast-growing coral (m\u00b2/individual/year)",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "log_attack_slow",
+            "value": 0.0,
+            "units": "log(m^2/individuals/year)",
+            "description": "Log attack rate on slow-growing coral (untransformed: ~1.0 m^2/individuals/year)",
+            "source": "literature",
+            "import_type": "PARAMETER",
+            "priority": 1,
+            "lower_bound": -1.5,
+            "upper_bound": 2.0,
+            "enhanced_semantic_description": "Log COTS attack rate on slow-growing coral (m\u00b2/individual/year)",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "log_handling_fast",
+            "value": -2.303,
+            "units": "log(year)",
+            "description": "Log handling time for fast-growing coral (untransformed: ~0.1 year)",
+            "source": "literature",
+            "import_type": "PARAMETER",
+            "priority": 2,
+            "lower_bound": -4.0,
+            "upper_bound": 0.0,
+            "enhanced_semantic_description": "Log handling time for fast coral prey by COTS (year)",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "log_handling_slow",
+            "value": -1.609,
+            "units": "log(year)",
+            "description": "Log handling time for slow-growing coral (untransformed: ~0.2 year)",
+            "source": "literature",
+            "import_type": "PARAMETER",
+            "priority": 2,
+            "lower_bound": -4.0,
+            "upper_bound": 0.0,
+            "enhanced_semantic_description": "Log handling time for slow coral prey by COTS (year)",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "log_conversion_eff",
+            "value": -2.303,
+            "units": "log(dimensionless)",
+            "description": "Log conversion efficiency of coral to COTS biomass (untransformed: ~0.1)",
+            "source": "literature",
+            "import_type": "PARAMETER",
+            "priority": 2,
+            "lower_bound": -4.0,
+            "upper_bound": -0.5,
+            "enhanced_semantic_description": "Log efficiency converting coral biomass to COTS growth",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "preference_fast",
+            "value": 0.7,
+            "units": "dimensionless",
+            "description": "Preference coefficient for fast-growing coral (0-1, higher = stronger preference)",
+            "source": "literature",
+            "import_type": "PARAMETER",
+            "priority": 2,
+            "lower_bound": 0.0,
+            "upper_bound": 1.0,
+            "enhanced_semantic_description": "COTS preference for fast-growing coral (proportion 0-1)",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "log_sigma_cots",
+            "value": -1.609,
+            "units": "log(individuals/m^2)",
+            "description": "Log observation error standard deviation for COTS (untransformed: ~0.2)",
+            "source": "initial estimate",
+            "import_type": "PARAMETER",
+            "priority": 4,
+            "lower_bound": -4.0,
+            "upper_bound": 1.0,
+            "enhanced_semantic_description": "Log standard deviation of COTS observation error",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "log_sigma_fast",
+            "value": 1.609,
+            "units": "log(percent)",
+            "description": "Log observation error standard deviation for fast coral (untransformed: ~5%)",
+            "source": "initial estimate",
+            "import_type": "PARAMETER",
+            "priority": 4,
+            "lower_bound": 0.0,
+            "upper_bound": 3.0,
+            "enhanced_semantic_description": "Log standard deviation of fast coral observation error (%)",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "log_sigma_slow",
+            "value": 1.609,
+            "units": "log(percent)",
+            "description": "Log observation error standard deviation for slow coral (untransformed: ~5%)",
+            "source": "initial estimate",
+            "import_type": "PARAMETER",
+            "priority": 4,
+            "lower_bound": 0.0,
+            "upper_bound": 3.0,
+            "enhanced_semantic_description": "Log standard deviation of slow coral observation error (%)",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        }
+    ]
+}
+\end{lstlisting}

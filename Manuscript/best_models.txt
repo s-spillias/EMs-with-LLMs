@@ -1,0 +1,3430 @@
+
+\subsection{openrouter:google/gemini-2.5-pro Model (CoTS)}
+This model achieved an objective value of 0.4700 (Population 13).
+
+\subsubsection{Model Intention}
+\begin{lstlisting}
+Model Assessment:
+The current model provides a robust framework for simulating COTS-coral interactions, capturing the essential boom-bust dynamics described in the project context. It correctly implements logistic growth for corals, selective predation by COTS (Holling Type II), and critical COTS life-history traits like reproductive and survival Allee effects. These mechanisms allow the model to simulate population explosions and subsequent crashes.
+
+Identified Weakness:
+The primary weakness is the oversimplification of COTS reproduction. The current growth term is a function of food intake and population density only. It completely omits the strong influence of environmental conditions, such as sea surface temperature (SST), on COTS spawning and larval success. This is a significant gap, as favorable environmental windows are widely considered to be a key trigger for the massive recruitment events that initiate outbreaks.
+
+Proposed Ecological Improvement:
+To address this, I will introduce a temperature-dependent reproductive success term into the COTS growth equation. This term will model reproductive success as a Gaussian (bell-shaped) function of SST. This means reproduction will be highest at an optimal temperature (`T_opt_cots`) and will decrease as temperatures move away from this optimum, constrained by a thermal tolerance width (`T_sigma_cots`).
+
+Justification for Change:
+This change introduces a crucial and realistic environmental driver for COTS outbreaks using an already available data stream (SST). It enhances the model's predictive power by allowing it to capture the timing and magnitude of outbreaks more accurately, as recruitment will now be co-limited by food availability and thermal conditions. This provides a dynamic, internal mechanism for triggering outbreaks, moving beyond a sole reliance on external larval immigration data and better reflecting the complex ecological reality.
+\end{lstlisting}
+
+\subsubsection{Model Implementation}
+\begin{lstlisting}
+#include <TMB.hpp>
+
+template<class Type>
+Type objective_function<Type>::operator() ()
+{
+  // ------------------------------------------------------------------------
+  // DATA
+  // ------------------------------------------------------------------------
+  
+  // Time vector
+  DATA_VECTOR(Year); // Time steps in years
+
+  // Response variables
+  DATA_VECTOR(cots_dat); // Observed COTS density (individuals/m2)
+  DATA_VECTOR(fast_dat); // Observed fast-growing coral cover (%)
+  DATA_VECTOR(slow_dat); // Observed slow-growing coral cover (%)
+
+  // Forcing variables
+  DATA_VECTOR(sst_dat); // Observed sea-surface temperature (Celsius)
+  DATA_VECTOR(cotsimm_dat); // Observed COTS larval immigration (individuals/m2/year)
+
+  // ------------------------------------------------------------------------
+  // PARAMETERS
+  // ------------------------------------------------------------------------
+
+  // Coral dynamics
+  PARAMETER(log_r_F);      // log of intrinsic growth rate of fast-growing corals (year^-1)
+  PARAMETER(log_r_S);      // log of intrinsic growth rate of slow-growing corals (year^-1)
+  PARAMETER(log_K_coral);  // log of total coral carrying capacity (%)
+  PARAMETER(log_m_F_sst);  // log of fast coral mortality rate due to high SST (degree^-1 year^-1)
+  PARAMETER(log_m_S_sst);  // log of slow coral mortality rate due to high SST (degree^-1 year^-1)
+  PARAMETER(T_bleach_F);   // Bleaching temperature threshold for fast corals (Celsius)
+  PARAMETER(T_bleach_S);   // Bleaching temperature threshold for slow corals (Celsius)
+  PARAMETER(log_k_bleach); // log of steepness of the logistic bleaching response
+
+  // COTS dynamics
+  PARAMETER(log_a_F);      // log of COTS attack rate on fast corals (m^2 ind^-1 year^-1)
+  PARAMETER(log_a_S);      // log of COTS attack rate on slow corals (m^2 ind^-1 year^-1)
+  PARAMETER(log_h);        // log of COTS handling time on corals (year)
+  PARAMETER(log_e_F);      // log of COTS conversion efficiency from fast coral to COTS
+  PARAMETER(log_e_S);      // log of COTS conversion efficiency from slow coral to COTS
+  PARAMETER(m_C_max);      // Max COTS per-capita mortality rate at low densities (year^-1)
+  PARAMETER(log_m_C_dd);   // log of COTS density-dependent mortality coefficient (m^2 ind^-1 year^-1)
+  PARAMETER(log_A_allee);  // log of COTS density for reproductive Allee effect half-saturation
+  PARAMETER(log_A_mort_s); // log of COTS density for survival Allee effect half-saturation
+  PARAMETER(T_opt_cots);   // Optimal temperature for COTS reproduction (Celsius)
+  PARAMETER(T_sigma_cots); // Width of COTS reproductive thermal window (Celsius)
+
+  // Observation error
+  PARAMETER(log_sd_cots);  // log of standard deviation for COTS data (log scale)
+  PARAMETER(log_sd_fast);  // log of standard deviation for fast coral data (log scale)
+  PARAMETER(log_sd_slow);  // log of standard deviation for slow coral data (log scale)
+
+  // ------------------------------------------------------------------------
+  // MODEL SETUP
+  // ------------------------------------------------------------------------
+
+  // Unpack parameters
+  Type r_F = exp(log_r_F);
+  Type r_S = exp(log_r_S);
+  Type K_coral = exp(log_K_coral);
+  Type m_F_sst = exp(log_m_F_sst);
+  Type m_S_sst = exp(log_m_S_sst);
+  Type k_bleach = exp(log_k_bleach);
+  Type a_F = exp(log_a_F);
+  Type a_S = exp(log_a_S);
+  Type h = exp(log_h);
+  Type e_F = exp(log_e_F);
+  Type e_S = exp(log_e_S);
+  Type m_C_dd = exp(log_m_C_dd);
+  Type A_allee = exp(log_A_allee);
+  Type A_mort_s = exp(log_A_mort_s);
+  Type sd_cots = exp(log_sd_cots);
+  Type sd_fast = exp(log_sd_fast);
+  Type sd_slow = exp(log_sd_slow);
+
+  // Number of time steps
+  int n_t = Year.size();
+
+  // Prediction vectors
+  vector<Type> cots_pred(n_t);
+  vector<Type> fast_pred(n_t);
+  vector<Type> slow_pred(n_t);
+
+  // Initialize predictions with the first data point
+  cots_pred(0) = cots_dat(0);
+  fast_pred(0) = fast_dat(0);
+  slow_pred(0) = slow_dat(0);
+
+  // Negative log-likelihood
+  Type nll = 0.0;
+
+  // ------------------------------------------------------------------------
+  // EQUATION DESCRIPTIONS
+  // ------------------------------------------------------------------------
+  // 1. COTS Predation (Holling Type II): Predation rate on fast (P_F) and slow (P_S) corals.
+  //    P_coral = (a_coral * Coral) / (1 + a_F * h * FastCoral + a_S * h * SlowCoral)
+  // 2. Total Consumption: Total amount of each coral type consumed by the COTS population.
+  //    Consumed_coral = P_coral * COTS
+  // 3. Coral Bleaching: Temperature-dependent mortality using a logistic function.
+  //    Bleach_Effect = m_sst_coral / (1 + exp(-k_bleach * (SST - T_bleach)))
+  // 4. Fast Coral Dynamics: Logistic growth minus COTS predation and bleaching mortality.
+  //    dF/dt = r_F*F*(1-(F+S)/K) - Consumed_F - Bleach_Effect_F*F
+  // 5. Slow Coral Dynamics: Logistic growth minus COTS predation and bleaching mortality.
+  //    dS/dt = r_S*S*(1-(F+S)/K) - Consumed_S - Bleach_Effect_S*S
+  // 6. COTS Dynamics: Temperature-modulated growth from consumption (reproductive Allee effect) minus mortality (survival Allee effect), plus immigration.
+  //    Reproductive_Allee = C / (C + A_allee)
+  //    Reproductive_Success_Temp = exp(-((SST - T_opt_cots)^2) / (2 * T_sigma_cots^2))
+  //    Survival_Allee_Mortality = (m_C_max * C) / (1 + C / A_mort_s)
+  //    dC/dt = (e_F*Consumed_F + e_S*Consumed_S)*Reproductive_Allee*Reproductive_Success_Temp - Survival_Allee_Mortality - m_C_dd*C^2 + Immigration
+  // ------------------------------------------------------------------------
+
+  // ------------------------------------------------------------------------
+  // PROCESS MODEL
+  // ------------------------------------------------------------------------
+  for (int t = 1; t < n_t; ++t) {
+    // Previous time step values (for readability)
+    Type C_prev = cots_pred(t-1);
+    Type F_prev = fast_pred(t-1);
+    Type S_prev = slow_pred(t-1);
+    Type SST_curr = sst_dat(t);
+
+    // Numerical stability constant
+    Type epsilon = 1e-8;
+
+    // 1. COTS Predation (Holling Type II functional response)
+    Type predation_denominator = 1.0 + a_F * h * F_prev + a_S * h * S_prev;
+    Type consumed_per_capita_F = (a_F * F_prev) / (predation_denominator + epsilon);
+    Type consumed_per_capita_S = (a_S * S_prev) / (predation_denominator + epsilon);
+
+    // 2. Total Consumption by COTS population
+    Type total_consumption_F = consumed_per_capita_F * C_prev;
+    Type total_consumption_S = consumed_per_capita_S * C_prev;
+
+    // 3. Coral Bleaching mortality from SST
+    Type bleach_effect_F = m_F_sst / (1.0 + exp(-k_bleach * (SST_curr - T_bleach_F)));
+    Type bleach_effect_S = m_S_sst / (1.0 + exp(-k_bleach * (SST_curr - T_bleach_S)));
+    Type bleaching_loss_F = bleach_effect_F * F_prev;
+    Type bleaching_loss_S = bleach_effect_S * S_prev;
+
+    // 4. Fast Coral Dynamics
+    Type fast_growth = r_F * F_prev * (1.0 - (F_prev + S_prev) / (K_coral + epsilon));
+    fast_pred(t) = F_prev + fast_growth - total_consumption_F - bleaching_loss_F;
+
+    // 5. Slow Coral Dynamics
+    Type slow_growth = r_S * S_prev * (1.0 - (F_prev + S_prev) / (K_coral + epsilon));
+    slow_pred(t) = S_prev + slow_growth - total_consumption_S - bleaching_loss_S;
+
+    // 6. COTS Dynamics
+    // Temperature effect on COTS reproduction (Gaussian response)
+    Type temp_diff = SST_curr - T_opt_cots;
+    Type cots_repro_success = exp(-(temp_diff * temp_diff) / (2.0 * T_sigma_cots * T_sigma_cots));
+    
+    Type cots_growth_potential = e_F * total_consumption_F + e_S * total_consumption_S;
+    Type allee_effect = C_prev / (C_prev + A_allee + epsilon);
+    Type cots_growth = cots_growth_potential * allee_effect * cots_repro_success;
+    // Mortality includes survival Allee effect (predator satiation) and density-dependence
+    Type survival_allee_mortality = (m_C_max * C_prev) / (1.0 + C_prev / (A_mort_s + epsilon));
+    Type cots_mortality = survival_allee_mortality + m_C_dd * C_prev * C_prev;
+    cots_pred(t) = C_prev + cots_growth - cots_mortality + cotsimm_dat(t);
+
+    // Ensure predictions are non-negative
+    cots_pred(t) = CppAD::CondExpGe(cots_pred(t), Type(0.0), cots_pred(t), Type(0.0));
+    fast_pred(t) = CppAD::CondExpGe(fast_pred(t), Type(0.0), fast_pred(t), Type(0.0));
+    slow_pred(t) = CppAD::CondExpGe(slow_pred(t), Type(0.0), slow_pred(t), Type(0.0));
+  }
+
+  // ------------------------------------------------------------------------
+  // LIKELIHOOD
+  // ------------------------------------------------------------------------
+  
+  // Add a small constant to prevent issues with log(0) and small SDs
+  Type min_sd = 1e-4;
+  Type log_epsilon = 1e-8;
+
+  // Lognormal distribution for all observations
+  // This is equivalent to a normal distribution on the log-transformed data
+  for (int t = 0; t < n_t; ++t) {
+    nll -= dnorm(log(cots_dat(t) + log_epsilon), log(cots_pred(t) + log_epsilon), sd_cots + min_sd, true);
+    nll -= dnorm(log(fast_dat(t) + log_epsilon), log(fast_pred(t) + log_epsilon), sd_fast + min_sd, true);
+    nll -= dnorm(log(slow_dat(t) + log_epsilon), log(slow_pred(t) + log_epsilon), sd_slow + min_sd, true);
+  }
+
+  // ------------------------------------------------------------------------
+  // REPORTING
+  // ------------------------------------------------------------------------
+  
+  // Report predictions
+  REPORT(cots_pred);
+  REPORT(fast_pred);
+  REPORT(slow_pred);
+
+  // Report transformed parameters for interpretation
+  REPORT(r_F);
+  REPORT(r_S);
+  REPORT(K_coral);
+  REPORT(m_F_sst);
+  REPORT(m_S_sst);
+  REPORT(k_bleach);
+  REPORT(a_F);
+  REPORT(a_S);
+  REPORT(h);
+  REPORT(e_F);
+  REPORT(e_S);
+  REPORT(m_C_max);
+  REPORT(m_C_dd);
+  REPORT(A_allee);
+  REPORT(A_mort_s);
+  REPORT(T_opt_cots);
+  REPORT(T_sigma_cots);
+  REPORT(sd_cots);
+  REPORT(sd_fast);
+  REPORT(sd_slow);
+
+  return nll;
+}
+\end{lstlisting}
+
+\subsubsection{Model Parameters}
+\begin{lstlisting}
+{
+    "parameters": [
+        {
+            "parameter": "log_r_F",
+            "value": -0.51,
+            "description": "log of intrinsic growth rate of fast-growing corals (Acropora)",
+            "source": "literature",
+            "import_type": "PARAMETER",
+            "priority": 1,
+            "lower_bound": -3.0,
+            "upper_bound": 1.0,
+            "enhanced_semantic_description": "Intrinsic growth rate of fast-growing Acropora corals",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "log_r_S",
+            "value": -1.9,
+            "description": "log of intrinsic growth rate of slow-growing corals (Faviidae, Porites)",
+            "source": "literature",
+            "import_type": "PARAMETER",
+            "priority": 1,
+            "lower_bound": -4.0,
+            "upper_bound": 0.5,
+            "enhanced_semantic_description": "Intrinsic growth rate of slow-growing Faviidae and Porites corals",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "log_K_coral",
+            "value": 4.38,
+            "description": "log of total coral carrying capacity (% cover)",
+            "source": "initial estimate",
+            "import_type": "PARAMETER",
+            "priority": 2,
+            "lower_bound": 3.0,
+            "upper_bound": 6.0,
+            "enhanced_semantic_description": "Total coral community carrying capacity as percent cover",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "log_m_F_sst",
+            "value": -0.69,
+            "description": "log of fast coral mortality rate due to high SST",
+            "source": "initial estimate",
+            "import_type": "PARAMETER",
+            "priority": 3,
+            "lower_bound": -5.0,
+            "upper_bound": 1.0,
+            "enhanced_semantic_description": "Mortality rate of fast corals due to elevated sea surface temperature",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "log_m_S_sst",
+            "value": -1.2,
+            "description": "log of slow coral mortality rate due to high SST",
+            "source": "initial estimate",
+            "import_type": "PARAMETER",
+            "priority": 3,
+            "lower_bound": -5.0,
+            "upper_bound": 1.0,
+            "enhanced_semantic_description": "Mortality rate of slow corals due to elevated sea surface temperature",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "T_bleach_F",
+            "value": 30.0,
+            "description": "Bleaching temperature threshold for fast corals (Celsius)",
+            "source": "literature",
+            "import_type": "PARAMETER",
+            "priority": 3,
+            "lower_bound": 27.0,
+            "upper_bound": 35.0,
+            "enhanced_semantic_description": "Bleaching temperature threshold for fast-growing corals (\u00b0C)",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "T_bleach_S",
+            "value": 30.5,
+            "description": "Bleaching temperature threshold for slow corals (Celsius)",
+            "source": "literature",
+            "import_type": "PARAMETER",
+            "priority": 3,
+            "lower_bound": 27.0,
+            "upper_bound": 35.0,
+            "enhanced_semantic_description": "Bleaching temperature threshold for slow-growing corals (\u00b0C)",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "log_k_bleach",
+            "value": 0.69,
+            "description": "log of steepness of the logistic bleaching response",
+            "source": "initial estimate",
+            "import_type": "PARAMETER",
+            "priority": 3,
+            "lower_bound": 0.0,
+            "upper_bound": 5.0,
+            "enhanced_semantic_description": "Steepness of logistic coral bleaching mortality response",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "log_a_F",
+            "value": -2.3,
+            "description": "log of COTS attack rate on fast corals",
+            "source": "literature",
+            "import_type": "PARAMETER",
+            "priority": 1,
+            "lower_bound": -5.0,
+            "upper_bound": 2.0,
+            "enhanced_semantic_description": "COTS attack rate on fast-growing corals (m\u00b2 per individual per year)",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "log_a_S",
+            "value": -3.0,
+            "description": "log of COTS attack rate on slow corals",
+            "source": "literature",
+            "import_type": "PARAMETER",
+            "priority": 1,
+            "lower_bound": -5.0,
+            "upper_bound": 2.0,
+            "enhanced_semantic_description": "COTS attack rate on slow-growing corals (m\u00b2 per individual per year)",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "log_h",
+            "value": -3.0,
+            "description": "log of COTS handling time on corals",
+            "source": "initial estimate",
+            "import_type": "PARAMETER",
+            "priority": 2,
+            "lower_bound": -3.0,
+            "upper_bound": 1.0,
+            "enhanced_semantic_description": "Handling time of COTS feeding on corals (years per prey item)",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "log_e_F",
+            "value": -2.3,
+            "description": "log of COTS conversion efficiency from fast coral to COTS biomass",
+            "source": "literature",
+            "import_type": "PARAMETER",
+            "priority": 1,
+            "lower_bound": -5.0,
+            "upper_bound": 0.0,
+            "enhanced_semantic_description": "Conversion efficiency from consumed fast-growing coral to COTS biomass",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "log_e_S",
+            "value": -2.8,
+            "description": "log of COTS conversion efficiency from slow coral to COTS biomass",
+            "source": "initial estimate",
+            "import_type": "PARAMETER",
+            "priority": 1,
+            "lower_bound": -5.0,
+            "upper_bound": 0.0,
+            "enhanced_semantic_description": "Conversion efficiency from consumed slow-growing coral to COTS biomass",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "m_C_max",
+            "value": 1.74,
+            "description": "Max COTS per-capita mortality rate at low densities (year\u207b\u00b9)",
+            "source": "initial estimate",
+            "import_type": "PARAMETER",
+            "priority": 1,
+            "lower_bound": 0.5,
+            "upper_bound": 3.0,
+            "enhanced_semantic_description": "Maximum per-capita mortality rate of COTS at low densities, representing high predation pressure (year\u207b\u00b9)",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "log_m_C_dd",
+            "value": -2.3,
+            "description": "log of COTS density-dependent mortality coefficient",
+            "source": "initial estimate",
+            "import_type": "PARAMETER",
+            "priority": 2,
+            "lower_bound": -5.0,
+            "upper_bound": 1.0,
+            "enhanced_semantic_description": "Density-dependent mortality coefficient for COTS (m\u00b2 ind\u207b\u00b9 year\u207b\u00b9)",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "log_A_allee",
+            "value": -1.6,
+            "description": "log of COTS density for reproductive Allee effect half-saturation",
+            "source": "initial estimate",
+            "import_type": "PARAMETER",
+            "priority": 2,
+            "lower_bound": -5.0,
+            "upper_bound": 1.0,
+            "enhanced_semantic_description": "COTS density at which reproductive efficiency is half its maximum, due to mate-finding limitation (ind m\u207b\u00b2)",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "log_A_mort_s",
+            "value": -1.6,
+            "description": "log of COTS density for survival Allee effect half-saturation",
+            "source": "initial estimate",
+            "import_type": "PARAMETER",
+            "priority": 2,
+            "lower_bound": -5.0,
+            "upper_bound": 1.0,
+            "enhanced_semantic_description": "COTS density where predation mortality is halved due to satiation/dilution effects (ind m\u207b\u00b2)",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "log_sd_cots",
+            "value": -1.6,
+            "description": "log of observation error standard deviation for COTS data",
+            "source": "initial estimate",
+            "import_type": "PARAMETER",
+            "priority": 4,
+            "lower_bound": -5.0,
+            "upper_bound": 1.0,
+            "enhanced_semantic_description": "Observation error SD for COTS density (log scale)",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "log_sd_fast",
+            "value": -1.6,
+            "description": "log of observation error standard deviation for fast coral data",
+            "source": "initial estimate",
+            "import_type": "PARAMETER",
+            "priority": 4,
+            "lower_bound": -5.0,
+            "upper_bound": 1.0,
+            "enhanced_semantic_description": "Observation error SD for fast coral cover (log scale)",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "log_sd_slow",
+            "value": -1.6,
+            "description": "log of observation error standard deviation for slow coral data",
+            "source": "initial estimate",
+            "import_type": "PARAMETER",
+            "priority": 4,
+            "lower_bound": -5.0,
+            "upper_bound": 1.0,
+            "enhanced_semantic_description": "Observation error SD for slow coral cover (log scale)",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "T_opt_cots",
+            "value": 28.0,
+            "description": "Optimal temperature for COTS reproduction (Celsius)",
+            "source": "initial estimate",
+            "import_type": "PARAMETER",
+            "priority": 2,
+            "lower_bound": 25.0,
+            "upper_bound": 32.0,
+            "enhanced_semantic_description": "Optimal sea surface temperature for COTS spawning and larval success (\u00b0C)",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "T_sigma_cots",
+            "value": 2.0,
+            "description": "Width of COTS reproductive thermal window (Celsius)",
+            "source": "initial estimate",
+            "import_type": "PARAMETER",
+            "priority": 2,
+            "lower_bound": 0.5,
+            "upper_bound": 5.0,
+            "enhanced_semantic_description": "Standard deviation of the Gaussian thermal window for COTS reproduction, indicating tolerance (\u00b0C)",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        }
+    ]
+}
+\end{lstlisting}
+\clearpage
+\section{Best Performing Models for NPZ Case Study}
+\label{sec:best_models_npz}
+This section presents the best performing models from different LLM configurations for the Nutrient-Phytoplankton-Zooplankton (NPZ) case study.
+
+\subsection{openrouter:openai/gpt-5 Model (NPZ)}
+This model achieved an objective value of 0.0035 (Population 15).
+
+\subsubsection{Model Intention}
+\begin{lstlisting}
+Assessment and rationale for model improvement
+
+1) Fit evaluation
+- The residuals file was not included in this chat, so I cannot compute or visualize misfit. Typical issues in NPZ models with instantaneous recycling include:
+  - N rebounds too quickly after blooms (positive early residuals in N, negative later).
+  - P/Z peaks occur too early or with too sharp amplitudes due to the lack of lagged recycling.
+  - Autocorrelated residuals indicating missing slow pathway(s).
+
+Please provide the residuals to refine the diagnosis and parameter ranges.
+
+2) Alignment with project context
+- The current model targets mixed-layer NPZ dynamics and already includes:
+  - Temperature (Q10) and light (saturating) modifiers on primary production.
+  - Monod nutrient limitation; Holling type III grazing.
+  - Mixing-driven nutrient supply.
+  - Lognormal observation error.
+- These are appropriate for the stated project context.
+
+3) Missing/oversimplified processes
+- Detrital loop: All losses (unassimilated ingestion and mortality fractions) were recycled immediately to inorganic nutrient (N). In the oceanic mixed layer, a substantial portion of lost biomass is routed through particulate/dissolved organic pools and is remineralized over finite time scales; a fraction also sinks/export out of the mixed layer.
+- Consequences of omission: unrealistically fast nutrient recycling and insufficient lag between P/Z loss and N recovery, often producing phase errors and damped oscillations.
+
+Chosen improvement: add a detritus pool (D)
+- Ecological reasoning:
+  - Introduces a realistic time delay in nutrient recycling, improving phase relationships among N, P, and Z.
+  - Captures export via sinking, which reduces immediate availability of recycled nutrients in the mixed layer.
+  - Adds minimal complexity (one new state, two rates) for a substantial gain in realism.
+- Mathematical formulation (per day):
+  - U = mu_max * f_T * f_I * (N/(K_N+N)) * P
+  - G = g_max * f_T * (P^h / (K_G^h + P^h)) * Z
+  - Zg = e_Z * G
+  - RgD = (1 - e_Z) * G
+  - RpN = r_P * m_P * P; RpD = (1 - r_P) * m_P * P
+  - RzN = r_Z * m_Z * Z; RzD = (1 - r_Z) * m_Z * Z
+  - Ex = ex_Z * Z
+  - Mx = k_mix * (N_star - N)
+  - Rem = k_rem * D; Snk = k_sink * D
+  - dN/dt = -U + RpN + RzN + Ex + Mx + Rem
+  - dP/dt =  U - G - m_P * P
+  - dZ/dt =  Zg - m_Z * Z - gamma_Z * Z^2
+  - dD/dt =  RgD + RpD + RzD - Rem - Snk
+- Observation model remains unchanged (N, P, Z only); D is reported for diagnostics.
+
+Parameter review and updates
+- Several parameters defined on the log scale had bounds specified on the natural scale. To maintain consistency with the model parameterization, bounds were converted to log units in parameters.json:
+  - log_K_N, log_K_I, log_g_max, log_K_G, log_m_P, log_m_Z, log_gamma_Z, log_ex_Z, log_k_mix.
+- Two new parameters were added:
+  - log_k_rem (Detritus remineralization rate): suggested bounds ln(0.01) to ln(1.0), default value ln(0.1).
+  - log_k_sink (Detritus sinking/export rate): suggested bounds ln(1e-6) to ln(1.0), default value ln(0.01).
+- Note: excretion (Ex) is kept as a direct nutrient flux, consistent with ammonium excretion by zooplankton; this avoids confounding of k_rem with Ex.
+
+Implementation notes and safeguards
+- Euler forward stepping, same as the existing scheme, using previous-step predictions only (no data leakage).
+- Smooth non-negativity constraints applied to the new D state.
+- Smooth penalties added for k_rem and k_sink.
+- Report D_pred for diagnostic use.
+
+Next steps
+- Refit the model and examine residuals and state trajectories. If residuals remain autocorrelated, consider:
+  - Applying temperature scaling to remineralization (k_rem) and possibly mortality.
+  - Allowing time-varying light I(t) if a time series is available.
+  - Testing alternative grazing forms (e.g., Ivlev) or variable assimilation efficiency tied to food quality.
+\end{lstlisting}
+
+\subsubsection{Model Implementation}
+\begin{lstlisting}
+#include <TMB.hpp>
+
+// Helper: softplus for smooth positivity (AD-compatible)
+template<class Type>
+Type softplus(Type x) {
+  // Numerically stable softplus without log1p (works for AD types):
+  // softplus(x) = log(1 + exp(-|x|)) + max(x, 0)
+  Type zero = Type(0.0);
+  Type one  = Type(1.0);
+  Type ax   = CppAD::abs(x);
+  return log(one + exp(-ax)) + CppAD::CondExpGt(x, zero, x, zero);
+}
+
+// Helper: smooth non-negative transform approximating max(x, 0) without kinks
+template<class Type>
+Type soft_relu(Type x, Type eps) {
+  // Returns ~max(x,0) but smooth near 0; eps sets smoothness scale
+  return (x + sqrt(x * x + eps)) / Type(2.0);
+}
+
+// Helper: safe division
+template<class Type>
+Type safediv(Type num, Type den, Type tiny) {
+  return num / (den + tiny);
+}
+
+// Helper: smooth penalty if parameter outside [lo, hi]
+template<class Type>
+Type smooth_bound_penalty(Type x, Type lo, Type hi, Type scale) {
+  // Zero-ish inside bounds; increases smoothly outside via softplus
+  // Note: softplus of negative values is near zero, positive side penalizes out-of-bounds.
+  return softplus((lo - x) / scale) + softplus((x - hi) / scale);
+}
+
+/*
+Equations (per time step, Euler-forward with dt):
+
+Let f_T = q10^((T_C - T_ref)/10)                  [temperature modifier, dimensionless]
+    f_I = I / (K_I + I)                           [light limitation, dimensionless]
+    f_N = N / (K_N + N)                           [nutrient limitation, dimensionless]
+    mu  = mu_max * f_T * f_I * f_N                [d^-1, realized phyto growth rate]
+    g   = g_max * f_T * (P^h / (K_G^h + P^h))     [d^-1, grazing rate per Z]
+
+Flows (g C m^-3 d^-1):
+  1) Primary production:           U   = mu * P
+  2) Grazing flux (ingestion):     G   = g * Z
+  3) Z production (assim.):        Zg  = e_Z * G
+  4) Unassimilated to detritus:    RgD = (1 - e_Z) * G
+  5) P mortality split:            RpN = r_P * m_P * P (to N), RpD = (1 - r_P) * m_P * P (to D)
+  6) Z mortality split:            RzN = r_Z * m_Z * Z (to N), RzD = (1 - r_Z) * m_Z * Z (to D)
+  7) Z excretion to N:             Ex  = ex_Z * Z
+  8) Mixing supply to N:           Mx  = k_mix * (N_star - N)
+  9) Detritus remineralization:    Rem = k_rem * D (to N)
+ 10) Detritus sinking/export:      Snk = k_sink * D (out of mixed layer)
+
+Dynamics:
+  dN/dt = -U + RpN + RzN + Ex + Mx + Rem
+  dP/dt =  U - G - m_P * P
+  dZ/dt =  Zg - m_Z * Z - gamma_Z * Z^2
+  dD/dt =  RgD + RpD + RzD - Rem - Snk
+
+All states are kept non-negative using a smooth rectifier. Initial conditions:
+  N_pred(0) = N_dat(0), P_pred(0) = P_dat(0), Z_pred(0) = Z_dat(0), D_pred(0) = 0.
+Observation model (for i = 0..T-1):
+  log(N_dat[i]) ~ Normal(log(N_pred[i]), sigma_N) and similarly for P, Z.
+*/
+
+template<class Type>
+Type objective_function<Type>::operator() () {
+  // -----------------------------
+  // Data
+  // -----------------------------
+  // Use the exact time variable name provided by the data layer: "Time"
+  DATA_VECTOR(Time);   // Time in days, strictly increasing
+  DATA_VECTOR(N_dat);  // Observed nutrient concentration (g C m^-3)
+  DATA_VECTOR(P_dat);  // Observed phytoplankton concentration (g C m^-3)
+  DATA_VECTOR(Z_dat);  // Observed zooplankton concentration (g C m^-3)
+
+  int Tn = N_dat.size(); // Number of time points
+  // Safety: all vectors should be same length
+  if (P_dat.size() != Tn || Z_dat.size() != Tn || Time.size() != Tn) {
+    error("All data vectors must have the same length.");
+  }
+
+  // -----------------------------
+  // Parameters (all transformed to their natural scales where needed)
+  // -----------------------------
+  // Growth and limitation parameters
+  PARAMETER(log_mu_max);    // log of maximum phyto growth rate (d^-1); expected ~ log(0.1-2 d^-1)
+  PARAMETER(log_K_N);       // log of half-saturation for nutrient (g C m^-3); expected ~ log(0.01-0.5)
+  PARAMETER(I);             // Irradiance proxy (W m^-2), treated as constant over period
+  PARAMETER(log_K_I);       // log of light half-saturation (W m^-2)
+
+  // Grazing parameters
+  PARAMETER(log_g_max);     // log of max grazing rate per Z biomass (d^-1)
+  PARAMETER(log_K_G);       // log of P half-saturation for grazing (g C m^-3)
+  PARAMETER(h_grazing);     // Holling type III shape exponent h (dimensionless, >=1)
+
+  // Efficiencies and losses
+  PARAMETER(logit_e_Z);     // logit of Z assimilation efficiency (0..1), dimensionless
+  PARAMETER(log_m_P);       // log of P linear mortality rate (d^-1)
+  PARAMETER(log_m_Z);       // log of Z linear mortality rate (d^-1)
+  PARAMETER(log_gamma_Z);   // log of Z quadratic self-limitation coefficient ((g C m^-3)^-1 d^-1)
+  PARAMETER(logit_r_P);     // logit of fraction of P mortality remineralized to N (0..1)
+  PARAMETER(logit_r_Z);     // logit of fraction of Z mortality remineralized to N (0..1)
+  PARAMETER(log_ex_Z);      // log of Z excretion rate to N (d^-1)
+
+  // Physical supply
+  PARAMETER(log_k_mix);     // log of mixing rate (d^-1)
+  PARAMETER(N_star);        // Deep/source nutrient concentration (g C m^-3)
+
+  // Temperature modifier
+  PARAMETER(log_q10);       // log of Q10 (dimensionless), e.g., log(2)
+  PARAMETER(T_C);           // Ambient temperature (deg C)
+  PARAMETER(T_ref);         // Reference temperature for Q10 (deg C)
+
+  // Detritus pathway parameters (new)
+  PARAMETER(log_k_rem);     // log of detritus remineralization rate (d^-1)
+  PARAMETER(log_k_sink);    // log of detritus sinking/export rate (d^-1)
+
+  // Observation error (lognormal SDs)
+  PARAMETER(log_sigma_N);   // log of observation SD on log-scale for N
+  PARAMETER(log_sigma_P);   // log of observation SD on log-scale for P
+  PARAMETER(log_sigma_Z);   // log of observation SD on log-scale for Z
+
+  // -----------------------------
+  // Transforms and constants
+  // -----------------------------
+  Type tiny = Type(1e-8);            // Small constant to avoid division by zero
+  Type pos_eps = Type(1e-12);        // For smooth non-negativity
+  Type pen_scale = Type(0.05);       // Scale for smooth bound penalties (larger = gentler)
+  Type pen_weight = Type(10.0);      // Weight for penalties in NLL
+
+  Type mu_max  = exp(log_mu_max);    // d^-1
+  Type K_N     = exp(log_K_N);       // g C m^-3
+  Type K_I     = exp(log_K_I);       // W m^-2
+  Type g_max   = exp(log_g_max);     // d^-1
+  Type K_G     = exp(log_K_G);       // g C m^-3
+  Type e_Z     = Type(1.0) / (Type(1.0) + exp(-logit_e_Z)); // (0,1)
+  Type m_P     = exp(log_m_P);       // d^-1
+  Type m_Z     = exp(log_m_Z);       // d^-1
+  Type gamma_Z = exp(log_gamma_Z);   // (g C m^-3)^-1 d^-1
+  Type r_P     = Type(1.0) / (Type(1.0) + exp(-logit_r_P)); // (0,1)
+  Type r_Z     = Type(1.0) / (Type(1.0) + exp(-logit_r_Z)); // (0,1)
+  Type ex_Z    = exp(log_ex_Z);      // d^-1
+  Type k_mix   = exp(log_k_mix);     // d^-1
+  Type q10     = exp(log_q10);       // dimensionless
+  Type k_rem   = exp(log_k_rem);     // d^-1
+  Type k_sink  = exp(log_k_sink);    // d^-1
+
+  // Temperature and light modifiers
+  // f_T applies to biological rates; f_I saturates with I
+  Type f_T = pow(q10, (T_C - T_ref) / Type(10.0));           // dimensionless
+  Type f_I = safediv(I, (K_I + I), tiny);                    // dimensionless, in (0,1)
+
+  // Observation SDs with minimum floors for stability
+  Type min_sd = Type(0.05); // Minimum SD on log-scale
+  Type sigma_N = exp(log_sigma_N) + min_sd;
+  Type sigma_P = exp(log_sigma_P) + min_sd;
+  Type sigma_Z = exp(log_sigma_Z) + min_sd;
+
+  // -----------------------------
+  // State predictions
+  // -----------------------------
+  vector<Type> N_pred(Tn);
+  vector<Type> P_pred(Tn);
+  vector<Type> Z_pred(Tn);
+  vector<Type> D_pred(Tn);
+
+  // Initial conditions from data (no leakage beyond t=0)
+  N_pred(0) = N_dat(0);
+  P_pred(0) = P_dat(0);
+  Z_pred(0) = Z_dat(0);
+  D_pred(0) = Type(0.0); // Unobserved detritus initial state; set to zero
+
+  // -----------------------------
+  // Likelihood
+  // -----------------------------
+  Type nll = Type(0);
+
+  // Penalize parameter bounds smoothly (suggested biological ranges)
+  // mu_max: [0.05, 2] d^-1
+  nll += pen_weight * smooth_bound_penalty(mu_max, Type(0.05), Type(2.0), pen_scale);
+  // K_N: [0.001, 1] g C m^-3
+  nll += pen_weight * smooth_bound_penalty(K_N, Type(0.001), Type(1.0), pen_scale);
+  // I: [0, 500] W m^-2
+  nll += pen_weight * smooth_bound_penalty(I, Type(0.0), Type(500.0), pen_scale);
+  // K_I: [1, 300] W m^-2
+  nll += pen_weight * smooth_bound_penalty(K_I, Type(1.0), Type(300.0), pen_scale);
+  // g_max: [0.05, 2] d^-1
+  nll += pen_weight * smooth_bound_penalty(g_max, Type(0.05), Type(2.0), pen_scale);
+  // K_G: [0.001, 1] g C m^-3
+  nll += pen_weight * smooth_bound_penalty(K_G, Type(0.001), Type(1.0), pen_scale);
+  // h_grazing: [1, 3]
+  nll += pen_weight * smooth_bound_penalty(h_grazing, Type(1.0), Type(3.0), pen_scale);
+  // e_Z: [0.3, 0.9]
+  nll += pen_weight * smooth_bound_penalty(e_Z, Type(0.3), Type(0.9), pen_scale);
+  // m_P: [0.001, 0.3] d^-1
+  nll += pen_weight * smooth_bound_penalty(m_P, Type(0.001), Type(0.3), pen_scale);
+  // m_Z: [0.001, 0.3] d^-1
+  nll += pen_weight * smooth_bound_penalty(m_Z, Type(0.001), Type(0.3), pen_scale);
+  // gamma_Z: [1e-4, 0.2] (g C m^-3)^-1 d^-1
+  nll += pen_weight * smooth_bound_penalty(gamma_Z, Type(1e-4), Type(0.2), pen_scale);
+  // r_P: [0.3, 1]
+  nll += pen_weight * smooth_bound_penalty(r_P, Type(0.3), Type(1.0), pen_scale);
+  // r_Z: [0.3, 1]
+  nll += pen_weight * smooth_bound_penalty(r_Z, Type(0.3), Type(1.0), pen_scale);
+  // ex_Z: [0.0, 0.2] d^-1
+  nll += pen_weight * smooth_bound_penalty(ex_Z, Type(0.0), Type(0.2), pen_scale);
+  // k_mix: [0.0, 0.5] d^-1
+  nll += pen_weight * smooth_bound_penalty(k_mix, Type(0.0), Type(0.5), pen_scale);
+  // N_star: [0.0, 2.0] g C m^-3
+  nll += pen_weight * smooth_bound_penalty(N_star, Type(0.0), Type(2.0), pen_scale);
+  // q10: [1.3, 3.0]
+  nll += pen_weight * smooth_bound_penalty(q10, Type(1.3), Type(3.0), pen_scale);
+  // T_C, T_ref: [0, 35] deg C
+  nll += pen_weight * smooth_bound_penalty(T_C, Type(0.0), Type(35.0), pen_scale);
+  nll += pen_weight * smooth_bound_penalty(T_ref, Type(0.0), Type(35.0), pen_scale);
+  // k_rem: [0.01, 1.0] d^-1
+  nll += pen_weight * smooth_bound_penalty(k_rem, Type(0.01), Type(1.0), pen_scale);
+  // k_sink: [0.0, 1.0] d^-1
+  nll += pen_weight * smooth_bound_penalty(k_sink, Type(0.0), Type(1.0), pen_scale);
+
+  // -----------------------------
+  // Time stepping
+  // -----------------------------
+  for (int i = 1; i < Tn; i++) {
+    Type dt = Time(i) - Time(i - 1);
+    // Enforce positive dt smoothly
+    if (dt <= Type(0)) dt = tiny;
+
+    // State at previous step (predictions only—no data leakage)
+    Type Np = N_pred(i - 1);
+    Type Pp = P_pred(i - 1);
+    Type Zp = Z_pred(i - 1);
+    Type Dp = D_pred(i - 1);
+
+    // Limitation functions (use small constants for stability)
+    Type f_N = safediv(Np, (K_N + Np), tiny);                                // [0,1]
+    Type mu  = mu_max * f_T * f_I * f_N;                                     // d^-1
+    Type holl_num = pow(Pp + tiny, h_grazing);                               // P^h
+    Type holl_den = pow(K_G + tiny, h_grazing) + holl_num;                   // K^h + P^h
+    Type g_rate   = g_max * f_T * safediv(holl_num, holl_den, tiny);         // d^-1
+
+    // Fluxes
+    Type U    = mu * Pp;                   // Primary production (g C m^-3 d^-1)
+    Type G    = g_rate * Zp;               // Grazing ingestion (g C m^-3 d^-1)
+    Type Zg   = e_Z * G;                   // Z growth (g C m^-3 d^-1)
+    Type RgD  = (Type(1.0) - e_Z) * G;     // Unassimilated to detritus
+    Type RpN  = r_P * m_P * Pp;            // P mortality directly to N
+    Type RpD  = (Type(1.0) - r_P) * m_P * Pp; // P mortality to detritus
+    Type RzN  = r_Z * m_Z * Zp;            // Z mortality directly to N
+    Type RzD  = (Type(1.0) - r_Z) * m_Z * Zp; // Z mortality to detritus
+    Type Ex   = ex_Z * Zp;                 // Z excretion to N
+    Type Mx   = k_mix * (N_star - Np);     // Mixing supply to N
+    Type Rem  = k_rem * Dp;                // Detritus remineralization to N
+    Type Snk  = k_sink * Dp;               // Detritus sinking/export
+
+    // Euler updates
+    Type dN = -U + RpN + RzN + Ex + Mx + Rem;
+    Type dP =  U - G - m_P * Pp;
+    Type dZ =  Zg - m_Z * Zp - gamma_Z * Zp * Zp;
+    Type dD =  RgD + RpD + RzD - Rem - Snk;
+
+    Type N_next_raw = Np + dt * dN;
+    Type P_next_raw = Pp + dt * dP;
+    Type Z_next_raw = Zp + dt * dZ;
+    Type D_next_raw = Dp + dt * dD;
+
+    // Smooth non-negativity
+    N_pred(i) = soft_relu(N_next_raw, pos_eps);
+    P_pred(i) = soft_relu(P_next_raw, pos_eps);
+    Z_pred(i) = soft_relu(Z_next_raw, pos_eps);
+    D_pred(i) = soft_relu(D_next_raw, pos_eps);
+  }
+
+  // -----------------------------
+  // Observation likelihood (lognormal)
+  // -----------------------------
+  for (int i = 0; i < Tn; i++) {
+    // Add tiny offsets to ensure positivity inside logs
+    Type lnN_obs = log(N_dat(i) + tiny);
+    Type lnP_obs = log(P_dat(i) + tiny);
+    Type lnZ_obs = log(Z_dat(i) + tiny);
+
+    Type lnN_pred = log(N_pred(i) + tiny);
+    Type lnP_pred = log(P_pred(i) + tiny);
+    Type lnZ_pred = log(Z_pred(i) + tiny);
+
+    nll -= dnorm(lnN_obs, lnN_pred, sigma_N, true);
+    nll -= dnorm(lnP_obs, lnP_pred, sigma_P, true);
+    nll -= dnorm(lnZ_obs, lnZ_pred, sigma_Z, true);
+  }
+
+  // -----------------------------
+  // Reporting
+  // -----------------------------
+  REPORT(N_pred); // Model predictions for Nutrient (g C m^-3)
+  REPORT(P_pred); // Model predictions for Phytoplankton (g C m^-3)
+  REPORT(Z_pred); // Model predictions for Zooplankton (g C m^-3)
+  REPORT(D_pred); // Model predictions for Detritus (g C m^-3)
+
+  return nll;
+}
+\end{lstlisting}
+
+\subsubsection{Model Parameters}
+\begin{lstlisting}
+{
+    "parameters": [
+        {
+            "parameter": "log_mu_max",
+            "value": -0.02041099726012755,
+            "units": "day^-1 (log scale)",
+            "description": "Log of maximum phytoplankton growth rate at reference conditions (day^-1).",
+            "source": "literature",
+            "import_type": "PARAMETER",
+            "priority": 1,
+            "lower_bound": -0.2231435513142097,
+            "upper_bound": 0.1823215567939546,
+            "enhanced_semantic_description": "Maximum phytoplankton growth rate (per day)",
+            "updated_from_literature": true,
+            "updated_fields_from_literature": [
+                "lower_bound",
+                "upper_bound"
+            ]
+        },
+        {
+            "parameter": "log_K_N",
+            "value": -2.9957322736,
+            "units": "g C m^-3 (log scale)",
+            "description": "Log of half-saturation constant for nutrient uptake (g C m^-3).",
+            "source": "literature",
+            "import_type": "PARAMETER",
+            "priority": 2,
+            "lower_bound": -6.907755278982137,
+            "upper_bound": 0.0,
+            "enhanced_semantic_description": "Half-saturation nutrient concentration for uptake (g C/m\u00b3)",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "I",
+            "value": 150.0,
+            "units": "W m^-2",
+            "description": "Mean photosynthetically active irradiance proxy over the modeled period.",
+            "source": "initial estimate",
+            "import_type": "PARAMETER",
+            "priority": 3,
+            "lower_bound": 0.0,
+            "upper_bound": 500.0,
+            "enhanced_semantic_description": "Mean photosynthetically active irradiance (W/m\u00b2)",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "log_K_I",
+            "value": 4.3174881135,
+            "units": "W m^-2 (log scale)",
+            "description": "Log of light half-saturation constant for photosynthesis (W m^-2).",
+            "source": "literature",
+            "import_type": "PARAMETER",
+            "priority": 3,
+            "lower_bound": 0.0,
+            "upper_bound": 5.703782474656201,
+            "enhanced_semantic_description": "Half-saturation light intensity for photosynthesis (W/m\u00b2)",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "log_g_max",
+            "value": -0.6931471806,
+            "units": "day^-1 (log scale)",
+            "description": "Log of maximum zooplankton grazing rate per unit Z biomass (day^-1).",
+            "source": "literature",
+            "import_type": "PARAMETER",
+            "priority": 1,
+            "lower_bound": -2.995732273553991,
+            "upper_bound": 0.6931471805599453,
+            "enhanced_semantic_description": "Maximum zooplankton grazing rate per biomass (per day)",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "log_K_G",
+            "value": -2.302585093,
+            "units": "g C m^-3 (log scale)",
+            "description": "Log of P half-saturation constant for grazing functional response (g C m^-3).",
+            "source": "literature",
+            "import_type": "PARAMETER",
+            "priority": 2,
+            "lower_bound": -6.907755278982137,
+            "upper_bound": 0.0,
+            "enhanced_semantic_description": "Half-saturation phytoplankton for grazing (g C/m\u00b3)",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "h_grazing",
+            "value": 2.0,
+            "units": "dimensionless",
+            "description": "Holling type III shape exponent (h >= 1).",
+            "source": "literature",
+            "import_type": "PARAMETER",
+            "priority": 2,
+            "lower_bound": 1.0,
+            "upper_bound": 3.0,
+            "enhanced_semantic_description": "Holling type III grazing shape exponent (dimensionless)",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "logit_e_Z",
+            "value": 0.0,
+            "units": "dimensionless (logit scale)",
+            "description": "Logit of zooplankton assimilation efficiency (e_Z in (0,1)); e_Z = 0.5 at value 0.",
+            "source": "literature",
+            "import_type": "PARAMETER",
+            "priority": 2,
+            "enhanced_semantic_description": "Zooplankton assimilation efficiency (proportion 0\u20131)",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "log_m_P",
+            "value": -2.9957322736,
+            "units": "day^-1 (log scale)",
+            "description": "Log of phytoplankton linear mortality rate (day^-1).",
+            "source": "literature",
+            "import_type": "PARAMETER",
+            "priority": 2,
+            "lower_bound": -6.907755278982137,
+            "upper_bound": -1.2039728043259361,
+            "enhanced_semantic_description": "Phytoplankton linear mortality rate (per day)",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "log_m_Z",
+            "value": -3.5065578973,
+            "units": "day^-1 (log scale)",
+            "description": "Log of zooplankton linear mortality rate (day^-1).",
+            "source": "literature",
+            "import_type": "PARAMETER",
+            "priority": 2,
+            "lower_bound": -6.907755278982137,
+            "upper_bound": -1.2039728043259361,
+            "enhanced_semantic_description": "Zooplankton linear mortality rate (per day)",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "log_gamma_Z",
+            "value": -4.605170186,
+            "units": "(g C m^-3)^-1 day^-1 (log scale)",
+            "description": "Log of zooplankton quadratic self-limitation coefficient ((g C m^-3)^-1 day^-1).",
+            "source": "initial estimate",
+            "import_type": "PARAMETER",
+            "priority": 4,
+            "lower_bound": -9.210340371976184,
+            "upper_bound": -1.6094379124341003,
+            "enhanced_semantic_description": "Zooplankton quadratic self-limitation coefficient (per g C/m\u00b3/day)",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "logit_r_P",
+            "value": 0.8472978604,
+            "units": "dimensionless (logit scale)",
+            "description": "Logit of fraction of P mortality that is remineralized to N (0..1).",
+            "source": "literature",
+            "import_type": "PARAMETER",
+            "priority": 3,
+            "enhanced_semantic_description": "Fraction of phytoplankton mortality remineralized to nutrients",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "logit_r_Z",
+            "value": 0.8472978604,
+            "units": "dimensionless (logit scale)",
+            "description": "Logit of fraction of Z mortality that is remineralized to N (0..1).",
+            "source": "literature",
+            "import_type": "PARAMETER",
+            "priority": 3,
+            "enhanced_semantic_description": "Fraction of zooplankton mortality remineralized to nutrients",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "log_ex_Z",
+            "value": -4.605170186,
+            "units": "day^-1 (log scale)",
+            "description": "Log of zooplankton excretion rate to nutrients (day^-1).",
+            "source": "initial estimate",
+            "import_type": "PARAMETER",
+            "priority": 4,
+            "lower_bound": -13.815510557964274,
+            "upper_bound": -1.6094379124341003,
+            "enhanced_semantic_description": "Zooplankton excretion rate to nutrients (per day)",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "log_k_mix",
+            "value": -3.9120230054,
+            "units": "day^-1 (log scale)",
+            "description": "Log of vertical mixing rate driving nutrients toward N_star (day^-1).",
+            "source": "initial estimate",
+            "import_type": "PARAMETER",
+            "priority": 3,
+            "lower_bound": -13.815510557964274,
+            "upper_bound": -0.6931471805599453,
+            "enhanced_semantic_description": "Vertical mixing rate driving nutrient supply (per day)",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "N_star",
+            "value": 0.3,
+            "units": "g C m^-3",
+            "description": "Deep/source nutrient concentration towards which mixing relaxes the system.",
+            "source": "initial estimate",
+            "import_type": "PARAMETER",
+            "priority": 4,
+            "lower_bound": 0.0,
+            "upper_bound": 2.0,
+            "enhanced_semantic_description": "Deep ocean nutrient concentration (g C/m\u00b3)",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "log_q10",
+            "value": 0.659,
+            "units": "dimensionless (log scale)",
+            "description": "Log of Q10 temperature scaling factor (dimensionless), typical Q10 ~ 2.",
+            "source": "literature",
+            "import_type": "PARAMETER",
+            "priority": 3,
+            "lower_bound": 0.606,
+            "upper_bound": 0.711,
+            "enhanced_semantic_description": "Q10 temperature coefficient for biological rates (dimensionless)",
+            "updated_from_literature": true,
+            "updated_fields_from_literature": [
+                "value",
+                "lower_bound",
+                "upper_bound"
+            ]
+        },
+        {
+            "parameter": "T_C",
+            "value": 15.0,
+            "units": "deg C",
+            "description": "Ambient temperature used for Q10 scaling (deg C).",
+            "source": "initial estimate",
+            "import_type": "PARAMETER",
+            "priority": 4,
+            "lower_bound": 0.0,
+            "upper_bound": 35.0,
+            "enhanced_semantic_description": "Ambient temperature for rate scaling (\u00b0C)",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "T_ref",
+            "value": 15.0,
+            "units": "deg C",
+            "description": "Reference temperature for Q10 scaling (deg C).",
+            "source": "literature",
+            "import_type": "PARAMETER",
+            "priority": 4,
+            "lower_bound": 0.0,
+            "upper_bound": 35.0,
+            "enhanced_semantic_description": "Reference temperature for Q10 scaling (\u00b0C)",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "log_k_rem",
+            "value": -2.302585093,
+            "units": "day^-1 (log scale)",
+            "description": "Log of detritus remineralization rate to nutrients (day^-1).",
+            "source": "conceptual addition",
+            "import_type": "PARAMETER",
+            "priority": 3,
+            "lower_bound": -4.605170186,
+            "upper_bound": 0.0,
+            "enhanced_semantic_description": "Detritus remineralization rate (per day)",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "log_k_sink",
+            "value": -4.605170186,
+            "units": "day^-1 (log scale)",
+            "description": "Log of detritus sinking/export rate out of mixed layer (day^-1).",
+            "source": "conceptual addition",
+            "import_type": "PARAMETER",
+            "priority": 3,
+            "lower_bound": -13.815510557964274,
+            "upper_bound": 0.0,
+            "enhanced_semantic_description": "Detritus sinking/export rate out of mixed layer (per day)",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "log_sigma_N",
+            "value": -2.302585093,
+            "units": "log-scale SD",
+            "description": "Log of observation SD for N on the log scale.",
+            "source": "initial estimate",
+            "import_type": "PARAMETER",
+            "priority": 1,
+            "lower_bound": -5.0,
+            "upper_bound": 2.0,
+            "enhanced_semantic_description": "Observation log-scale standard deviation for nutrient",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "log_sigma_P",
+            "value": -2.302585093,
+            "units": "log-scale SD",
+            "description": "Log of observation SD for P on the log scale.",
+            "source": "initial estimate",
+            "import_type": "PARAMETER",
+            "priority": 1,
+            "lower_bound": -5.0,
+            "upper_bound": 2.0,
+            "enhanced_semantic_description": "Observation log-scale standard deviation for phytoplankton",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "log_sigma_Z",
+            "value": -2.302585093,
+            "units": "log-scale SD",
+            "description": "Log of observation SD for Z on the log scale.",
+            "source": "initial estimate",
+            "import_type": "PARAMETER",
+            "priority": 1,
+            "lower_bound": -5.0,
+            "upper_bound": 2.0,
+            "enhanced_semantic_description": "Observation log-scale standard deviation for zooplankton",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        }
+    ]
+}
+\end{lstlisting}
+\clearpage
+\subsection{openrouter:anthropic/claude-sonnet-4.5 Model (NPZ)}
+This model achieved an objective value of 0.1535 (Population 18).
+
+\subsubsection{Model Intention}
+\begin{lstlisting}
+MODEL ASSESSMENT AND IMPROVEMENT PLAN
+=====================================
+
+CURRENT MODEL EVALUATION:
+-------------------------
+The model implements a comprehensive NPZ (Nutrient-Phytoplankton-Zooplankton) system with:
+- Seasonal light variation (sinusoidal with amplitude and phase parameters)
+- Temperature dependence via Q10 formulation for growth, grazing, and remineralization
+- Self-shading by phytoplankton
+- Nutrient recycling from mortality and inefficient grazing
+- Michaelis-Menten kinetics for nutrient uptake and grazing
+
+STRENGTHS:
+- Mechanistic representation of key processes
+- Temperature sensitivity appropriately parameterized
+- Seasonal forcing captures annual cycles
+- Parameter values updated from literature with realistic bounds
+
+IDENTIFIED GAP:
+--------------
+The model uses a CONSTANT zooplankton assimilation efficiency (epsilon = 0.3), which doesn't reflect the ecological reality that phytoplankton food quality varies with nutrient availability.
+
+ECOLOGICAL JUSTIFICATION FOR IMPROVEMENT:
+-----------------------------------------
+In natural plankton systems, phytoplankton elemental composition (C:N:P ratios) varies with nutrient availability:
+
+1. NUTRIENT-REPLETE CONDITIONS:
+   - Phytoplankton have balanced C:N ratios (Redfield ratio ~6.6:1 by mass)
+   - High protein content, low carbohydrate storage
+   - High nutritional value for zooplankton
+   - Higher assimilation efficiency (epsilon $\rightarrow$ epsilon_max)
+
+2. NUTRIENT-LIMITED CONDITIONS:
+   - Phytoplankton accumulate carbon as carbohydrates/lipids
+   - Elevated C:N ratios (can exceed 10:1 or higher)
+   - Lower protein content
+   - Lower nutritional value for zooplankton
+   - Reduced assimilation efficiency (epsilon $\rightarrow$ epsilon_min)
+
+This phenomenon, known as the "stoichiometric knife edge" or "light:nutrient hypothesis," has been extensively documented in plankton ecology literature (Sterner & Elser 2002, Ecological Stoichiometry; Urabe & Sterner 1996).
+
+PROPOSED MODIFICATION:
+---------------------
+Implement VARIABLE ASSIMILATION EFFICIENCY as a function of phytoplankton nutrient status:
+
+epsilon(N,P) = epsilon_min + (epsilon_max - epsilon_min) * f_nutrient
+
+where f_nutrient represents the nutritional quality of phytoplankton, approximated by the degree of nutrient limitation experienced during growth.
+
+MATHEMATICAL FORMULATION:
+------------------------
+Use the nutrient limitation factor (already calculated in the model) as a proxy for phytoplankton nutrient status:
+
+nutrient_limitation = N / (K_N + N)
+
+Then:
+epsilon_effective = epsilon_min + (epsilon_max - epsilon_min) * nutrient_limitation
+
+ECOLOGICAL INTERPRETATION:
+- When N >> K_N: nutrient_limitation $\rightarrow$ 1, epsilon $\rightarrow$ epsilon_max (high quality food)
+- When N << K_N: nutrient_limitation $\rightarrow$ 0, epsilon $\rightarrow$ epsilon_min (poor quality food)
+- This creates a feedback: nutrient depletion reduces phytoplankton quality, which reduces zooplankton growth efficiency, which can allow phytoplankton recovery
+
+PARAMETER CHANGES:
+-----------------
+REMOVE: epsilon (constant assimilation efficiency)
+
+ADD:
+- epsilon_min: Minimum assimilation efficiency under severe nutrient limitation
+  * Typical value: 0.15-0.20 (zooplankton can only convert 15-20% of carbon-rich, protein-poor food)
+  * Lower bound: 0.05 (some assimilation always occurs)
+  * Upper bound: 0.40 (cannot exceed epsilon_max)
+
+- epsilon_max: Maximum assimilation efficiency under nutrient-replete conditions
+  * Typical value: 0.40-0.50 (zooplankton efficiently convert high-quality food)
+  * Lower bound: 0.20 (must exceed epsilon_min)
+  * Upper bound: 0.70 (biological maximum for zooplankton)
+
+EXPECTED ECOLOGICAL OUTCOMES:
+-----------------------------
+1. More realistic bloom dynamics: Nutrient depletion reduces food quality, potentially limiting zooplankton response
+2. Improved representation of nutrient recycling: Lower efficiency means more unassimilated material returned as nutrients
+3. Potential for stoichiometric oscillations: Quality-quantity trade-offs in phytoplankton
+4. Better match to observations where zooplankton don't fully control nutrient-limited phytoplankton blooms
+
+IMPLEMENTATION NOTES:
+--------------------
+- The nutrient limitation factor is already calculated, so computational cost is minimal
+- This modification maintains model stability (epsilon remains bounded between epsilon_min and epsilon_max)
+- The change is mechanistically justified and adds ecological realism without excessive complexity
+- Both new parameters have clear biological interpretations and can be constrained from literature
+
+REFERENCES:
+----------
+- Sterner, R.W. & Elser, J.J. (2002). Ecological Stoichiometry. Princeton University Press.
+- Urabe, J. & Sterner, R.W. (1996). Regulation of herbivore growth by the balance of light and nutrients. PNAS 93: 8465-8469.
+- Anderson, T.R. et al. (2004). Stoichiometry: Linking elements to biochemicals. Ecology 85: 1193-1202.
+\end{lstlisting}
+
+\subsubsection{Model Implementation}
+\begin{lstlisting}
+#include <TMB.hpp>
+
+template<class Type>
+Type objective_function<Type>::operator() ()
+{
+  // DATA INPUTS
+  DATA_VECTOR(Time);  // Time in days
+  DATA_VECTOR(N_dat);  // Observed nutrient concentration (g C m^-3)
+  DATA_VECTOR(P_dat);  // Observed phytoplankton concentration (g C m^-3)
+  DATA_VECTOR(Z_dat);  // Observed zooplankton concentration (g C m^-3)
+  
+  // PARAMETERS - Phytoplankton dynamics
+  PARAMETER(r_max);  // Maximum phytoplankton growth rate at reference temperature (day^-1)
+  PARAMETER(K_N);  // Half-saturation constant for nutrient uptake (g C m^-3)
+  PARAMETER(m_P);  // Phytoplankton natural mortality rate at reference temperature (day^-1)
+  
+  // PARAMETERS - Zooplankton dynamics
+  PARAMETER(g_max);  // Maximum zooplankton grazing rate at reference temperature (day^-1)
+  PARAMETER(K_P);  // Half-saturation constant for grazing (g C m^-3)
+  PARAMETER(epsilon_min);  // Minimum zooplankton assimilation efficiency under nutrient limitation (dimensionless, 0-1)
+  PARAMETER(epsilon_max);  // Maximum zooplankton assimilation efficiency under nutrient-replete conditions (dimensionless, 0-1)
+  PARAMETER(m_Z);  // Zooplankton linear mortality rate at reference temperature (day^-1)
+  PARAMETER(m_Z2);  // Zooplankton quadratic mortality rate (day^-1 (g C m^-3)^-1)
+  
+  // PARAMETERS - Nutrient cycling
+  PARAMETER(gamma_P);  // Nutrient recycling efficiency from phytoplankton mortality (dimensionless, 0-1)
+  PARAMETER(gamma_Z);  // Nutrient recycling efficiency from zooplankton mortality and excretion (dimensionless, 0-1)
+  PARAMETER(N_input);  // External nutrient input rate (g C m^-3 day^-1)
+  
+  // PARAMETERS - Light limitation with seasonal variation
+  PARAMETER(I_0_mean);  // Annual mean surface light intensity (\mumol photons m^-2 s^-1)
+  PARAMETER(I_0_amplitude);  // Fractional amplitude of seasonal light variation (dimensionless, 0-1)
+  PARAMETER(t_phase);  // Day of year when light peaks (days, 0-365)
+  PARAMETER(K_I);  // Half-saturation constant for light-limited growth (\mumol photons m^-2 s^-1)
+  PARAMETER(k_w);  // Background light attenuation coefficient (m^-1)
+  PARAMETER(k_c);  // Phytoplankton self-shading coefficient (m^2 (g C)^-1)
+  PARAMETER(z_mix);  // Mixed layer depth (m)
+  
+  // PARAMETERS - Temperature dependence
+  PARAMETER(Q10_phyto);  // Q10 coefficient for phytoplankton growth (dimensionless)
+  PARAMETER(Q10_zoo);  // Q10 coefficient for zooplankton grazing and metabolism (dimensionless)
+  PARAMETER(Q10_remin);  // Q10 coefficient for remineralization processes (dimensionless)
+  PARAMETER(T_ref);  // Reference temperature for rate normalization (°C)
+  
+  // PARAMETERS - Observation error
+  PARAMETER(log_sigma_N);  // Log-scale standard deviation for nutrient observations
+  PARAMETER(log_sigma_P);  // Log-scale standard deviation for phytoplankton observations
+  PARAMETER(log_sigma_Z);  // Log-scale standard deviation for zooplankton observations
+  
+  // Transform log-scale parameters to natural scale
+  Type sigma_N = exp(log_sigma_N);  // Standard deviation for nutrient concentration observations
+  Type sigma_P = exp(log_sigma_P);  // Standard deviation for phytoplankton concentration observations
+  Type sigma_Z = exp(log_sigma_Z);  // Standard deviation for zooplankton concentration observations
+  
+  // Minimum standard deviations to prevent numerical issues
+  Type min_sigma = Type(1e-4);  // Minimum allowed standard deviation (g C m^-3)
+  sigma_N = sigma_N + min_sigma;  // Ensure sigma_N is bounded away from zero
+  sigma_P = sigma_P + min_sigma;  // Ensure sigma_P is bounded away from zero
+  sigma_Z = sigma_Z + min_sigma;  // Ensure sigma_Z is bounded away from zero
+  
+  // Small constant to prevent division by zero
+  Type eps = Type(1e-8);  // Small constant for numerical stability
+  
+  // Mathematical constants
+  Type pi = Type(3.14159265358979323846);  // Pi for seasonal calculations
+  
+  // INITIALIZE PREDICTION VECTORS
+  int n_obs = Time.size();  // Number of time observations
+  vector<Type> N_pred(n_obs);  // Predicted nutrient concentrations
+  vector<Type> P_pred(n_obs);  // Predicted phytoplankton concentrations
+  vector<Type> Z_pred(n_obs);  // Predicted zooplankton concentrations
+  
+  // Set initial conditions from first observation
+  N_pred(0) = N_dat(0);  // Initialize nutrient from first data point
+  P_pred(0) = P_dat(0);  // Initialize phytoplankton from first data point
+  Z_pred(0) = Z_dat(0);  // Initialize zooplankton from first data point
+  
+  // FORWARD SIMULATION using Euler integration
+  for(int i = 1; i < n_obs; i++) {
+    Type dt = Time(i) - Time(i-1);  // Time step size (days)
+    
+    // Get previous time step values (avoid data leakage)
+    Type N_prev = N_pred(i-1);  // Nutrient concentration at previous time step
+    Type P_prev = P_pred(i-1);  // Phytoplankton concentration at previous time step
+    Type Z_prev = Z_pred(i-1);  // Zooplankton concentration at previous time step
+    Type t_prev = Time(i-1);  // Time at previous step (for seasonal light calculation)
+    
+    // Use reference temperature (constant temperature assumption)
+    // When temperature data becomes available, this can be replaced with T_dat(i-1)
+    Type T_prev = T_ref;  // Temperature at previous time step (currently constant at T_ref)
+    
+    // Ensure non-negative concentrations with smooth lower bound
+    N_prev = N_prev + eps;  // Prevent negative nutrient values
+    P_prev = P_prev + eps;  // Prevent negative phytoplankton values
+    Z_prev = Z_prev + eps;  // Prevent negative zooplankton values
+    
+    // EQUATION 1: Temperature factors using Q10 formulation
+    // Q10 formulation: rate(T) = rate(T_ref) * Q10^((T - T_ref)/10)
+    // Currently T_prev = T_ref, so all temperature factors = 1.0
+    Type temp_diff = (T_prev - T_ref) / Type(10.0);  // Temperature difference in units of 10°C
+    Type f_temp_phyto = pow(Q10_phyto, temp_diff);  // Temperature factor for phytoplankton growth
+    Type f_temp_zoo = pow(Q10_zoo, temp_diff);  // Temperature factor for zooplankton processes
+    Type f_temp_remin = pow(Q10_remin, temp_diff);  // Temperature factor for remineralization
+    
+    // EQUATION 2: Seasonal surface light intensity (sinusoidal variation)
+    // I_0(t) = I_0_mean * (1 + I_0_amplitude * sin(2\pi * (t - t_phase) / 365))
+    // This creates an annual cycle with peak at t_phase and trough 182.5 days later
+    // No need for modulo operation - sine function naturally repeats every 365 days
+    Type year_length = Type(365.0);  // Days in a year
+    Type seasonal_angle = Type(2.0) * pi * (t_prev - t_phase) / year_length;  // Phase-shifted angle (radians)
+    Type I_0 = I_0_mean * (Type(1.0) + I_0_amplitude * sin(seasonal_angle));  // Time-varying surface light intensity (\mumol photons m^-2 s^-1)
+    
+    // Ensure I_0 remains positive (should be guaranteed by 0 <= I_0_amplitude <= 1, but add safety)
+    I_0 = I_0 + eps;  // Prevent negative light values
+    
+    // EQUATION 3: Light availability in the mixed layer (exponential attenuation with self-shading)
+    Type attenuation_coef = k_w + k_c * P_prev;  // Total light attenuation coefficient (m^-1)
+    Type light_at_depth = I_0 * exp(-attenuation_coef * z_mix);  // Light at bottom of mixed layer (\mumol photons m^-2 s^-1)
+    Type I_avg = I_0 * (Type(1.0) - exp(-attenuation_coef * z_mix)) / (attenuation_coef * z_mix + eps);  // Depth-averaged light intensity (\mumol photons m^-2 s^-1)
+    
+    // EQUATION 4: Light limitation factor (Monod/Michaelis-Menten type saturation)
+    Type light_limitation = I_avg / (K_I + I_avg + eps);  // Light limitation factor (dimensionless, 0-1)
+    
+    // EQUATION 5: Nutrient limitation factor (Michaelis-Menten kinetics)
+    Type nutrient_limitation = N_prev / (K_N + N_prev + eps);  // Nutrient limitation factor (dimensionless, 0-1)
+    
+    // EQUATION 6: Temperature-dependent phytoplankton growth rate
+    // Growth is co-limited by light, nutrients, AND temperature
+    Type phyto_growth = r_max * f_temp_phyto * nutrient_limitation * light_limitation * P_prev;  // Temperature-modified phytoplankton growth (g C m^-3 day^-1)
+    
+    // EQUATION 7: Nutrient uptake rate by phytoplankton (equals growth rate in carbon units)
+    Type nutrient_uptake = phyto_growth;  // Nutrient consumed equals phytoplankton growth (g C m^-3 day^-1)
+    
+    // EQUATION 8: Temperature-dependent phytoplankton mortality
+    Type phyto_mortality = m_P * f_temp_remin * P_prev;  // Temperature-modified phytoplankton death rate (g C m^-3 day^-1)
+    
+    // EQUATION 9: Temperature-dependent zooplankton grazing rate (Holling Type II functional response)
+    Type grazing = g_max * f_temp_zoo * (P_prev / (K_P + P_prev + eps)) * Z_prev;  // Temperature-modified zooplankton consumption (g C m^-3 day^-1)
+    
+    // EQUATION 10: Variable assimilation efficiency based on phytoplankton nutrient status
+    // When phytoplankton are nutrient-limited, they have higher C:N ratios (lower quality food)
+    // This reduces zooplankton assimilation efficiency
+    // epsilon_effective = epsilon_min + (epsilon_max - epsilon_min) * nutrient_limitation
+    Type epsilon_effective = epsilon_min + (epsilon_max - epsilon_min) * nutrient_limitation;  // Food quality-dependent assimilation efficiency (dimensionless, epsilon_min to epsilon_max)
+    
+    // EQUATION 11: Temperature-dependent zooplankton mortality (linear + quadratic density dependence)
+    Type zoo_mortality = (m_Z * f_temp_zoo * Z_prev) + (m_Z2 * Z_prev * Z_prev);  // Temperature-modified zooplankton mortality (g C m^-3 day^-1)
+    
+    // EQUATION 12: Temperature-dependent nutrient recycling from phytoplankton mortality
+    Type nutrient_from_phyto = gamma_P * f_temp_remin * phyto_mortality;  // Temperature-modified nutrients from dead phytoplankton (g C m^-3 day^-1)
+    
+    // EQUATION 13: Temperature-dependent nutrient recycling from zooplankton
+    // Note: epsilon_effective is now variable, so unassimilated fraction (1 - epsilon_effective) varies with food quality
+    Type nutrient_from_zoo = gamma_Z * f_temp_remin * zoo_mortality + (Type(1.0) - epsilon_effective) * grazing;  // Temperature-modified nutrients from zooplankton (g C m^-3 day^-1)
+    
+    // EQUATION 14: Rate of change of nutrient concentration
+    Type dN_dt = N_input - nutrient_uptake + nutrient_from_phyto + nutrient_from_zoo;  // Net nutrient change (g C m^-3 day^-1)
+    
+    // EQUATION 15: Rate of change of phytoplankton concentration
+    Type dP_dt = phyto_growth - phyto_mortality - grazing;  // Net phytoplankton change (g C m^-3 day^-1)
+    
+    // EQUATION 16: Rate of change of zooplankton concentration
+    // Now uses variable epsilon_effective instead of constant epsilon
+    Type dZ_dt = epsilon_effective * grazing - zoo_mortality;  // Net zooplankton change (g C m^-3 day^-1)
+    
+    // Update predictions using Euler method
+    N_pred(i) = N_prev + dt * dN_dt;  // Forward Euler step for nutrients
+    P_pred(i) = P_prev + dt * dP_dt;  // Forward Euler step for phytoplankton
+    Z_pred(i) = Z_prev + dt * dZ_dt;  // Forward Euler step for zooplankton
+    
+    // Apply soft lower bounds to prevent negative values
+    N_pred(i) = N_pred(i) + eps;  // Ensure nutrient stays positive
+    P_pred(i) = P_pred(i) + eps;  // Ensure phytoplankton stays positive
+    Z_pred(i) = Z_pred(i) + eps;  // Ensure zooplankton stays positive
+  }
+  
+  // LIKELIHOOD CALCULATION
+  Type nll = Type(0.0);  // Initialize negative log-likelihood
+  
+  // Add observation likelihoods for all time points
+  for(int i = 0; i < n_obs; i++) {
+    // Nutrient observations (normal distribution)
+    nll -= dnorm(N_dat(i), N_pred(i), sigma_N, true);  // Negative log-likelihood contribution from nutrient data
+    
+    // Phytoplankton observations (normal distribution)
+    nll -= dnorm(P_dat(i), P_pred(i), sigma_P, true);  // Negative log-likelihood contribution from phytoplankton data
+    
+    // Zooplankton observations (normal distribution)
+    nll -= dnorm(Z_dat(i), Z_pred(i), sigma_Z, true);  // Negative log-likelihood contribution from zooplankton data
+  }
+  
+  // PARAMETER CONSTRAINTS using smooth penalties
+  
+  // Growth and mortality rates should be positive
+  nll -= dnorm(r_max, Type(0.5), Type(2.0), true);  // Soft prior: phytoplankton growth rate centered at 0.5 day^-1
+  nll -= dnorm(g_max, Type(0.5), Type(2.0), true);  // Soft prior: zooplankton grazing rate centered at 0.5 day^-1
+  nll -= dnorm(m_P, Type(0.05), Type(0.5), true);  // Soft prior: phytoplankton mortality centered at 0.05 day^-1
+  nll -= dnorm(m_Z, Type(0.05), Type(0.5), true);  // Soft prior: zooplankton linear mortality centered at 0.05 day^-1
+  
+  // Half-saturation constants should be positive and reasonable
+  nll -= dnorm(K_N, Type(0.1), Type(1.0), true);  // Soft prior: nutrient half-saturation centered at 0.1 g C m^-3
+  nll -= dnorm(K_P, Type(0.1), Type(1.0), true);  // Soft prior: grazing half-saturation centered at 0.1 g C m^-3
+  nll -= dnorm(K_I, Type(50.0), Type(100.0), true);  // Soft prior: light half-saturation centered at 50 \mumol photons m^-2 s^-1
+  
+  // Light parameters should be positive and reasonable
+  nll -= dnorm(I_0_mean, Type(400.0), Type(500.0), true);  // Soft prior: mean surface light intensity centered at 400 \mumol photons m^-2 s^-1
+  nll -= dnorm(k_w, Type(0.04), Type(0.1), true);  // Soft prior: water attenuation centered at 0.04 m^-1
+  nll -= dnorm(k_c, Type(0.03), Type(0.1), true);  // Soft prior: phytoplankton attenuation centered at 0.03 m^2 (g C)^-1
+  nll -= dnorm(z_mix, Type(20.0), Type(50.0), true);  // Soft prior: mixed layer depth centered at 20 m
+  
+  // Seasonal light variation parameters
+  nll -= dnorm(I_0_amplitude, Type(0.4), Type(0.3), true);  // Soft prior: seasonal amplitude centered at 0.4 (±40% variation)
+  nll -= dnorm(t_phase, Type(172.0), Type(100.0), true);  // Soft prior: light peak centered at day 172 (June 21, Northern Hemisphere)
+  
+  // Temperature parameters (Q10 values should be between 1 and 5, typically 1.5-4)
+  nll -= dnorm(Q10_phyto, Type(2.0), Type(1.0), true);  // Soft prior: phytoplankton Q10 centered at 2.0
+  nll -= dnorm(Q10_zoo, Type(2.5), Type(1.0), true);  // Soft prior: zooplankton Q10 centered at 2.5
+  nll -= dnorm(Q10_remin, Type(3.0), Type(1.5), true);  // Soft prior: remineralization Q10 centered at 3.0
+  nll -= dnorm(T_ref, Type(15.0), Type(10.0), true);  // Soft prior: reference temperature centered at 15°C
+  
+  // Variable assimilation efficiency parameters
+  nll -= dnorm(epsilon_min, Type(0.15), Type(0.1), true);  // Soft prior: minimum assimilation efficiency centered at 0.15
+  nll -= dnorm(epsilon_max, Type(0.45), Type(0.15), true);  // Soft prior: maximum assimilation efficiency centered at 0.45
+  
+  // Efficiencies should be between 0 and 1 (using logit-like penalty)
+  Type epsilon_min_penalty = -log(epsilon_min + eps) - log(Type(1.0) - epsilon_min + eps);  // Penalty to keep epsilon_min in (0,1)
+  Type epsilon_max_penalty = -log(epsilon_max + eps) - log(Type(1.0) - epsilon_max + eps);  // Penalty to keep epsilon_max in (0,1)
+  Type gamma_P_penalty = -log(gamma_P + eps) - log(Type(1.0) - gamma_P + eps);  // Penalty to keep gamma_P in (0,1)
+  Type gamma_Z_penalty = -log(gamma_Z + eps) - log(Type(1.0) - gamma_Z + eps);  // Penalty to keep gamma_Z in (0,1)
+  Type I_0_amplitude_penalty = -log(I_0_amplitude + eps) - log(Type(1.0) - I_0_amplitude + eps);  // Penalty to keep I_0_amplitude in (0,1)
+  nll += Type(0.1) * (epsilon_min_penalty + epsilon_max_penalty + gamma_P_penalty + gamma_Z_penalty + I_0_amplitude_penalty);  // Add efficiency penalties with small weight
+  
+  // Constraint: epsilon_max should be greater than epsilon_min
+  Type epsilon_ordering_penalty = Type(0.0);
+  if(epsilon_max <= epsilon_min) {
+    epsilon_ordering_penalty = Type(1000.0) * pow(epsilon_min - epsilon_max + Type(0.01), Type(2.0));  // Large penalty if ordering is violated
+  }
+  nll += epsilon_ordering_penalty;  // Add ordering constraint penalty
+  
+  // Quadratic mortality should be small and positive
+  nll -= dnorm(m_Z2, Type(0.1), Type(1.0), true);  // Soft prior: quadratic mortality centered at 0.1
+  
+  // Nutrient input should be positive
+  nll -= dnorm(N_input, Type(0.01), Type(0.5), true);  // Soft prior: nutrient input centered at 0.01 g C m^-3 day^-1
+  
+  // REPORT PREDICTIONS
+  REPORT(N_pred);  // Report predicted nutrient concentrations
+  REPORT(P_pred);  // Report predicted phytoplankton concentrations
+  REPORT(Z_pred);  // Report predicted zooplankton concentrations
+  
+  // REPORT PARAMETERS
+  REPORT(r_max);  // Report maximum phytoplankton growth rate
+  REPORT(K_N);  // Report nutrient half-saturation constant
+  REPORT(m_P);  // Report phytoplankton mortality rate
+  REPORT(g_max);  // Report maximum grazing rate
+  REPORT(K_P);  // Report grazing half-saturation constant
+  REPORT(epsilon_min);  // Report minimum assimilation efficiency
+  REPORT(epsilon_max);  // Report maximum assimilation efficiency
+  REPORT(m_Z);  // Report zooplankton linear mortality
+  REPORT(m_Z2);  // Report zooplankton quadratic mortality
+  REPORT(gamma_P);  // Report phytoplankton recycling efficiency
+  REPORT(gamma_Z);  // Report zooplankton recycling efficiency
+  REPORT(N_input);  // Report nutrient input rate
+  REPORT(I_0_mean);  // Report annual mean surface light intensity
+  REPORT(I_0_amplitude);  // Report seasonal light variation amplitude
+  REPORT(t_phase);  // Report day of year when light peaks
+  REPORT(K_I);  // Report light half-saturation constant
+  REPORT(k_w);  // Report water attenuation coefficient
+  REPORT(k_c);  // Report phytoplankton attenuation coefficient
+  REPORT(z_mix);  // Report mixed layer depth
+  REPORT(Q10_phyto);  // Report phytoplankton Q10 coefficient
+  REPORT(Q10_zoo);  // Report zooplankton Q10 coefficient
+  REPORT(Q10_remin);  // Report remineralization Q10 coefficient
+  REPORT(T_ref);  // Report reference temperature
+  REPORT(sigma_N);  // Report nutrient observation error
+  REPORT(sigma_P);  // Report phytoplankton observation error
+  REPORT(sigma_Z);  // Report zooplankton observation error
+  
+  return nll;  // Return total negative log-likelihood
+}
+\end{lstlisting}
+
+\subsubsection{Model Parameters}
+\begin{lstlisting}
+{
+    "parameters": [
+        {
+            "parameter": "r_max",
+            "value": 1.0,
+            "units": "day^-1",
+            "description": "Maximum phytoplankton growth rate under nutrient-replete conditions at reference temperature",
+            "source": "literature",
+            "import_type": "PARAMETER",
+            "priority": 1,
+            "lower_bound": 0.8,
+            "upper_bound": 1.2,
+            "enhanced_semantic_description": "Maximum phytoplankton growth rate per day at reference temperature",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "K_N",
+            "value": 0.1,
+            "units": "g C m^-3",
+            "description": "Half-saturation constant for nutrient uptake by phytoplankton (Michaelis-Menten kinetics)",
+            "source": "literature",
+            "import_type": "PARAMETER",
+            "priority": 1,
+            "lower_bound": 0.0,
+            "upper_bound": 5.0,
+            "enhanced_semantic_description": "Half-saturation nutrient concentration for uptake",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "m_P",
+            "value": 0.05,
+            "units": "day^-1",
+            "description": "Phytoplankton natural mortality rate (non-grazing losses) at reference temperature",
+            "source": "literature",
+            "import_type": "PARAMETER",
+            "priority": 2,
+            "lower_bound": 0.0,
+            "upper_bound": 1.0,
+            "enhanced_semantic_description": "Phytoplankton natural mortality rate per day at reference temperature",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "g_max",
+            "value": 0.5,
+            "units": "day^-1",
+            "description": "Maximum zooplankton grazing rate on phytoplankton at reference temperature",
+            "source": "literature",
+            "import_type": "PARAMETER",
+            "priority": 1,
+            "lower_bound": 0.0,
+            "upper_bound": 5.0,
+            "enhanced_semantic_description": "Maximum zooplankton grazing rate per day at reference temperature",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "K_P",
+            "value": 0.1,
+            "units": "g C m^-3",
+            "description": "Half-saturation constant for zooplankton grazing (Holling Type II functional response)",
+            "source": "literature",
+            "import_type": "PARAMETER",
+            "priority": 1,
+            "lower_bound": 0.0,
+            "upper_bound": 5.0,
+            "enhanced_semantic_description": "Half-saturation phytoplankton concentration for grazing",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "epsilon_min",
+            "value": 0.15,
+            "units": "dimensionless",
+            "description": "Minimum zooplankton assimilation efficiency when phytoplankton are severely nutrient-limited (high C:N ratio, poor food quality). Represents the baseline conversion efficiency of carbon-rich but protein-poor phytoplankton biomass.",
+            "source": "literature",
+            "import_type": "PARAMETER",
+            "priority": 2,
+            "lower_bound": 0.05,
+            "upper_bound": 0.4,
+            "enhanced_semantic_description": "Minimum zooplankton assimilation efficiency under nutrient-limited conditions",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "epsilon_max",
+            "value": 0.45,
+            "units": "dimensionless",
+            "description": "Maximum zooplankton assimilation efficiency when phytoplankton are nutrient-replete (balanced C:N ratio, high food quality). Represents optimal conversion efficiency of high-quality, protein-rich phytoplankton biomass.",
+            "source": "literature",
+            "import_type": "PARAMETER",
+            "priority": 2,
+            "lower_bound": 0.2,
+            "upper_bound": 0.7,
+            "enhanced_semantic_description": "Maximum zooplankton assimilation efficiency under nutrient-replete conditions",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "m_Z",
+            "value": 0.05,
+            "units": "day^-1",
+            "description": "Zooplankton linear mortality rate (background mortality) at reference temperature",
+            "source": "literature",
+            "import_type": "PARAMETER",
+            "priority": 2,
+            "lower_bound": 0.0,
+            "upper_bound": 1.0,
+            "enhanced_semantic_description": "Zooplankton linear mortality rate per day at reference temperature",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "m_Z2",
+            "value": 0.1,
+            "units": "day^-1 (g C m^-3)^-1",
+            "description": "Zooplankton quadratic mortality coefficient (density-dependent predation by higher trophic levels)",
+            "source": "literature",
+            "import_type": "PARAMETER",
+            "priority": 3,
+            "lower_bound": 0.0,
+            "upper_bound": 5.0,
+            "enhanced_semantic_description": "Zooplankton quadratic mortality coefficient",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "gamma_P",
+            "value": 0.5,
+            "units": "dimensionless",
+            "description": "Nutrient recycling efficiency from phytoplankton mortality (fraction of dead phytoplankton biomass returned as nutrients)",
+            "source": "literature",
+            "import_type": "PARAMETER",
+            "priority": 3,
+            "lower_bound": 0.0,
+            "upper_bound": 1.0,
+            "enhanced_semantic_description": "Phytoplankton nutrient recycling efficiency fraction",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "gamma_Z",
+            "value": 0.3,
+            "units": "dimensionless",
+            "description": "Nutrient recycling efficiency from zooplankton mortality and excretion",
+            "source": "literature",
+            "import_type": "PARAMETER",
+            "priority": 3,
+            "lower_bound": 0.0,
+            "upper_bound": 1.0,
+            "enhanced_semantic_description": "Zooplankton nutrient recycling efficiency fraction",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "N_input",
+            "value": 0.01,
+            "units": "g C m^-3 day^-1",
+            "description": "External nutrient input rate from upwelling, mixing, or atmospheric deposition",
+            "source": "initial estimate",
+            "import_type": "PARAMETER",
+            "priority": 2,
+            "lower_bound": 0.0,
+            "upper_bound": 1.0,
+            "enhanced_semantic_description": "External nutrient input rate (g C m^-3 day^-1)",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "I_0_mean",
+            "value": 443.0,
+            "units": "\u03bcmol photons m^-2 s^-1",
+            "description": "Annual mean surface light intensity (photosynthetically active radiation). This is the baseline around which seasonal variation occurs.",
+            "source": "literature",
+            "import_type": "PARAMETER",
+            "priority": 1,
+            "lower_bound": 163.0,
+            "upper_bound": 886.0,
+            "enhanced_semantic_description": "Annual mean surface photosynthetically active radiation intensity",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "I_0_amplitude",
+            "value": 0.4,
+            "units": "dimensionless",
+            "description": "Fractional amplitude of seasonal light variation (0 = no seasonality, 1 = light varies from 0 to 2*mean). Typical temperate ocean values are 0.3-0.5, representing \u00b130-50% variation around the annual mean.",
+            "source": "literature",
+            "import_type": "PARAMETER",
+            "priority": 2,
+            "lower_bound": 0.0,
+            "upper_bound": 1.0,
+            "enhanced_semantic_description": "Fractional amplitude of seasonal surface light variation",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "t_phase",
+            "value": 172.0,
+            "units": "days",
+            "description": "Day of year when surface light intensity reaches its maximum (phase shift for seasonal cycle). For Northern Hemisphere, typically ~172 (June 21, summer solstice). For Southern Hemisphere, use ~355 (December 21).",
+            "source": "literature",
+            "import_type": "PARAMETER",
+            "priority": 2,
+            "lower_bound": 0.0,
+            "upper_bound": 365.0,
+            "enhanced_semantic_description": "Day of year when light intensity peaks (seasonal phase)",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "K_I",
+            "value": 50.0,
+            "units": "\u03bcmol photons m^-2 s^-1",
+            "description": "Half-saturation constant for light-limited phytoplankton growth (light intensity at which growth is half-maximal)",
+            "source": "literature",
+            "import_type": "PARAMETER",
+            "priority": 1,
+            "lower_bound": 1.0,
+            "upper_bound": 500.0,
+            "enhanced_semantic_description": "Half-saturation light intensity for phytoplankton growth",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "k_w",
+            "value": 0.04,
+            "units": "m^-1",
+            "description": "Background light attenuation coefficient for clear seawater (absorption and scattering by water and dissolved matter)",
+            "source": "literature",
+            "import_type": "PARAMETER",
+            "priority": 2,
+            "lower_bound": 0.01,
+            "upper_bound": 0.5,
+            "enhanced_semantic_description": "Background water light attenuation coefficient",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "k_c",
+            "value": 0.03,
+            "units": "m^2 (g C)^-1",
+            "description": "Phytoplankton self-shading coefficient (light attenuation per unit phytoplankton biomass, representing chlorophyll absorption)",
+            "source": "literature",
+            "import_type": "PARAMETER",
+            "priority": 2,
+            "lower_bound": 0.001,
+            "upper_bound": 0.5,
+            "enhanced_semantic_description": "Phytoplankton-specific light attenuation coefficient",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "z_mix",
+            "value": 20.0,
+            "units": "m",
+            "description": "Mixed layer depth (depth over which phytoplankton are mixed and experience average light conditions)",
+            "source": "literature",
+            "import_type": "PARAMETER",
+            "priority": 2,
+            "lower_bound": 5.0,
+            "upper_bound": 200.0,
+            "enhanced_semantic_description": "Oceanic mixed layer depth",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "Q10_phyto",
+            "value": 2.7,
+            "units": "dimensionless",
+            "description": "Temperature sensitivity of phytoplankton growth (Q10 coefficient: factor by which growth rate increases per 10\u00b0C temperature increase)",
+            "source": "literature",
+            "import_type": "PARAMETER",
+            "priority": 1,
+            "lower_bound": 2.0,
+            "upper_bound": 3.4,
+            "enhanced_semantic_description": "Q10 temperature coefficient for phytoplankton metabolic rates",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "Q10_zoo",
+            "value": 2.5,
+            "units": "dimensionless",
+            "description": "Temperature sensitivity of zooplankton grazing and metabolism (Q10 coefficient: factor by which rates increase per 10\u00b0C temperature increase)",
+            "source": "literature",
+            "import_type": "PARAMETER",
+            "priority": 1,
+            "lower_bound": 2.0,
+            "upper_bound": 3.0,
+            "enhanced_semantic_description": "Q10 temperature coefficient for zooplankton metabolic rates",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "Q10_remin",
+            "value": 3.0,
+            "units": "dimensionless",
+            "description": "Temperature sensitivity of nutrient remineralization processes (Q10 coefficient: factor by which remineralization increases per 10\u00b0C temperature increase)",
+            "source": "literature",
+            "import_type": "PARAMETER",
+            "priority": 2,
+            "lower_bound": 2.0,
+            "upper_bound": 4.0,
+            "enhanced_semantic_description": "Q10 temperature coefficient for bacterial remineralization rates",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "T_ref",
+            "value": 15.0,
+            "units": "\u00b0C",
+            "description": "Reference temperature at which maximum rates (r_max, g_max, etc.) are defined; typical temperate ocean mixed layer temperature",
+            "source": "literature",
+            "import_type": "PARAMETER",
+            "priority": 2,
+            "lower_bound": 10.0,
+            "upper_bound": 20.0,
+            "enhanced_semantic_description": "Reference temperature for rate normalization",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "log_sigma_N",
+            "value": -3.0,
+            "units": "log(g C m^-3)",
+            "description": "Log-scale standard deviation of nutrient observation error",
+            "source": "initial estimate",
+            "import_type": "PARAMETER",
+            "priority": 4,
+            "lower_bound": null,
+            "upper_bound": null,
+            "enhanced_semantic_description": "Log standard deviation of nutrient observation error",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "log_sigma_P",
+            "value": -3.0,
+            "units": "log(g C m^-3)",
+            "description": "Log-scale standard deviation of phytoplankton observation error",
+            "source": "initial estimate",
+            "import_type": "PARAMETER",
+            "priority": 4,
+            "lower_bound": null,
+            "upper_bound": null,
+            "enhanced_semantic_description": "Log standard deviation of phytoplankton observation error",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "log_sigma_Z",
+            "value": -3.0,
+            "units": "log(g C m^-3)",
+            "description": "Log-scale standard deviation of zooplankton observation error",
+            "source": "initial estimate",
+            "import_type": "PARAMETER",
+            "priority": 4,
+            "lower_bound": null,
+            "upper_bound": null,
+            "enhanced_semantic_description": "Log standard deviation of zooplankton observation error",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "Time",
+            "value": 0,
+            "units": "days",
+            "description": "Time vector for observations",
+            "source": "data",
+            "import_type": "DATA_VECTOR",
+            "priority": null,
+            "lower_bound": null,
+            "upper_bound": null,
+            "enhanced_semantic_description": "Observation time points in days",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "N_dat",
+            "value": 0,
+            "units": "g C m^-3",
+            "description": "Observed nutrient concentration",
+            "source": "data",
+            "import_type": "DATA_VECTOR",
+            "priority": null,
+            "lower_bound": 0.0,
+            "upper_bound": null,
+            "enhanced_semantic_description": "Observed nutrient concentration (g C m^-3)",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "P_dat",
+            "value": 0,
+            "units": "g C m^-3",
+            "description": "Observed phytoplankton concentration",
+            "source": "data",
+            "import_type": "DATA_VECTOR",
+            "priority": null,
+            "lower_bound": 0.0,
+            "upper_bound": null,
+            "enhanced_semantic_description": "Observed phytoplankton concentration (g C m^-3)",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "Z_dat",
+            "value": 0,
+            "units": "g C m^-3",
+            "description": "Observed zooplankton concentration",
+            "source": "data",
+            "import_type": "DATA_VECTOR",
+            "priority": null,
+            "lower_bound": 0.0,
+            "upper_bound": null,
+            "enhanced_semantic_description": "Observed zooplankton concentration (g C m^-3)",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        }
+    ]
+}
+\end{lstlisting}
+\clearpage
+\subsection{openrouter:google/gemini-2.5-pro Model (NPZ)}
+This model achieved an objective value of 0.0357 (Population 16).
+
+\subsubsection{Model Intention}
+\begin{lstlisting}
+Model Assessment:
+The current model is a standard NPZD (Nutrient-Phytoplankton-Zooplankton-Detritus) formulation that captures the core dynamics of a simple plankton ecosystem. Key strengths include the implementation of phytoplankton self-shading and a Holling Type III functional response for zooplankton grazing on phytoplankton, which provides a refuge for phytoplankton at low densities.
+
+The primary simplification identified is the zooplankton diet, which is restricted solely to phytoplankton. This overlooks the common ecological reality that many zooplankton are omnivorous and consume detritus as a supplementary or alternative food source. This missing pathway represents an opportunity to improve the model's representation of carbon flow and food web stability.
+
+Proposed Improvement: Introduce Zooplankton Omnivory
+
+Rationale:
+To enhance ecological realism, I will modify the model to include zooplankton omnivory, allowing them to graze on both phytoplankton (P) and detritus (D). This change introduces a crucial ecological interaction, providing a more robust food web structure where zooplankton have an alternative food source when phytoplankton is scarce. This also improves the model's simulation of the role of detritus in the ecosystem's carbon cycle.
+
+Implementation Plan:
+1.  A new grazing term will be added to allow zooplankton to feed on detritus. This will be modeled using a Holling Type II functional response (`g_max_D * D / (K_D + D) * Z`), which is suitable for a passive food source like detritus. The existing Holling Type III response for phytoplankton grazing will be retained.
+2.  To support this, three new parameters will be introduced in `parameters.json`:
+    *   `g_max_D`: Maximum grazing rate on detritus.
+    *   `K_D`: Half-saturation constant for detritus grazing.
+    *   `beta_D`: Assimilation efficiency for consumed detritus.
+3.  For clarity, the existing parameters `g_max` and `beta` will be renamed to `g_max_P` and `beta_P` to explicitly link them to phytoplankton grazing.
+4.  The differential equations in `model.cpp` for Nutrient (dN/dt), Zooplankton (dZ/dt), and Detritus (dD/dt) will be updated to reflect this new pathway. Carbon from consumed detritus will be assimilated by zooplankton or returned to the nutrient pool via sloppy feeding, consistent with the model's existing structure.
+\end{lstlisting}
+
+\subsubsection{Model Implementation}
+\begin{lstlisting}
+#include <TMB.hpp>
+
+template<class Type>
+Type objective_function<Type>::operator() ()
+{
+  // ------------------------------------------------------------------------
+  // DATA
+  // ------------------------------------------------------------------------
+  
+  // Observed data vectors
+  DATA_VECTOR(Time); // Time vector of observations
+  DATA_VECTOR(N_dat); // Observed Nutrient concentration (g C m^-3)
+  DATA_VECTOR(P_dat); // Observed Phytoplankton concentration (g C m^-3)
+  DATA_VECTOR(Z_dat); // Observed Zooplankton concentration (g C m^-3)
+
+  // ------------------------------------------------------------------------
+  // PARAMETERS
+  // ------------------------------------------------------------------------
+
+  // Phytoplankton growth parameters
+  PARAMETER(V_max);   // Maximum phytoplankton uptake rate (day^-1)
+  PARAMETER(K_N);     // Half-saturation constant for nutrient uptake (g C m^-3)
+  PARAMETER(alpha_shading); // Self-shading coefficient for phytoplankton ((g C m^-3)^-1)
+
+  // Zooplankton grazing parameters
+  PARAMETER(g_max_P);   // Maximum grazing rate of zooplankton on phytoplankton (day^-1)
+  PARAMETER(K_P);       // Half-saturation constant for grazing on phytoplankton (g C m^-3)
+  PARAMETER(beta_P);    // Zooplankton assimilation efficiency from phytoplankton (dimensionless)
+  PARAMETER(g_max_D);   // Maximum grazing rate of zooplankton on detritus (day^-1)
+  PARAMETER(K_D);       // Half-saturation constant for grazing on detritus (g C m^-3)
+  PARAMETER(beta_D);    // Zooplankton assimilation efficiency from detritus (dimensionless)
+
+  // Mortality and regeneration parameters
+  PARAMETER(m_P);       // Phytoplankton linear mortality rate (day^-1)
+  PARAMETER(m_Z);       // Zooplankton quadratic mortality rate ((g C m^-3)^-1 day^-1)
+  PARAMETER(gamma);     // Zooplankton excretion rate (day^-1)
+  PARAMETER(epsilon);   // Remineralization rate of detritus (day^-1)
+  PARAMETER(w_D);       // Detritus sinking rate (day^-1)
+
+  // Observation error parameters (log scale to ensure positivity)
+  PARAMETER(log_sigma_N); // Log standard deviation for Nutrient observations
+  PARAMETER(log_sigma_P); // Log standard deviation for Phytoplankton observations
+  PARAMETER(log_sigma_Z); // Log standard deviation for Zooplankton observations
+
+  // Transform log standard deviations to natural scale
+  Type sigma_N = exp(log_sigma_N);
+  Type sigma_P = exp(log_sigma_P);
+  Type sigma_Z = exp(log_sigma_Z);
+
+  // ------------------------------------------------------------------------
+  // MODEL DEFINITION
+  // ------------------------------------------------------------------------
+
+  int n_obs = Time.size(); // Number of observation time points
+
+  // Create vectors to store model predictions
+  vector<Type> N_pred(n_obs);
+  vector<Type> P_pred(n_obs);
+  vector<Type> Z_pred(n_obs);
+  vector<Type> D_pred(n_obs); // Detritus state variable
+
+  // Initialize predictions at time 0 with the first data point
+  N_pred(0) = N_dat(0);
+  P_pred(0) = P_dat(0);
+  Z_pred(0) = Z_dat(0);
+  D_pred(0) = Type(0.0); // Initialize detritus at zero
+
+  // --- System of Ordinary Differential Equations (ODEs) ---
+  // 1. dN/dt = -Uptake + Unassimilated_Grazing + Excretion + Remineralization
+  // 2. dP/dt =  Uptake - Grazing_P - P_Mortality
+  // 3. dZ/dt =  Assimilated_Grazing - Z_Mortality - Excretion
+  // 4. dD/dt =  P_Mortality + Z_Mortality - Grazing_D - Remineralization - Detritus_Sinking
+
+  // Time-stepping loop to solve the ODEs using the Euler method
+  for (int i = 1; i < n_obs; ++i) {
+    Type dt = Time(i) - Time(i-1); // Time step duration
+
+    // Concentrations from the previous time step
+    Type N_prev = N_pred(i-1);
+    Type P_prev = P_pred(i-1);
+    Type Z_prev = Z_pred(i-1);
+    Type D_prev = D_pred(i-1);
+
+    // --- Ecological Process Rates ---
+    
+    // Nutrient uptake by phytoplankton (Michaelis-Menten with self-shading)
+    Type nutrient_limitation = N_prev / (K_N + N_prev + Type(1e-8));
+    Type self_shading_limitation = Type(1.0) / (Type(1.0) + alpha_shading * P_prev);
+    Type uptake = V_max * nutrient_limitation * self_shading_limitation * P_prev;
+
+    // Grazing of phytoplankton by zooplankton (Holling Type III functional response)
+    Type grazing_P = g_max_P * (P_prev * P_prev) / ((K_P * K_P) + (P_prev * P_prev) + Type(1e-8)) * Z_prev;
+
+    // Grazing of detritus by zooplankton (Holling Type II functional response)
+    Type grazing_D = g_max_D * D_prev / (K_D + D_prev + Type(1e-8)) * Z_prev;
+
+    // Phytoplankton mortality (linear)
+    Type p_mortality = m_P * P_prev;
+
+    // Zooplankton mortality (quadratic, representing predation)
+    Type z_mortality = m_Z * Z_prev * Z_prev;
+
+    // Zooplankton excretion/respiration
+    Type excretion = gamma * Z_prev;
+
+    // Total grazing assimilated by zooplankton
+    Type assimilated_grazing_total = beta_P * grazing_P + beta_D * grazing_D;
+
+    // Total unassimilated grazing (sloppy feeding), recycled to nutrient pool
+    Type unassimilated_grazing_total = (Type(1.0) - beta_P) * grazing_P + (Type(1.0) - beta_D) * grazing_D;
+
+    // Remineralization of detritus pool
+    Type remineralization = epsilon * D_prev;
+
+    // Sinking of detritus out of the mixed layer
+    Type detritus_sinking = w_D * D_prev;
+
+    // --- Update State Variables ---
+    
+    // Change in Nutrient concentration
+    Type dN = -uptake + unassimilated_grazing_total + excretion + remineralization;
+    N_pred(i) = N_prev + dN * dt;
+
+    // Change in Phytoplankton concentration
+    Type dP = uptake - grazing_P - p_mortality;
+    P_pred(i) = P_prev + dP * dt;
+
+    // Change in Zooplankton concentration
+    Type dZ = assimilated_grazing_total - z_mortality - excretion;
+    Z_pred(i) = Z_prev + dZ * dt;
+
+    // Change in Detritus concentration
+    Type dD = p_mortality + z_mortality - remineralization - detritus_sinking - grazing_D;
+    D_pred(i) = D_prev + dD * dt;
+
+    // --- Numerical Stability ---
+    // Ensure predictions do not fall below a small positive value
+    N_pred(i) = CppAD::CondExpGt(N_pred(i), Type(0.0), N_pred(i), Type(1e-8));
+    P_pred(i) = CppAD::CondExpGt(P_pred(i), Type(0.0), P_pred(i), Type(1e-8));
+    Z_pred(i) = CppAD::CondExpGt(Z_pred(i), Type(0.0), Z_pred(i), Type(1e-8));
+    D_pred(i) = CppAD::CondExpGt(D_pred(i), Type(0.0), D_pred(i), Type(1e-8));
+  }
+
+  // ------------------------------------------------------------------------
+  // LIKELIHOOD CALCULATION
+  // ------------------------------------------------------------------------
+
+  Type nll = 0.0; // Initialize negative log-likelihood
+
+  // Loop through all observations to calculate the likelihood
+  for (int i = 0; i < n_obs; ++i) {
+    // Lognormal distribution is appropriate for strictly positive data like concentrations
+    // The 'true' argument specifies that the log-probability is returned
+    nll -= dnorm(log(N_dat(i)), log(N_pred(i)), sigma_N, true);
+    nll -= dnorm(log(P_dat(i)), log(P_pred(i)), sigma_P, true);
+    nll -= dnorm(log(Z_dat(i)), log(Z_pred(i)), sigma_Z, true);
+  }
+
+  // ------------------------------------------------------------------------
+  // PARAMETER BOUNDS (Smooth Penalties)
+  // ------------------------------------------------------------------------
+  
+  // Penalize parameters that stray outside their biologically plausible ranges.
+  // This acts as a "soft" constraint during optimization.
+  Type penalty_sd = 0.1;
+  if (V_max < 0.0)     { nll -= dnorm(V_max, Type(0.0), penalty_sd, true); }
+  if (K_N < 0.0)      { nll -= dnorm(K_N, Type(0.0), penalty_sd, true); }
+  if (alpha_shading < 0.0) { nll -= dnorm(alpha_shading, Type(0.0), penalty_sd, true); }
+  if (g_max_P < 0.0)     { nll -= dnorm(g_max_P, Type(0.0), penalty_sd, true); }
+  if (K_P < 0.0)      { nll -= dnorm(K_P, Type(0.0), penalty_sd, true); }
+  if (beta_P < 0.0)     { nll -= dnorm(beta_P, Type(0.0), penalty_sd, true); }
+  if (beta_P > 1.0)     { nll -= dnorm(beta_P, Type(1.0), penalty_sd, true); }
+  if (g_max_D < 0.0)     { nll -= dnorm(g_max_D, Type(0.0), penalty_sd, true); }
+  if (K_D < 0.0)      { nll -= dnorm(K_D, Type(0.0), penalty_sd, true); }
+  if (beta_D < 0.0)     { nll -= dnorm(beta_D, Type(0.0), penalty_sd, true); }
+  if (beta_D > 1.0)     { nll -= dnorm(beta_D, Type(1.0), penalty_sd, true); }
+  if (m_P < 0.0)      { nll -= dnorm(m_P, Type(0.0), penalty_sd, true); }
+  if (m_Z < 0.0)      { nll -= dnorm(m_Z, Type(0.0), penalty_sd, true); }
+  if (gamma < 0.0)     { nll -= dnorm(gamma, Type(0.0), penalty_sd, true); }
+  if (epsilon < 0.0)   { nll -= dnorm(epsilon, Type(0.0), penalty_sd, true); }
+  if (w_D < 0.0)       { nll -= dnorm(w_D, Type(0.0), penalty_sd, true); }
+
+  // ------------------------------------------------------------------------
+  // REPORTING
+  // ------------------------------------------------------------------------
+
+  // Report predicted time series for plotting and evaluation
+  REPORT(N_pred);
+  REPORT(P_pred);
+  REPORT(Z_pred);
+  REPORT(D_pred);
+
+  // Report the final negative log-likelihood value
+  REPORT(nll);
+
+  // Report predictions for standard error calculation
+  ADREPORT(N_pred);
+  ADREPORT(P_pred);
+  ADREPORT(Z_pred);
+  ADREPORT(D_pred);
+
+  return nll;
+}
+\end{lstlisting}
+
+\subsubsection{Model Parameters}
+\begin{lstlisting}
+{
+    "parameters": [
+        {
+            "parameter": "Time",
+            "value": null,
+            "units": "days",
+            "description": "Time points of the observations. Corresponds to 'Time (days)' column in data.",
+            "source": "data file",
+            "import_type": "DATA_VECTOR",
+            "priority": null,
+            "lower_bound": 0.0,
+            "upper_bound": null,
+            "enhanced_semantic_description": "Observation time points in days",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "N_dat",
+            "value": null,
+            "units": "g C m^-3",
+            "description": "Observed nutrient concentration.",
+            "source": "data file",
+            "import_type": "DATA_VECTOR",
+            "priority": null,
+            "lower_bound": 0.0,
+            "upper_bound": null,
+            "enhanced_semantic_description": "Measured nutrient concentration in mixed layer (g C/m\u00b3)",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "P_dat",
+            "value": null,
+            "units": "g C m^-3",
+            "description": "Observed phytoplankton concentration.",
+            "source": "data file",
+            "import_type": "DATA_VECTOR",
+            "priority": null,
+            "lower_bound": 0.0,
+            "upper_bound": null,
+            "enhanced_semantic_description": "Measured phytoplankton biomass concentration (g C/m\u00b3)",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "Z_dat",
+            "value": null,
+            "units": "g C m^-3",
+            "description": "Observed zooplankton concentration.",
+            "source": "data file",
+            "import_type": "DATA_VECTOR",
+            "priority": null,
+            "lower_bound": 0.0,
+            "upper_bound": null,
+            "enhanced_semantic_description": "Measured zooplankton biomass concentration (g C/m\u00b3)",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "V_max",
+            "value": 1.5,
+            "units": "day^-1",
+            "description": "Maximum phytoplankton nutrient uptake rate.",
+            "source": "literature",
+            "import_type": "PARAMETER",
+            "priority": 1,
+            "lower_bound": 0.0,
+            "upper_bound": 10.0,
+            "enhanced_semantic_description": "Max phytoplankton nutrient uptake rate (day\u207b\u00b9)",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "K_N",
+            "value": 0.1,
+            "units": "g C m^-3",
+            "description": "Half-saturation constant for nutrient uptake by phytoplankton.",
+            "source": "literature",
+            "import_type": "PARAMETER",
+            "priority": 1,
+            "lower_bound": 1e-06,
+            "upper_bound": 10.0,
+            "enhanced_semantic_description": "Half-saturation nutrient conc. for phytoplankton uptake (g C/m\u00b3)",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "g_max_P",
+            "value": 1.0,
+            "units": "day^-1",
+            "description": "Maximum grazing rate of zooplankton on phytoplankton.",
+            "source": "literature",
+            "import_type": "PARAMETER",
+            "priority": 1,
+            "lower_bound": 0.0,
+            "upper_bound": 10.0,
+            "enhanced_semantic_description": "Max zooplankton grazing rate on phytoplankton (day\u207b\u00b9)",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "K_P",
+            "value": 0.2,
+            "units": "g C m^-3",
+            "description": "Half-saturation constant for zooplankton grazing on phytoplankton, modeled with a Holling Type III functional response.",
+            "source": "literature",
+            "import_type": "PARAMETER",
+            "priority": 1,
+            "lower_bound": 1e-06,
+            "upper_bound": 10.0,
+            "enhanced_semantic_description": "Half-saturation phytoplankton conc. for sigmoidal (Holling Type III) zooplankton grazing (g C/m\u00b3)",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "beta_P",
+            "value": 0.7,
+            "units": "dimensionless",
+            "description": "Zooplankton assimilation efficiency from consumed phytoplankton.",
+            "source": "literature",
+            "import_type": "PARAMETER",
+            "priority": 3,
+            "lower_bound": 0.0,
+            "upper_bound": 1.0,
+            "enhanced_semantic_description": "Zooplankton assimilation efficiency (dimensionless fraction)",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "g_max_D",
+            "value": 0.4,
+            "units": "day^-1",
+            "description": "Maximum grazing rate of zooplankton on detritus.",
+            "source": "model enhancement",
+            "import_type": "PARAMETER",
+            "priority": 1,
+            "lower_bound": 0.0,
+            "upper_bound": 10.0,
+            "enhanced_semantic_description": "Max zooplankton grazing rate on detritus (day\u207b\u00b9)",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "K_D",
+            "value": 0.3,
+            "units": "g C m^-3",
+            "description": "Half-saturation constant for zooplankton grazing on detritus (Holling Type II).",
+            "source": "model enhancement",
+            "import_type": "PARAMETER",
+            "priority": 1,
+            "lower_bound": 1e-06,
+            "upper_bound": 10.0,
+            "enhanced_semantic_description": "Half-saturation detritus conc. for zooplankton grazing (g C/m\u00b3)",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "beta_D",
+            "value": 0.4,
+            "units": "dimensionless",
+            "description": "Zooplankton assimilation efficiency from consumed detritus.",
+            "source": "model enhancement",
+            "import_type": "PARAMETER",
+            "priority": 3,
+            "lower_bound": 0.0,
+            "upper_bound": 1.0,
+            "enhanced_semantic_description": "Zooplankton assimilation efficiency from detritus (dimensionless fraction)",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "m_P",
+            "value": 0.05,
+            "units": "day^-1",
+            "description": "Phytoplankton linear mortality rate (sinking, natural death).",
+            "source": "literature",
+            "import_type": "PARAMETER",
+            "priority": 2,
+            "lower_bound": 0.0,
+            "upper_bound": 1.0,
+            "enhanced_semantic_description": "Phytoplankton linear mortality rate (day\u207b\u00b9)",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "alpha_shading",
+            "value": 0.1,
+            "units": "(g C m^-3)^-1",
+            "description": "Self-shading coefficient for phytoplankton, reducing growth at high densities.",
+            "source": "model enhancement",
+            "import_type": "PARAMETER",
+            "priority": 2,
+            "lower_bound": 0.0,
+            "upper_bound": 1.0,
+            "enhanced_semantic_description": "Phytoplankton self-shading coefficient, creating density-dependent growth limitation (m\u00b3 g\u207b\u00b9 C)",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "m_Z",
+            "value": 0.1,
+            "units": "(g C m^-3)^-1 day^-1",
+            "description": "Zooplankton quadratic mortality rate (predation, cannibalism).",
+            "source": "literature",
+            "import_type": "PARAMETER",
+            "priority": 2,
+            "lower_bound": 0.0,
+            "upper_bound": 1.0,
+            "enhanced_semantic_description": "Zooplankton quadratic mortality rate (m\u00b3 g\u207b\u00b9 C day\u207b\u00b9)",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "gamma",
+            "value": 0.1,
+            "units": "day^-1",
+            "description": "Zooplankton excretion/respiration rate, contributing to nutrient regeneration.",
+            "source": "literature",
+            "import_type": "PARAMETER",
+            "priority": 2,
+            "lower_bound": 0.0,
+            "upper_bound": 1.0,
+            "enhanced_semantic_description": "Zooplankton excretion/respiration rate (day\u207b\u00b9)",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "epsilon",
+            "value": 0.2,
+            "units": "day^-1",
+            "description": "Remineralization rate of the detritus pool back to nutrients.",
+            "source": "literature",
+            "import_type": "PARAMETER",
+            "priority": 3,
+            "lower_bound": 0.0,
+            "upper_bound": 1.0,
+            "enhanced_semantic_description": "Remineralization rate of the detritus pool (day\u207b\u00b9)",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "w_D",
+            "value": 0.05,
+            "units": "day^-1",
+            "description": "Detritus sinking rate out of the mixed layer.",
+            "source": "model enhancement",
+            "import_type": "PARAMETER",
+            "priority": 3,
+            "lower_bound": 0.0,
+            "upper_bound": 1.0,
+            "enhanced_semantic_description": "Sinking rate of detritus out of the mixed layer (day\u207b\u00b9)",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "log_sigma_N",
+            "value": -2.3,
+            "units": "log(g C m^-3)",
+            "description": "Log of the standard deviation for the nutrient observation error.",
+            "source": "initial estimate",
+            "import_type": "PARAMETER",
+            "priority": 4,
+            "lower_bound": null,
+            "upper_bound": null,
+            "enhanced_semantic_description": "Log standard deviation of nutrient observation error",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "log_sigma_P",
+            "value": -2.3,
+            "units": "log(g C m^-3)",
+            "description": "Log of the standard deviation for the phytoplankton observation error.",
+            "source": "initial estimate",
+            "import_type": "PARAMETER",
+            "priority": 4,
+            "lower_bound": null,
+            "upper_bound": null,
+            "enhanced_semantic_description": "Log standard deviation of phytoplankton observation error",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "log_sigma_Z",
+            "value": -2.3,
+            "units": "log(g C m^-3)",
+            "description": "Log of the standard deviation for the zooplankton observation error.",
+            "source": "initial estimate",
+            "import_type": "PARAMETER",
+            "priority": 4,
+            "lower_bound": null,
+            "upper_bound": null,
+            "enhanced_semantic_description": "Log standard deviation of zooplankton observation error",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        }
+    ]
+}
+\end{lstlisting}
+\clearpage
+\section{Best Out-of-Sample Test Model}
+\label{sec:best_out_of_sample}
+This section presents the best performing out-of-sample test model (populations with \texttt{train\_test\_split} < 1.0).
+
+The best out-of-sample model is from Population 7 (COTS), with objective value 0.2858 and \texttt{train\_test\_split} = 0.700.
+
+\subsection{Model Intention}
+\begin{lstlisting}
+Assessment and rationale
+
+Update after compile error
+- The previous version introduced a new required data vector (food_dat) for bottom-up resource limitation. The current data pipeline does not provide this field, causing a runtime error when constructing TMB data.
+- To restore compatibility, the model now compiles without requiring food_dat. The food limitation modifier f_food defaults to 1.0 (neutral), so recruitment is unaffected by a missing food driver. The parameter K_food remains scaffolded for future use when a suitable driver is added.
+
+1) Model fit to data
+- Quantitative fit cannot be evaluated here because a residuals file was referenced but not provided with this code snapshot. The existing likelihood structure (lognormal for COTS; logit-normal for coral %) is reasonable and stabilised by sd floors. However, without residuals we cannot verify bias, autocorrelation, or variance mis-specification.
+- Please provide the residuals (or their file path) so we can examine patterns such as: outbreak peak mis-timing, under/over-prediction at low/high densities, or misfit during heatwaves.
+
+2) Alignment with PROJECT CONTEXT (NPZ: Nutrient–Phytoplankton–Zooplankton)
+- The current process model represents a COTS–coral system, not an NPZ compartment model. There is no explicit nutrient or plankton state.
+- Nonetheless, NPZ dynamics are ecologically linked to COTS via bottom-up control: phytoplankton/nutrient conditions influence larval survival and thus recruitment. The model currently lacks this pathway.
+
+3) Missing or oversimplified ecological processes
+- No bottom-up resource limitation on COTS recruitment (missing link from nutrient/phytoplankton availability to larval survival).
+- Temperature effects on recruitment are present (Gaussian), but food/energy constraints are absent, which can cause overprediction of recruitment during low-food periods and underprediction during high-food pulses.
+- Coral-side processes include space limitation, bleaching modifiers, and predation, which are reasonable for the coral dynamics component.
+
+4) Parameter review
+- Many parameters are broad and plausible. Some values labelled “literature” (e.g., T_opt_rec, T_opt_bleach, rF, rS) look reasonable as priors but do not by themselves imply structural changes.
+- No evidence provided here suggests the current fecundity taper or mortality forms are inconsistent with literature. Without residuals, we avoid restructuring these components.
+
+Chosen improvement
+
+Approach: Resource limitation mechanism (environmental modifier of recruitment)
+- Intended addition: a bottom-up resource limitation term on COTS recruitment using an exogenous food/nutrient proxy (food_dat), representing phytoplankton (chl-a) or a nutrient index.
+- Mathematical form (when a driver is available): Monod saturation f_food = food / (K_food + food), evaluated at t-1 to avoid data leakage.
+- Recruitment becomes: Rec_t = alpha_rec * [C_{t-1}^phi / (1 + C_{t-1}/C_sat_rec)] * f_Allee(C_{t-1}) * exp(-beta_rec (SST_{t-1}-T_opt_rec)^2) * f_food(food_{t-1}) + cotsimm_{t-1}.
+- Current implementation: since food_dat is not available in the data feed, f_food is set to 1.0 (neutral). This keeps the model structure intact and compilable, while leaving K_food as a parameter for future activation.
+
+Ecological justification
+- Empirical studies associate COTS outbreaks with nutrient enrichment and phytoplankton blooms, which enhance larval survival. This bottom-up linkage is consistent with NPZ theory and improves ecological realism without overcomplicating the existing model.
+- The Monod form captures diminishing returns at high resource levels and is identifiable with standardised drivers.
+
+Data and implementation notes
+- When an exogenous non-negative time series of larval food proxy (e.g., chl-a, nutrient index) becomes available, reintroduce food_dat as a DATA_VECTOR and compute f_food = food / (K_food + food) using only t-1 values to avoid data leakage.
+- Until then, f_food=1.0 ensures the model matches the current data structure and avoids runtime errors.
+- The change is tightly scoped: it affects only recruitment, keeps existing likelihoods intact, and avoids using current observed response values in prediction steps.
+
+Next steps
+- Provide the residuals to confirm whether this addition (once activated with a driver) reduces bias during recruitment-sensitive periods.
+- If residuals still show systematic errors (e.g., phase lag), consider additional timing structure (e.g., lagged food indices or cohort delays) as a subsequent, justified enhancement.
+\end{lstlisting}
+
+\subsection{Model Implementation}
+\begin{lstlisting}
+#include <TMB.hpp>
+
+// Smooth positive part to avoid hard cutoffs and preserve differentiability
+template<class Type>
+inline Type pospart(const Type& x) {
+  return (x + CppAD::sqrt(x * x + Type(1e-8))) / Type(2.0); // smooth ReLU, epsilon prevents NaN
+}
+
+// Smooth quadratic penalty for parameters outside [lo, hi]
+template<class Type>
+inline Type range_penalty(const Type& x, const Type& lo, const Type& hi, const Type& w) {
+  Type below = pospart(lo - x);    // >0 when x < lo
+  Type above = pospart(x - hi);    // >0 when x > hi
+  return w * (below * below + above * above); // quadratic penalty outside range
+}
+
+// Logit transform for % cover (0-100), kept strictly inside bounds
+template<class Type>
+inline Type logit_pct(const Type& x) {
+  Type a = Type(1e-6); // small constant to avoid 0/100
+  Type p = (x + a) / (Type(100.0) + Type(2.0) * a); // map [0,100] -> (0,1)
+  return log(p / (Type(1.0) - p));
+}
+
+// Clamp percentage to [0,100] smoothly using pospart
+template<class Type>
+inline Type clamp_pct(const Type& x) {
+  return Type(100.0) - pospart(Type(100.0) - pospart(x));
+}
+
+template<class Type>
+Type objective_function<Type>::operator() () {
+  // ------------------------
+  // DATA
+  // ------------------------
+  DATA_VECTOR(Year);        // calendar year (integer-valued, but numeric vector)
+  DATA_VECTOR(cots_dat);    // Adult COTS abundance (ind/m^2), strictly positive
+  DATA_VECTOR(fast_dat);    // Fast coral cover (Acropora spp.) in %, bounded [0,100]
+  DATA_VECTOR(slow_dat);    // Slow coral cover (Faviidae/Porites) in %, bounded [0,100]
+  DATA_VECTOR(sst_dat);     // Sea Surface Temperature (°C)
+  DATA_VECTOR(cotsimm_dat); // COTS larval immigration (ind/m^2/year)
+  // Note: food_dat intentionally omitted to compile with existing data pipeline.
+  // The food limitation term f_food defaults to 1 (neutral) unless a driver is provided upstream.
+
+  int T = Year.size(); // number of time steps (years)
+
+  // ------------------------
+  // PARAMETERS
+  // ------------------------
+  // Initial states
+  PARAMETER(C0);  // initial adult COTS (ind/m^2)
+  PARAMETER(J0);  // initial juvenile pool (ind/m^2)
+  PARAMETER(F0);  // initial fast coral cover (%)
+  PARAMETER(S0);  // initial slow coral cover (%)
+
+  // COTS recruitment scaling (juvenile inputs at unit modifiers)
+  PARAMETER(alpha_rec);   // Recruitment productivity scaling to juveniles (units: ind m^-2 yr^-1); sets outbreak potential; initial estimate
+  // Density-dependent fecundity exponent (dimensionless), >=1 increases superlinear recruitment
+  PARAMETER(phi);         // Fecundity density exponent (unitless); shapes recruitment curvature; literature/initial estimate
+  // Smooth Allee effect parameters
+  PARAMETER(k_allee);     // Allee logistic steepness (m^2 ind^-1); higher values -> sharper threshold; initial estimate
+  PARAMETER(C_allee);     // Allee threshold density (ind m^-2); density at which mating success rises; literature/initial estimate
+  // Stock–recruitment high-density taper (Beverton–Holt scale)
+  PARAMETER(C_sat_rec);   // Adult density scale for stock–recruitment taper (ind m^-2); proposed improvement
+  // Mortality terms (adult)
+  PARAMETER(muC);         // Baseline adult mortality (yr^-1); initial estimate
+  PARAMETER(gammaC);      // Density-dependent mortality (m^2 ind^-1 yr^-1); drives busts at high density; initial estimate
+  // Juvenile stage dynamics
+  PARAMETER(mJ);          // Annual maturation fraction from juvenile to adult (yr^-1, 0-1); initial estimate
+  PARAMETER(muJ);         // Juvenile proportional mortality (yr^-1, 0-1); initial estimate
+  // Temperature effect on recruitment (Gaussian peak)
+  PARAMETER(T_opt_rec);   // Optimal SST for recruitment (°C); literature
+  PARAMETER(beta_rec);    // Curvature of Gaussian temperature effect (°C^-2); larger -> narrower peak; initial estimate
+  // Environmental food limitation on recruitment (Monod half-saturation)
+  PARAMETER(K_food);      // Half-saturation constant for larval food limitation (units match would-be food driver); scaffolded; neutral if no driver
+  // Temperature effect on coral (bleaching loss above threshold)
+  PARAMETER(T_opt_bleach); // Onset SST for bleaching loss (°C); literature
+  PARAMETER(beta_bleach);  // Multiplier on growth under heat stress (unitless >=0); initial estimate
+  PARAMETER(m_bleachF);    // Additional fast coral proportional loss per °C above threshold (yr^-1 °C^-1); initial estimate
+  PARAMETER(m_bleachS);    // Additional slow coral proportional loss per °C above threshold (yr^-1 °C^-1); initial estimate
+  // Coral intrinsic regrowth and space competition
+  PARAMETER(rF);          // Fast coral intrinsic regrowth (yr^-1 on % scale); literature/initial
+  PARAMETER(rS);          // Slow coral intrinsic regrowth (yr^-1 on % scale); literature/initial
+  PARAMETER(K_tot);       // Total coral carrying capacity (% cover for fast+slow), <=100; literature/initial
+  // COTS functional response on corals (multi-prey Holling with Type II/III blend)
+  PARAMETER(aF);          // Attack/encounter parameter on fast coral (yr^-1 %^-etaF m^2 ind^-1 scaled); initial estimate
+  PARAMETER(aS);          // Attack/encounter parameter on slow coral (yr^-1 %^-etaS m^2 ind^-1 scaled); initial estimate
+  PARAMETER(etaF);        // Shape exponent for fast coral (>=1: Type-III-like at low cover); unitless; initial estimate
+  PARAMETER(etaS);        // Shape exponent for slow coral (>=1: Type-III-like at low cover); unitless; initial estimate
+  PARAMETER(h);           // Handling/satiation time scaler (yr %^-1); increases saturation with coral cover; initial estimate
+  PARAMETER(qF);          // Efficiency converting feeding to % cover loss for fast (unitless, 0-1); literature/initial
+  PARAMETER(qS);          // Efficiency converting feeding to % cover loss for slow (unitless, 0-1); literature/initial
+  // Observation error parameters
+  PARAMETER(sigma_cots);  // Lognormal sd for COTS (log-space); initial estimate
+  PARAMETER(sigma_fast);  // Normal sd for logit(% fast); initial estimate
+  PARAMETER(sigma_slow);  // Normal sd for logit(% slow); initial estimate
+
+  // ------------------------
+  // EQUATION DEFINITIONS (discrete-time, yearly)
+  //
+  // 1) Smooth Allee function f_Allee = 1 / (1 + exp(-k_allee*(C - C_allee)))
+  // 2) Temperature effect on COTS recruitment: f_Trec = exp( -beta_rec * (SST - T_opt_rec)^2 )
+  // 3) Juvenile recruitment (plus immigration forcing): Rec = alpha_rec * [C^phi / (1 + C/C_sat_rec)] * f_Allee * f_Trec * f_food + cotsimm
+  //       with f_food defaulting to 1.0 (neutral) unless an exogenous food driver is supplied upstream.
+  // 4) Adult mortality: Mort_adult = (muC + gammaC * C) * C
+  // 5) Juvenile maturation flux: Mat = mJ * J; juvenile mortality: Mort_juv = muJ * J
+  // 6) Adult update: C_t = C + Mat - Mort_adult
+  // 7) Juvenile update: J_t = J + Rec - Mat - Mort_juv
+  // 8) Coral growth (shared space K_tot): G_{fast,slow} = r * Coral * (1 - (F+S)/K_tot) * exp(-beta_bleach * pos(SST - T_opt_bleach))
+  // 9) Bleaching loss (additional): B_{fast} = m_bleachF * pos(SST - T_opt_bleach) * Fast; similarly for slow
+  // 10) Multi-prey functional response (Type II/III blend):
+  //     denom = 1 + h*(aF*F^etaF + aS*S^etaS)
+  //     Cons_fast = qF * (aF * F^etaF * C) / denom; Cons_slow = qS * (aS * S^etaS * C) / denom
+  // 11) Coral state updates:
+  //     F_t = F + G_fast - Cons_fast - B_fast
+  //     S_t = S + G_slow - Cons_slow - B_slow
+  // Notes:
+  // - All state updates use t-1 values (no data leakage of response variables).
+  // - Small constants avoid division-by-zero and ensure smoothness.
+  // ------------------------
+
+  // Negative log-likelihood accumulator
+  Type nll = 0.0;
+  const Type eps = Type(1e-8);      // small epsilon to stabilize divisions/logs
+  const Type sd_floor = Type(0.05); // minimum sd used in likelihood for stability
+
+  // Suggested biological ranges for smooth penalties (very broad, weakly enforced)
+  // Weight w_pen controls strength; kept small to avoid dominating data likelihood
+  const Type w_pen = Type(1e-3);
+
+  // Apply smooth range penalties to keep parameters within plausible bounds (do not hard-constrain)
+  nll += range_penalty(alpha_rec, Type(0.0),   Type(10.0),   w_pen);
+  nll += range_penalty(phi,       Type(1.0),   Type(3.0),    w_pen);
+  nll += range_penalty(k_allee,   Type(0.01),  Type(20.0),   w_pen);
+  nll += range_penalty(C_allee,   Type(0.0),   Type(5.0),    w_pen);
+  nll += range_penalty(C_sat_rec, Type(0.01),  Type(50.0),   w_pen);
+  nll += range_penalty(muC,       Type(0.0),   Type(3.0),    w_pen);
+  nll += range_penalty(gammaC,    Type(0.0),   Type(10.0),   w_pen);
+  nll += range_penalty(mJ,        Type(0.0),   Type(1.0),    w_pen);
+  nll += range_penalty(muJ,       Type(0.0),   Type(1.0),    w_pen);
+  nll += range_penalty(T_opt_rec, Type(20.0),  Type(34.0),   w_pen);
+  nll += range_penalty(beta_rec,  Type(0.0),   Type(2.0),    w_pen);
+  nll += range_penalty(K_food,    Type(0.001), Type(1000.0), w_pen);
+  nll += range_penalty(T_opt_bleach, Type(20.0), Type(34.0), w_pen);
+  nll += range_penalty(beta_bleach,  Type(0.0),  Type(5.0),  w_pen);
+  nll += range_penalty(m_bleachF,    Type(0.0),  Type(2.0),  w_pen);
+  nll += range_penalty(m_bleachS,    Type(0.0),  Type(2.0),  w_pen);
+  nll += range_penalty(rF,           Type(0.0),  Type(2.0),  w_pen);
+  nll += range_penalty(rS,           Type(0.0),  Type(2.0),  w_pen);
+  nll += range_penalty(K_tot,        Type(10.0), Type(100.0), w_pen);
+  nll += range_penalty(aF,           Type(0.0),  Type(1.0),  w_pen);
+  nll += range_penalty(aS,           Type(0.0),  Type(1.0),  w_pen);
+  nll += range_penalty(etaF,         Type(1.0),  Type(3.0),  w_pen);
+  nll += range_penalty(etaS,         Type(1.0),  Type(3.0),  w_pen);
+  nll += range_penalty(h,            Type(0.0),  Type(1.0),  w_pen);
+  nll += range_penalty(qF,           Type(0.0),  Type(1.0),  w_pen);
+  nll += range_penalty(qS,           Type(0.0),  Type(1.0),  w_pen);
+  nll += range_penalty(sigma_cots,   Type(0.01), Type(2.0),  w_pen);
+  nll += range_penalty(sigma_fast,   Type(0.01), Type(2.0),  w_pen);
+  nll += range_penalty(sigma_slow,   Type(0.01), Type(2.0),  w_pen);
+
+  // ------------------------
+  // STATE VECTORS
+  // ------------------------
+  vector<Type> cots_pred(T); // adult COTS
+  vector<Type> J_pred(T);    // juveniles
+  vector<Type> fast_pred(T); // fast coral %
+  vector<Type> slow_pred(T); // slow coral %
+
+  // Initialize states (clamp corals to [0,100], keep densities >=0)
+  cots_pred(0) = pospart(C0);
+  J_pred(0)    = pospart(J0);
+  fast_pred(0) = clamp_pct(F0);
+  slow_pred(0) = clamp_pct(S0);
+
+  // ------------------------
+  // FORWARD SIMULATION (use t-1 states to compute t)
+  // ------------------------
+  for (int t = 1; t < T; ++t) {
+    // Previous states
+    Type C = cots_pred(t - 1);
+    Type J = J_pred(t - 1);
+    Type F = fast_pred(t - 1);
+    Type S = slow_pred(t - 1);
+
+    // Exogenous drivers at t-1 to avoid leakage
+    Type sst = sst_dat(t - 1);
+    Type cotsimm = cotsimm_dat(t - 1);
+
+    // 1) Allee effect (smooth logistic)
+    Type f_Allee = Type(1.0) / (Type(1.0) + exp(-k_allee * (C - C_allee)));
+
+    // 2) Temperature effect on recruitment
+    Type dT = sst - T_opt_rec;
+    Type f_Trec = exp(-beta_rec * dT * dT);
+
+    // 2b) Food limitation on recruitment
+    // Default neutral modifier (no exogenous food driver available in current pipeline).
+    Type f_food = Type(1.0);
+
+    // 3) Recruitment with Beverton–Holt taper and environmental modifiers
+    Type stock = pow(C + Type(1e-8), phi) / (Type(1.0) + C / (C_sat_rec + Type(1e-8)));
+    Type Rec = alpha_rec * stock * f_Allee * f_Trec * f_food + cotsimm;
+
+    // 4) Adult mortality (baseline + density-dependent)
+    Type Mort_adult = (muC + gammaC * C) * C;
+
+    // 5) Juvenile flows
+    Type Mat = mJ * J;
+    Type Mort_juv = muJ * J;
+
+    // 6) Adult update
+    Type C_next = C + Mat - Mort_adult;
+    C_next = pospart(C_next);
+
+    // 7) Juvenile update
+    Type J_next = J + Rec - Mat - Mort_juv;
+    J_next = pospart(J_next);
+
+    // 8) Coral growth with shared space and bleaching growth reduction
+    Type heat = pospart(sst - T_opt_bleach);
+    Type growth_mod = exp(-beta_bleach * heat);
+    Type space_term = Type(1.0) - (F + S) / (K_tot + Type(1e-8));
+
+    Type G_fast = rF * F * space_term * growth_mod;
+    Type G_slow = rS * S * space_term * growth_mod;
+
+    // 9) Bleaching additional losses
+    Type B_fast = m_bleachF * heat * F;
+    Type B_slow = m_bleachS * heat * S;
+
+    // 10) Multi-prey functional response (Type II/III blend)
+    Type Fp = pospart(F);
+    Type Sp = pospart(S);
+    Type denom = Type(1.0) + h * (aF * pow(Fp + Type(1e-8), etaF) + aS * pow(Sp + Type(1e-8), etaS));
+    Type Cons_fast = qF * (aF * pow(Fp + Type(1e-8), etaF) * C) / denom;
+    Type Cons_slow = qS * (aS * pow(Sp + Type(1e-8), etaS) * C) / denom;
+
+    // 11) Coral updates and clamping to [0,100]
+    Type F_next = F + G_fast - Cons_fast - B_fast;
+    Type S_next = S + G_slow - Cons_slow - B_slow;
+    F_next = clamp_pct(F_next);
+    S_next = clamp_pct(S_next);
+
+    // Store next-step predictions
+    cots_pred(t) = C_next;
+    J_pred(t)    = J_next;
+    fast_pred(t) = F_next;
+    slow_pred(t) = S_next;
+  }
+
+  // ------------------------
+  // OBSERVATION MODEL
+  // ------------------------
+  // Smooth max with floor using pospart to keep AD-friendly
+  Type sd_cots = sigma_cots + pospart(sd_floor - sigma_cots);
+  Type sd_fast = sigma_fast + pospart(sd_floor - sigma_fast);
+  Type sd_slow = sigma_slow + pospart(sd_floor - sigma_slow);
+
+  for (int t = 0; t < T; ++t) {
+    // COTS: lognormal error with Jacobian
+    Type yC = cots_dat(t);
+    Type muCpred = cots_pred(t);
+    // Ensure positivity in log
+    Type logy = log(yC + Type(1e-8));
+    Type logmu = log(muCpred + Type(1e-8));
+    nll -= dnorm(logy, logmu, sd_cots, true);
+    nll += log(yC + Type(1e-8)); // Jacobian
+
+    // Coral fast: normal on logit(%)
+    Type yF = fast_dat(t);
+    Type muF = clamp_pct(fast_pred(t));
+    nll -= dnorm(logit_pct(yF), logit_pct(muF), sd_fast, true);
+
+    // Coral slow: normal on logit(%)
+    Type yS = slow_dat(t);
+    Type muS = clamp_pct(slow_pred(t));
+    nll -= dnorm(logit_pct(yS), logit_pct(muS), sd_slow, true);
+  }
+
+  // ------------------------
+  // REPORTING
+  // ------------------------
+  REPORT(cots_pred);
+  REPORT(J_pred);
+  REPORT(fast_pred);
+  REPORT(slow_pred);
+
+  ADREPORT(cots_pred);
+  ADREPORT(fast_pred);
+  ADREPORT(slow_pred);
+
+  return nll;
+}
+\end{lstlisting}
+
+\subsection{Model Parameters}
+\begin{lstlisting}
+{
+    "parameters": [
+        {
+            "parameter": "C0",
+            "value": 0.1,
+            "units": "ind m^-2",
+            "description": "Initial adult COTS density at first time step",
+            "source": "initial estimate",
+            "import_type": "PARAMETER",
+            "priority": 1,
+            "lower_bound": 0.0,
+            "upper_bound": 50.0,
+            "enhanced_semantic_description": "Initial condition for adult COTS density (ind/m^2) at t=0",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "J0",
+            "value": 0.1,
+            "units": "ind m^-2",
+            "description": "Initial juvenile COTS pool at first time step",
+            "source": "initial estimate",
+            "import_type": "PARAMETER",
+            "priority": 1,
+            "lower_bound": 0.0,
+            "upper_bound": 50.0,
+            "enhanced_semantic_description": "Initial condition for juvenile COTS pool (ind/m^2) at t=0",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "F0",
+            "value": 30.0,
+            "units": "% cover",
+            "description": "Initial fast coral (Acropora) cover at first time step",
+            "source": "initial estimate",
+            "import_type": "PARAMETER",
+            "priority": 1,
+            "lower_bound": 0.0,
+            "upper_bound": 100.0,
+            "enhanced_semantic_description": "Initial condition for fast coral cover (%) at t=0",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "S0",
+            "value": 30.0,
+            "units": "% cover",
+            "description": "Initial slow coral (Faviidae/Porites) cover at first time step",
+            "source": "initial estimate",
+            "import_type": "PARAMETER",
+            "priority": 1,
+            "lower_bound": 0.0,
+            "upper_bound": 100.0,
+            "enhanced_semantic_description": "Initial condition for slow coral cover (%) at t=0",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "alpha_rec",
+            "value": 1.0,
+            "units": "ind m^-2 yr^-1",
+            "description": "Recruitment productivity scaling controlling outbreak potential (to juvenile pool)",
+            "source": "initial estimate",
+            "import_type": "PARAMETER",
+            "priority": 1,
+            "lower_bound": 0.0,
+            "upper_bound": 10.0,
+            "enhanced_semantic_description": "Scaling factor for COTS larval/settler recruitment rate into the juvenile stage",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "phi",
+            "value": 1.5,
+            "units": "dimensionless",
+            "description": "Fecundity density exponent shaping recruitment curvature",
+            "source": "initial estimate",
+            "import_type": "PARAMETER",
+            "priority": 2,
+            "lower_bound": 1.0,
+            "upper_bound": 3.0,
+            "enhanced_semantic_description": "Exponent controlling density dependence in fecundity",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "k_allee",
+            "value": 2.0,
+            "units": "m^2 ind^-1",
+            "description": "Steepness of smooth Allee effect on recruitment",
+            "source": "initial estimate",
+            "import_type": "PARAMETER",
+            "priority": 2,
+            "lower_bound": 0.01,
+            "upper_bound": 20.0,
+            "enhanced_semantic_description": "Steepness parameter for smooth Allee effect threshold",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "C_allee",
+            "value": 0.2,
+            "units": "ind m^-2",
+            "description": "Allee density where mating success increases rapidly",
+            "source": "initial estimate",
+            "import_type": "PARAMETER",
+            "priority": 2,
+            "lower_bound": 0.0,
+            "upper_bound": 5.0,
+            "enhanced_semantic_description": "Adult COTS density threshold for mating success increase",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "C_sat_rec",
+            "value": 2.0,
+            "units": "ind m^-2",
+            "description": "Adult density scale for stock\u2013recruitment taper (Beverton\u2013Holt) preventing runaway recruitment at high density",
+            "source": "proposed structural improvement",
+            "import_type": "PARAMETER",
+            "priority": 2,
+            "lower_bound": 0.01,
+            "upper_bound": 50.0,
+            "enhanced_semantic_description": "Characteristic adult COTS density at which recruitment begins to saturate in the stock\u2013recruitment function",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "muC",
+            "value": 0.6,
+            "units": "yr^-1",
+            "description": "Baseline adult COTS mortality rate",
+            "source": "initial estimate",
+            "import_type": "PARAMETER",
+            "priority": 1,
+            "lower_bound": 0.0,
+            "upper_bound": 3.0,
+            "enhanced_semantic_description": "Baseline adult COTS mortality rate per year",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "gammaC",
+            "value": 0.5,
+            "units": "m^2 ind^-1 yr^-1",
+            "description": "Density-dependent mortality coefficient generating busts at high density",
+            "source": "initial estimate",
+            "import_type": "PARAMETER",
+            "priority": 1,
+            "lower_bound": 0.0,
+            "upper_bound": 10.0,
+            "enhanced_semantic_description": "Density-dependent mortality coefficient for adult COTS",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "mJ",
+            "value": 0.5,
+            "units": "yr^-1",
+            "description": "Annual maturation fraction of juvenile COTS into adults",
+            "source": "initial estimate",
+            "import_type": "PARAMETER",
+            "priority": 2,
+            "lower_bound": 0.0,
+            "upper_bound": 1.0,
+            "enhanced_semantic_description": "Proportion of juvenile pool maturing into adults each year (0-1)",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "muJ",
+            "value": 0.5,
+            "units": "yr^-1",
+            "description": "Annual proportional mortality of juvenile COTS",
+            "source": "initial estimate",
+            "import_type": "PARAMETER",
+            "priority": 2,
+            "lower_bound": 0.0,
+            "upper_bound": 1.0,
+            "enhanced_semantic_description": "Proportion of juvenile pool lost to mortality each year (0-1)",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "T_opt_rec",
+            "value": 26.5,
+            "units": "degC",
+            "description": "Optimal SST for COTS recruitment success",
+            "source": "literature",
+            "import_type": "PARAMETER",
+            "priority": 2,
+            "lower_bound": 20.0,
+            "upper_bound": 34.0,
+            "enhanced_semantic_description": "Optimal sea surface temperature for COTS recruitment (\u00b0C)",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "beta_rec",
+            "value": 0.2,
+            "units": "degC^-2",
+            "description": "Curvature of Gaussian temperature effect on recruitment",
+            "source": "initial estimate",
+            "import_type": "PARAMETER",
+            "priority": 2,
+            "lower_bound": 0.0,
+            "upper_bound": 2.0,
+            "enhanced_semantic_description": "Gaussian curvature controlling temperature recruitment peak",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "T_opt_bleach",
+            "value": 32.65,
+            "units": "degC",
+            "description": "SST threshold where bleaching stress starts impacting coral",
+            "source": "literature",
+            "import_type": "PARAMETER",
+            "priority": 2,
+            "lower_bound": 31.0,
+            "upper_bound": 34.3,
+            "enhanced_semantic_description": "SST threshold initiating coral bleaching stress (\u00b0C)",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "beta_bleach",
+            "value": 0.5,
+            "units": "dimensionless",
+            "description": "Multiplier controlling growth reduction under heat stress (higher means stronger reduction)",
+            "source": "initial estimate",
+            "import_type": "PARAMETER",
+            "priority": 3,
+            "lower_bound": 0.0,
+            "upper_bound": 5.0,
+            "enhanced_semantic_description": "Multiplier reducing coral growth under heat stress",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "m_bleachF",
+            "value": 0.2,
+            "units": "yr^-1 degC^-1",
+            "description": "Additional proportional loss of fast coral per \u00b0C above threshold",
+            "source": "initial estimate",
+            "import_type": "PARAMETER",
+            "priority": 2,
+            "lower_bound": 0.0,
+            "upper_bound": 2.0,
+            "enhanced_semantic_description": "Fast coral proportional loss rate per \u00b0C above bleaching threshold",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "m_bleachS",
+            "value": 0.1,
+            "units": "yr^-1 degC^-1",
+            "description": "Additional proportional loss of slow coral per \u00b0C above threshold",
+            "source": "initial estimate",
+            "import_type": "PARAMETER",
+            "priority": 2,
+            "lower_bound": 0.0,
+            "upper_bound": 2.0,
+            "enhanced_semantic_description": "Slow coral proportional loss rate per \u00b0C above bleaching threshold",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "rF",
+            "value": 0.5,
+            "units": "yr^-1",
+            "description": "Intrinsic regrowth rate of fast coral on % scale with shared space limits",
+            "source": "literature",
+            "import_type": "PARAMETER",
+            "priority": 2,
+            "lower_bound": 0.0,
+            "upper_bound": 2.0,
+            "enhanced_semantic_description": "Intrinsic regrowth rate of fast coral cover (% per year)",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "rS",
+            "value": 0.2,
+            "units": "yr^-1",
+            "description": "Intrinsic regrowth rate of slow coral on % scale with shared space limits",
+            "source": "literature",
+            "import_type": "PARAMETER",
+            "priority": 2,
+            "lower_bound": 0.0,
+            "upper_bound": 2.0,
+            "enhanced_semantic_description": "Intrinsic regrowth rate of slow coral cover (% per year)",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "K_tot",
+            "value": 70.0,
+            "units": "% cover",
+            "description": "Total carrying capacity for combined coral cover (fast + slow)",
+            "source": "literature",
+            "import_type": "PARAMETER",
+            "priority": 2,
+            "lower_bound": 10.0,
+            "upper_bound": 100.0,
+            "enhanced_semantic_description": "Maximum combined coral cover capacity (%)",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "aF",
+            "value": 0.02,
+            "units": "yr^-1 %^-etaF m^2 ind^-1 (scaled)",
+            "description": "Encounter/attack parameter on fast coral in the multi-prey response",
+            "source": "initial estimate",
+            "import_type": "PARAMETER",
+            "priority": 1,
+            "lower_bound": 0.0,
+            "upper_bound": 1.0,
+            "enhanced_semantic_description": "Attack rate parameter on fast coral by COTS",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "aS",
+            "value": 0.01,
+            "units": "yr^-1 %^-etaS m^2 ind^-1 (scaled)",
+            "description": "Encounter/attack parameter on slow coral in the multi-prey response",
+            "source": "initial estimate",
+            "import_type": "PARAMETER",
+            "priority": 1,
+            "lower_bound": 0.0,
+            "upper_bound": 1.0,
+            "enhanced_semantic_description": "Attack rate parameter on slow coral by COTS",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "etaF",
+            "value": 1.5,
+            "units": "dimensionless",
+            "description": "Shape exponent for fast coral (>=1 implies Type-III-like at low cover)",
+            "source": "initial estimate",
+            "import_type": "PARAMETER",
+            "priority": 3,
+            "lower_bound": 1.0,
+            "upper_bound": 3.0,
+            "enhanced_semantic_description": "Shape exponent for fast coral functional response (\u22651)",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "etaS",
+            "value": 1.2,
+            "units": "dimensionless",
+            "description": "Shape exponent for slow coral (>=1 implies Type-III-like at low cover)",
+            "source": "initial estimate",
+            "import_type": "PARAMETER",
+            "priority": 3,
+            "lower_bound": 1.0,
+            "upper_bound": 3.0,
+            "enhanced_semantic_description": "Shape exponent for slow coral functional response (\u22651)",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "h",
+            "value": 0.02,
+            "units": "yr %^-1",
+            "description": "Handling/satiation scaler controlling saturation in multi-prey response",
+            "source": "initial estimate",
+            "import_type": "PARAMETER",
+            "priority": 3,
+            "lower_bound": 0.0,
+            "upper_bound": 1.0,
+            "enhanced_semantic_description": "Handling time scaler controlling feeding saturation",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "qF",
+            "value": 0.8,
+            "units": "dimensionless (0-1)",
+            "description": "Efficiency converting fast coral feeding into % cover loss",
+            "source": "literature",
+            "import_type": "PARAMETER",
+            "priority": 1,
+            "lower_bound": 0.0,
+            "upper_bound": 1.0,
+            "enhanced_semantic_description": "Conversion efficiency of feeding to fast coral cover loss",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "qS",
+            "value": 0.5,
+            "units": "dimensionless (0-1)",
+            "description": "Efficiency converting slow coral feeding into % cover loss",
+            "source": "literature",
+            "import_type": "PARAMETER",
+            "priority": 1,
+            "lower_bound": 0.0,
+            "upper_bound": 1.0,
+            "enhanced_semantic_description": "Conversion efficiency of feeding to slow coral cover loss",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "sigma_cots",
+            "value": 0.5,
+            "units": "log-space SD",
+            "description": "Observation/process error SD for COTS (lognormal)",
+            "source": "initial estimate",
+            "import_type": "PARAMETER",
+            "priority": 1,
+            "lower_bound": 0.01,
+            "upper_bound": 2.0,
+            "enhanced_semantic_description": "Standard deviation of lognormal observation error for COTS",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "sigma_fast",
+            "value": 0.3,
+            "units": "logit-space SD",
+            "description": "Observation/process error SD for fast coral (% on logit scale)",
+            "source": "initial estimate",
+            "import_type": "PARAMETER",
+            "priority": 1,
+            "lower_bound": 0.01,
+            "upper_bound": 2.0,
+            "enhanced_semantic_description": "Standard deviation of logit-normal error for fast coral cover",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "sigma_slow",
+            "value": 0.3,
+            "units": "logit-space SD",
+            "description": "Observation/process error SD for slow coral (% on logit scale)",
+            "source": "initial estimate",
+            "import_type": "PARAMETER",
+            "priority": 1,
+            "lower_bound": 0.01,
+            "upper_bound": 2.0,
+            "enhanced_semantic_description": "Standard deviation of logit-normal error for slow coral cover",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        },
+        {
+            "parameter": "K_food",
+            "value": 1.0,
+            "units": "units of food_dat",
+            "description": "Half-saturation constant for larval food limitation on recruitment; controls resource limitation strength via f_food = food / (K_food + food)",
+            "source": "proposed structural improvement (bottom-up control via NPZ linkage)",
+            "import_type": "PARAMETER",
+            "priority": 2,
+            "lower_bound": 0.001,
+            "upper_bound": 100.0,
+            "enhanced_semantic_description": "Half-saturation parameter in a Monod function mapping an exogenous phytoplankton/nutrient proxy (food_dat) to larval survival during recruitment",
+            "updated_from_literature": false,
+            "updated_fields_from_literature": []
+        }
+    ]
+}
+\end{lstlisting}
+\clearpage
