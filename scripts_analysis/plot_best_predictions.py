@@ -26,7 +26,9 @@ def find_best_individuals_by_llm():
             # Get the population directory and llm choice
             pop_dir = os.path.dirname(metadata_path)
             llm_choice = metadata.get('llm_choice')
-            
+            train_test_split = metadata.get('train_test_split')
+            if train_test_split < 1.0:
+                continue
             if not llm_choice:
                 print(f"Warning: No llm_choice found in {metadata_path}")
                 continue
@@ -139,7 +141,7 @@ def calculate_nmse(observed, predicted):
 
 def create_comparison_plots(best_by_llm):
     """
-    Create three subplots comparing predictions from each LLM.
+    Create 2x2 grid with three subplots comparing predictions from each LLM and legend in 4th position.
     """
     # LLM name mapping
     llm_name_map = {
@@ -181,27 +183,31 @@ def create_comparison_plots(best_by_llm):
     print("\nNMSE values for each model:")
     print("-" * 50)
     
-        # Define colorblind-friendly color palette
+    # Define colorblind-friendly color palette
     color_cycle = [
-        '#CC79A7',  # Light pink
+        '#D55E00',  # Vermillion/Red-orange
         '#0173B2',  # Blue
         '#DE8F05',  # Orange
-        '#CC78BC',  # Pink
+        '#9467BD',  # Purple
         '#56B4E9',  # Light blue
         '#029E73',  # Green
         '#009E73',  # Teal
-        '#CC79A7'   # Light pink
+        '#E69F00'   # Yellow-orange
     ]
 
-    # Set figure size and DPI for better quality
-    plt.figure(figsize=(12,16), dpi=300)
-
-    # Create subplots with more space between them
-    fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(12,16))
-    fig.subplots_adjust(hspace=0.4)
-
+    # Create 2x2 subplot grid
+    fig, axes = plt.subplots(2, 2, figsize=(16, 12), dpi=300)
+    ax1 = axes[0, 0]  # COTS (top left)
+    ax2 = axes[0, 1]  # Fast coral (top right)
+    ax3 = axes[1, 0]  # Slow coral (bottom left)
+    ax_legend = axes[1, 1]  # Legend (bottom right)
     
-
+    # Hide the legend subplot axes
+    ax_legend.axis('off')
+    
+    # Store NMSE values for text annotations
+    nmse_data = {'cots': {}, 'fast': {}, 'slow': {}}
+    
     for llm_choice, (path, objective) in all_models:
         # Map LLM name if it exists in mapping
         display_name = llm_name_map.get(llm_choice, llm_choice)
@@ -233,31 +239,31 @@ def create_comparison_plots(best_by_llm):
             print(f" Slow Coral NMSE: {slow_nmse:.4f}")
             print(f" Overall Mean NMSE: {mean_nmse:.4f}")
         
-        # Create labels with variable-specific NMSE values
-        cots_label = f"{display_name} (NMSE: {cots_nmse:.4f})"
-        fast_label = f"{display_name} (NMSE: {fast_nmse:.4f})"
-        slow_label = f"{display_name} (NMSE: {slow_nmse:.4f})"
+        # Store NMSE values
+        nmse_data['cots'][display_name] = cots_nmse
+        nmse_data['fast'][display_name] = fast_nmse
+        nmse_data['slow'][display_name] = slow_nmse
         
         # Get color from colorblind-friendly palette
         color = color_cycle[len(ax1.lines) % len(color_cycle)]
         
-        # COTS predictions
+        # COTS predictions (no NMSE in label)
         ax1.plot(years, plot_data['cots_pred']['Modeled'],
-                label=cots_label, color=color, alpha=0.8, linewidth=2.5)
+                label=display_name, color=color, alpha=0.8, linewidth=2.5)
         if llm_choice == list(best_by_llm.keys())[0]:  # Only plot observed once
             ax1.scatter(years, historical_data['cots_pred'],
                     label='Observed', color='#333333', s=80, alpha=0.8, zorder=5)
         
-        # Fast-growing coral predictions
+        # Fast-growing coral predictions (no NMSE in label)
         ax2.plot(years, plot_data['fast_pred']['Modeled'],
-                label=fast_label, color=color, alpha=0.8, linewidth=2.5)
+                label=display_name, color=color, alpha=0.8, linewidth=2.5)
         if llm_choice == list(best_by_llm.keys())[0]:
             ax2.scatter(years, historical_data['fast_pred'],
                     label='Observed', color='#333333', s=80, alpha=0.8, zorder=5)
         
-        # Slow-growing coral predictions
+        # Slow-growing coral predictions (no NMSE in label)
         ax3.plot(years, plot_data['slow_pred']['Modeled'],
-                label=slow_label, color=color, alpha=0.8, linewidth=2.5)
+                label=display_name, color=color, alpha=0.8, linewidth=2.5)
         if llm_choice == list(best_by_llm.keys())[0]:
             ax3.scatter(years, historical_data['slow_pred'],
                     label='Observed', color='#333333', s=80, alpha=0.8, zorder=5)
@@ -268,86 +274,84 @@ def create_comparison_plots(best_by_llm):
     slow_coral_icon = mpimg.imread('Figures/slow_coral.drawio.png')
     
     # Customize plots with larger, more legible elements
-    for ax, title, ylabel, icon in zip([ax1, ax2, ax3],
+    for ax, title, ylabel, icon, nmse_dict in zip([ax1, ax2, ax3],
                                 ['Crown-of-Thorns Starfish Abundance',
                                 'Fast-Growing Coral Cover',
                                 'Slow-Growing Coral Cover'],
-                                ['Abundance (individuals/m2)', 'Cover (%)', 'Cover (%)'],
-                                [cots_icon, fast_coral_icon, slow_coral_icon]):
+                                ['Abundance (individuals/m²)', 'Cover (%)', 'Cover (%)'],
+                                [cots_icon, fast_coral_icon, slow_coral_icon],
+                                [nmse_data['cots'], nmse_data['fast'], nmse_data['slow']]):
         
         # Set titles and labels with larger font sizes
-        ax.set_title(title, fontsize=16, fontweight='bold', pad=20)
-        ax.set_ylabel(ylabel, fontsize=14, fontweight='bold')
+        ax.set_title(title, fontsize=14, fontweight='bold', pad=15)
+        ax.set_ylabel(ylabel, fontsize=12, fontweight='bold')
+        ax.set_xlabel('Year', fontsize=12, fontweight='bold')
         
-        # Add icon to top right corner (smaller size)
-        imagebox = OffsetImage(icon, zoom=0.10)  # Reduced from 0.15 to 0.10
+        # Add icon to top right corner
+        imagebox = OffsetImage(icon, zoom=0.08)
         ab = AnnotationBbox(imagebox, (0.95, 0.95),
                            xycoords='axes fraction',
                            frameon=False,
                            box_alignment=(1, 1))
         ax.add_artist(ab)
         
-        # Customize legend
-        ax.legend(fontsize=12, frameon=False, fancybox=False, shadow=False, 
-                framealpha=0.9, loc='best')
+        # Add NMSE text annotations in upper left corner
+        nmse_text_lines = []
+        # Sort by model name to maintain consistent order
+        sorted_models = sorted(nmse_dict.items(), key=lambda x: (x[0] != 'Observed', x[0] != 'human expert', x[0]))
+        for model_name, nmse_val in sorted_models:
+            nmse_text_lines.append(f"{model_name}: {nmse_val:.4f}")
+        
+        nmse_text = "NMSE:\n" + "\n".join(nmse_text_lines)
+        ax.text(0.02, 0.98, nmse_text, transform=ax.transAxes,
+                fontsize=9, verticalalignment='top',
+                bbox=dict(boxstyle='round', facecolor='white', alpha=0.8, edgecolor='gray'))
         
         # Customize tick labels
-        ax.tick_params(axis='both', which='major', labelsize=12)
-        ax.tick_params(axis='both', which='minor', labelsize=10)
+        ax.tick_params(axis='both', which='major', labelsize=11)
+        ax.tick_params(axis='both', which='minor', labelsize=9)
         
         # Set spine colors and width
         for spine in ax.spines.values():
             spine.set_linewidth(1.2)
             spine.set_color('#333333')
-
-    # Set x-axis label only for bottom subplot
-    ax3.set_xlabel('Year', fontsize=14, fontweight='bold')
-        # Reorder legend: Observed, Human Expert, then everything else alphabetically
-    for ax in [ax1, ax2, ax3]:
-        handles, labels = ax.get_legend_handles_labels()
-        
-        # Separate items into categories
-        observed_items = []
-        human_expert_items = []
-        other_items = []
-        
-        for i, label in enumerate(labels):
-            if 'Observed' in label:
-                observed_items.append((handles[i], labels[i]))
-            elif 'human expert' in label:
-                human_expert_items.append((handles[i], labels[i]))
-            else:
-                other_items.append((handles[i], labels[i]))
-        
-        # Sort other items alphabetically by label
-        other_items.sort(key=lambda x: x[1])
-        
-        # Combine in desired order
-        ordered_handles = []
-        ordered_labels = []
-        
-        # Add Observed first
-        for handle, label in observed_items:
-            ordered_handles.append(handle)
-            ordered_labels.append(label)
-        
-        # Add Human Expert second  
-        for handle, label in human_expert_items:
-            ordered_handles.append(handle)
-            ordered_labels.append(label)
-        
-        # Add everything else alphabetically
-        for handle, label in other_items:
-            ordered_handles.append(handle)
-            ordered_labels.append(label)
-        
-        # Create new legend
-        ax.legend(ordered_handles, ordered_labels, fontsize=12, frameon=False,
-          fancybox=False, shadow=False, framealpha=0.9, 
-          bbox_to_anchor=(1.05, 1), loc='upper left')
+    
+    # Create shared legend in the 4th subplot
+    # Get handles and labels from the first subplot (they're the same for all)
+    handles, labels = ax1.get_legend_handles_labels()
+    
+    # Reorder legend: Observed, Human Expert, then everything else alphabetically
+    observed_items = []
+    human_expert_items = []
+    other_items = []
+    
+    for i, label in enumerate(labels):
+        if 'Observed' in label:
+            observed_items.append((handles[i], labels[i]))
+        elif 'human expert' in label:
+            human_expert_items.append((handles[i], labels[i]))
+        else:
+            other_items.append((handles[i], labels[i]))
+    
+    # Sort other items alphabetically by label
+    other_items.sort(key=lambda x: x[1])
+    
+    # Combine in desired order
+    ordered_handles = []
+    ordered_labels = []
+    
+    for handle, label in observed_items + human_expert_items + other_items:
+        ordered_handles.append(handle)
+        ordered_labels.append(label)
+    
+    # Add legend to the 4th subplot
+    ax_legend.legend(ordered_handles, ordered_labels, 
+                    fontsize=14, frameon=True, fancybox=False, 
+                    shadow=False, framealpha=0.9, 
+                    loc='center', ncol=1)
+    
     # Adjust layout and save
     plt.tight_layout()
-    plt.subplots_adjust(hspace=0.35)  # Add more space between subplots
     os.makedirs('Figures', exist_ok=True)
     plt.savefig('Figures/llm_predictions_comparison.png', dpi=300, bbox_inches='tight')
     plt.savefig('Figures/llm_predictions_comparison.svg', dpi=300, bbox_inches='tight')
@@ -377,5 +381,3 @@ def main():
 
 if __name__ == '__main__':
     exit(main())
-
-

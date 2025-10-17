@@ -292,10 +292,15 @@ def main():
             raise ValueError(f"Population {resume_population} does not exist.")
         population_metadata = load_metadata(os.path.join(population_dir, 'population_metadata.json'))
 
-        # When resuming, start from the last generation number and allow n_generations more iterations
+        # When resuming, n_generations is the TARGET TOTAL, calculate how many more are needed
         last_generation = len(population_metadata['generations'])
-        n_generations = last_generation + n_generations  # Extend the total generations
         start_generation = last_generation
+        remaining_generations = n_generations - last_generation
+        print(f"Resuming from generation {last_generation}. Target: {n_generations} generations. Running {remaining_generations} more generations.")
+        
+        if remaining_generations <= 0:
+            print(f"Target of {n_generations} generations already reached or exceeded (currently at {last_generation}). No more generations to run.")
+            return
 
         # Convert any numpy int64 objective values to float
         current_best_performers = []

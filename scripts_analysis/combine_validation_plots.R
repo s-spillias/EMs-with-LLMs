@@ -135,6 +135,7 @@ create_combined_validation_plot <- function(validation_file, output_dir) {
   
   # Save the combined plot
   plot_filename <- file.path(output_dir, "combined_validation")
+  print(plot_filename)
   ggsave(paste0(plot_filename, ".png"), plot = combined_plot, width = 12, height = 16, dpi = 300)
   ggsave(paste0(plot_filename, ".svg"), plot = combined_plot, width = 12, height = 16, dpi = 300)
   ggsave(paste0(plot_filename, ".pdf"), plot = combined_plot, width = 12, height = 16)

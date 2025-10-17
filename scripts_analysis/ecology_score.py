@@ -1,6 +1,7 @@
 import argparse
 import json
 from pathlib import Path
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from scripts_analysis.evaluate_ecological_characteristics import evaluate_individual
 
 def load_metadata(file_path):
@@ -63,7 +64,81 @@ def parse_args():
         action="store_true",
         help="Overwrite existing scores.json for individuals (recompute instead of skipping)."
     )
+    parser.add_argument(
+        "-j", "--jobs",
+        type=int,
+        default=1,
+        help="Number of parallel processes for processing populations (default: 1 for sequential)."
+    )
     return parser.parse_args()
+
+def process_population(population_dir, overwrite):
+    """
+    Process a single population directory.
+    Returns a dict with stats: models_count, success_count, error_count.
+    """
+    stats = {'models': 0, 'success': 0, 'errors': 0}
+    
+    print(f"\n=== Population: {population_dir.name} (NPZ) ===")
+    metadata_path = population_dir / 'population_metadata.json'
+    
+    try:
+        metadata = load_metadata(str(metadata_path))
+    except Exception as e:
+        print(f"Error loading metadata for {population_dir.name}: {e}")
+        stats['errors'] += 1
+        return stats
+
+    try:
+        models = get_all_models(metadata)
+    except Exception as e:
+        print(f"Error extracting models for {population_dir.name}: {e}")
+        stats['errors'] += 1
+        return stats
+
+    if not models:
+        print("No models found to evaluate in this population.")
+        return stats
+
+    print(f"Found {len(models)} models to evaluate in {population_dir.name}")
+    stats['models'] = len(models)
+
+    # Safely extract the list of best performers
+    try:
+        best_performers = [
+            p.get('individual')
+            for p in metadata.get('current_best_performers', [])
+            if isinstance(p, dict) and isinstance(p.get('individual'), str)
+        ]
+    except Exception:
+        best_performers = []
+
+    # Evaluate each model
+    for i, model_id in enumerate(sorted(models), 1):
+        print(f"\nEvaluating model {i}/{len(models)}: {model_id}")
+        try:
+            # Decide model path based on whether it's a best performer (top-level) or culled
+            if model_id in best_performers:
+                model_path = population_dir / model_id
+            else:
+                model_path = population_dir / 'CULLED' / model_id
+
+            result = evaluate_individual(str(model_path), overwrite=overwrite)
+            if result is None:
+                print(f"Error evaluating {model_id}: evaluation returned None")
+                stats['errors'] += 1
+            else:
+                if overwrite:
+                    print(f"Overwrote and evaluated {model_id}")
+                else:
+                    print(f"Successfully evaluated {model_id}")
+                stats['success'] += 1
+        except Exception as e:
+            print(f"Error evaluating {model_id}: {str(e)}")
+            stats['errors'] += 1
+    
+    return stats
+
 
 def main():
     args = parse_args()
@@ -85,68 +160,44 @@ def main():
     # Filter to NPZ populations
     npz_population_dirs = [p for p in all_population_dirs if detect_model_type(p) == "NPZ"]
     print(f"Discovered {len(all_population_dirs)} populations total; processing {len(npz_population_dirs)} NPZ populations.")
+    
+    if args.jobs > 1:
+        print(f"Using {args.jobs} parallel processes for population processing.")
+    else:
+        print("Using sequential processing (1 process).")
 
     total_models = 0
     total_success = 0
     total_errors = 0
 
-    for pop_idx, population_dir in enumerate(npz_population_dirs, start=1):
-        print(f"\n=== [{pop_idx}/{len(npz_population_dirs)}] Population: {population_dir.name} (NPZ) ===")
-        metadata_path = population_dir / 'population_metadata.json'
-        try:
-            metadata = load_metadata(str(metadata_path))
-        except Exception as e:
-            print(f"Error loading metadata for {population_dir.name}: {e}")
-            total_errors += 1
-            continue
-
-        try:
-            models = get_all_models(metadata)
-        except Exception as e:
-            print(f"Error extracting models for {population_dir.name}: {e}")
-            total_errors += 1
-            continue
-
-        if not models:
-            print("No models found to evaluate in this population.")
-            continue
-
-        print(f"Found {len(models)} models to evaluate in {population_dir.name}")
-        total_models += len(models)
-
-        # Safely extract the list of best performers
-        try:
-            best_performers = [
-                p.get('individual')
-                for p in metadata.get('current_best_performers', [])
-                if isinstance(p, dict) and isinstance(p.get('individual'), str)
-            ]
-        except Exception:
-            best_performers = []
-
-        # Evaluate each model
-        for i, model_id in enumerate(sorted(models), 1):
-            print(f"\nEvaluating model {i}/{len(models)}: {model_id}")
-            try:
-                # Decide model path based on whether it's a best performer (top-level) or culled
-                if model_id in best_performers:
-                    model_path = population_dir / model_id
-                else:
-                    model_path = population_dir / 'CULLED' / model_id
-
-                result = evaluate_individual(str(model_path), overwrite=args.overwrite)
-                if result is None:
-                    print(f"Error evaluating {model_id}: evaluation returned None")
+    # Process populations in parallel or sequentially based on args.jobs
+    if args.jobs > 1:
+        with ProcessPoolExecutor(max_workers=args.jobs) as executor:
+            # Submit all populations for processing
+            future_to_pop = {
+                executor.submit(process_population, pop_dir, args.overwrite): pop_dir
+                for pop_dir in npz_population_dirs
+            }
+            
+            # Collect results as they complete
+            for future in as_completed(future_to_pop):
+                pop_dir = future_to_pop[future]
+                try:
+                    stats = future.result()
+                    total_models += stats['models']
+                    total_success += stats['success']
+                    total_errors += stats['errors']
+                except Exception as e:
+                    print(f"Error processing population {pop_dir.name}: {e}")
                     total_errors += 1
-                else:
-                    if args.overwrite:
-                        print(f"Overwrote and evaluated {model_id}")
-                    else:
-                        print(f"Successfully evaluated {model_id}")
-                    total_success += 1
-            except Exception as e:
-                print(f"Error evaluating {model_id}: {str(e)}")
-                total_errors += 1
+    else:
+        # Sequential processing
+        for pop_idx, population_dir in enumerate(npz_population_dirs, start=1):
+            print(f"\n=== [{pop_idx}/{len(npz_population_dirs)}] Processing population ===")
+            stats = process_population(population_dir, args.overwrite)
+            total_models += stats['models']
+            total_success += stats['success']
+            total_errors += stats['errors']
 
     print("\n=== Summary ===")
     print(f"NPZ populations processed: {len(npz_population_dirs)}")

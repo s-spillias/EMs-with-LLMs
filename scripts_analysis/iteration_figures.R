@@ -149,25 +149,30 @@ create_iteration_figures <- function(population_dirs) {
   # Save population plot
   ggsave("Figures/iterations_by_population.png", p1, width = 10, height = 6)
   
-  # Create faceted boxplot by LLM choice and topic
-  p2 <- ggplot(all_results, aes(x = llm_choice, y = total_iterations)) +
-    geom_boxplot(outlier.shape = NA) +
-    geom_jitter(width = 0.2, alpha = 0.6, size = 2) +
-    facet_wrap(~topic) +
-    theme_minimal() +
-    theme(
-      axis.text.x = element_text(angle = 45, hjust = 1),
-      plot.title = element_text(hjust = 0.5),
-      strip.text = element_text(size = 10)
-    ) +
-    labs(
-      x = "LLM Choice",
-      y = "Number of Iterations"
-    ) +
-    scale_y_continuous(breaks = seq(0, max(all_results$total_iterations), by = 1))
-  
-  # Save LLM choice plot
-  ggsave("Figures/iterations_by_llm.png", p2, width = 10, height = 6)
+# Simplify LLM name to just the identifier after the last slash
+all_results <- all_results %>%
+  mutate(llm_choice = gsub(".*/", "", llm_choice))
+
+# Create faceted boxplot by LLM choice and topic (NPZ vs COTS)
+p2 <- ggplot(all_results, aes(x = llm_choice, y = total_iterations, color = topic)) +
+  geom_boxplot(outlier.shape = NA) +
+  geom_jitter(width = 0.2, alpha = 0.6, size = 2) +
+  facet_wrap(~topic) +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    plot.title = element_text(hjust = 0.5),
+    strip.text = element_text(size = 10)
+  ) +
+  labs(
+    x = "LLM Identifier",
+    y = "Number of Iterations",
+    color = "Population Category"
+  ) +
+  scale_y_continuous(breaks = seq(0, max(all_results$total_iterations), by = 1))
+
+# Save the updated plot
+ggsave("Figures/iterations_by_llm.png", p2, width = 10, height = 6)
   
   # Calculate and print summary statistics by LLM and topic
   llm_stats <- all_results %>%

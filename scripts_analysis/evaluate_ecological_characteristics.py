@@ -44,17 +44,20 @@ ECOLOGICAL_CHARACTERISTICS = {
         "weight": 0.25
     },
 
-    # -----------------------------
-    # dZ/dt (Zooplankton equation): 2 subcomponents → each = 0.5
-    # -----------------------------
+        # dZ/dt (Zooplankton equation): 3 subcomponents → each = 1/3 ≈ 0.333
     "zooplankton_equation_growth": {
         "description": "In dZ/dt: Growth through grazing on phytoplankton (with assimilation efficiency).",
-        "weight": 0.5
+        "weight": 0.333
     },
     "zooplankton_equation_mortality": {
         "description": "In dZ/dt: Zooplankton mortality (linear or density-dependent).",
-        "weight": 0.5
+        "weight": 0.333
+    },
+    "zooplankton_equation_mixing": {
+        "description": "In dZ/dt: Physical loss via mixing/entrainment.",
+        "weight": 0.333
     }
+
 }
 
 

@@ -13,6 +13,12 @@ library(ggbreak)
 # --- Configuration ---
 population_roots <- c("POPULATIONS", "Manuscript")
 
+# --- Helper: shorten LLM names (everything after the last '/')
+short_llm <- function(x) {
+  ifelse(grepl("/", x), sub(".*/", "", x), x)
+}
+
+
 # --- Utilities (same as before) ---
 safe_fromJSON <- function(path) tryCatch(fromJSON(path), error = function(e) NULL)
 read_model_report <- function(individual_dir) {
@@ -147,26 +153,86 @@ add_facet_icons <- function(p, plot_df, icons) {
 }
 
 # --- Main ---
+figures_dir <- "Figures"
 npz_pops <- find_npz_populations()
 if (length(npz_pops) == 0) stop("No NPZ populations found.")
-
+# --- Collect modeled series, training, and per-pop best objective ---
 all_modeled <- list()
 ground_truth <- NULL
 training_all <- list()
+llm_map <- list()
+best_candidates <- list() # NEW: track (Population, individual, LLM_short, objective_value) for global best
+
 for (p in npz_pops) {
   best_dir <- get_best_individual_dir(p$pop_dir, p$meta)
   if (is.null(best_dir)) next
+
   ts <- extract_timeseries_second_last(best_dir)
   if (is.null(ts)) next
+
+  # Use short LLM name for plotting/legend
+  llm_name <- if (!is.null(p$meta$llm_choice)) p$meta$llm_choice else "Unknown"
+  llm_short <- short_llm(llm_name)
+  llm_map[[p$pop_id]] <- llm_short
+
+  # Modeled series for the best individual in this population
   modeled_df <- ts %>%
-    select(Time, Variable, Value = Modeled) %>%
-    mutate(Population = p$pop_id)
+    dplyr::select(Time, Variable, Value = Modeled) %>%
+    dplyr::mutate(Population = p$pop_id, LLM = llm_short)
   all_modeled[[length(all_modeled) + 1]] <- modeled_df
+
+  # Keep first ground truth
   if (is.null(ground_truth)) {
-    ground_truth <- ts %>% select(Time, Variable, Value = Observed)
+    ground_truth <- ts %>% dplyr::select(Time, Variable, Value = Observed)
   }
+
+  # Training trajectory (use short LLM name)
   tr <- get_training_series(p$meta)
-  if (!is.null(tr)) training_all[[length(training_all) + 1]] <- tr %>% mutate(Population = p$pop_id)
+  if (!is.null(tr)) {
+    training_all[[length(training_all) + 1]] <- tr %>% dplyr::mutate(Population = p$pop_id, LLM = llm_short)
+  }
+
+  # NEW: capture objective value of this best individual
+  cur_obj <- get_objective_value(best_dir)
+  best_candidates[[length(best_candidates) + 1]] <- data.frame(
+    Population = p$pop_id,
+    individual = basename(best_dir),
+    LLM = llm_short,
+    objective_value = cur_obj,
+    stringsAsFactors = FALSE
+  )
+}
+
+modeled_all_df <- dplyr::bind_rows(all_modeled)
+
+# Replicate mapping (unchanged)
+rep_map <- setNames(
+  paste0("Replicate ", seq_along(unique(modeled_all_df$Population))),
+  sort(unique(modeled_all_df$Population))
+)
+modeled_all_df <- modeled_all_df %>% dplyr::mutate(Replicate = rep_map[Population])
+
+# Ground truth row additions (unchanged)
+ground_truth <- ground_truth %>% dplyr::mutate(LLM = "Ground Truth", Replicate = "Ground Truth", Population = "Ground Truth")
+plot_df <- dplyr::bind_rows(modeled_all_df, ground_truth)
+
+# --- Determine global best by objective value across populations ---
+best_candidates_df <- dplyr::bind_rows(best_candidates)
+best_candidates_df <- best_candidates_df %>% dplyr::filter(is.finite(objective_value))
+if (nrow(best_candidates_df) > 0) {
+  best_global <- best_candidates_df %>%
+    dplyr::arrange(objective_value) %>%
+    dplyr::slice(1)
+  best_pop_id <- best_global$Population
+  # Console identification
+  cat(sprintf(
+    "\nBest NPZ model by objective value:\n  Population: %s\n  Individual: %s\n  LLM: %s\n  Objective: %.6f\n\n",
+    best_global$Population, best_global$individual, best_global$LLM, best_global$objective_value
+  ))
+} else {
+  best_global <- NULL
+  best_pop_id <- NA_character_
+  cat("\nBest NPZ model by objective value: not found (no finite objective values).\n\n")
 }
 
 modeled_all_df <- bind_rows(all_modeled)
@@ -174,64 +240,291 @@ rep_map <- setNames(
   paste0("Replicate ", seq_along(unique(modeled_all_df$Population))),
   sort(unique(modeled_all_df$Population))
 )
-modeled_all_df <- modeled_all_df %>% mutate(Replicate = rep_map[Population], Series = Replicate)
-ground_truth <- ground_truth %>% mutate(Series = "Ground Truth")
+modeled_all_df <- modeled_all_df %>% mutate(Replicate = rep_map[Population])
+ground_truth <- ground_truth %>% mutate(LLM = "Ground Truth", Replicate = "Ground Truth", Population = "Ground Truth")
 plot_df <- bind_rows(modeled_all_df, ground_truth)
 
 # --- Timeseries plot ---
-n_rep <- length(unique(modeled_all_df$Replicate))
-rep_cols <- setNames(hue_pal()(n_rep), sort(unique(modeled_all_df$Replicate)))
-p_timeseries <- ggplot(plot_df, aes(x = Time, y = Value, color = Series, linetype = Series)) +
-  geom_line(linewidth = 1) +
+## --- Colors/legend for short LLM names ---
+llm_names <- unique(modeled_all_df$LLM) # these are short now
+n_llm <- length(llm_names)
+llm_cols <- setNames(scales::hue_pal()(n_llm), sort(llm_names))
+
+# Timeseries plot (base)
+p_timeseries <- ggplot(
+  plot_df,
+  aes(
+    x = Time,
+    y = Value,
+    color = LLM,
+    group = Replicate,
+    linewidth = ifelse(Replicate == "Ground Truth", 3, 0.8),
+    linetype = ifelse(Replicate == "Ground Truth", "solid", "dashed"),
+    alpha = ifelse(Replicate == "Ground Truth", 1.0, 0.5)
+  )
+) +
+  geom_line() +
   facet_wrap(~Variable, scales = "free_y", ncol = 1) +
-  scale_color_manual(values = c("Ground Truth" = "#0072B2", rep_cols)) +
-  scale_linetype_manual(values = c("Ground Truth" = "solid", setNames(rep("dashed", n_rep), sort(unique(modeled_all_df$Replicate))))) +
-  labs(x = "Time (days)", y = "Concentration (g C m^-3)") +
+  scale_color_manual(values = c("Ground Truth" = "black", llm_cols)) +
+  scale_linewidth_identity() +
+  scale_linetype_identity() +
+  scale_alpha_identity() +
+  labs(x = "Time (days)", y = "Concentration (g C m^-3)", color = "Model") +
   theme_classic() +
-  theme(legend.position = "bottom")
+  theme(legend.position = "none")
 
 # Add icons
 icons <- load_icons()
 p_timeseries_icons <- add_facet_icons(p_timeseries, plot_df, icons)
 
-# --- Training plot ---
-training_all_df <- if (length(training_all) > 0) bind_rows(training_all) else NULL
+# --- Red crosses on the model dynamics (timeseries) for the global best ---
+if (!is.na(best_pop_id)) {
+  best_plot_df <- plot_df %>%
+    dplyr::filter(Population == best_pop_id, Replicate != "Ground Truth", LLM != "Ground Truth")
+  p_timeseries <- p_timeseries +
+    ggplot2::geom_point(
+      data = best_plot_df,
+      aes(x = Time, y = Value),
+      inherit.aes = FALSE,
+      color = "red",
+      size = 0.5,
+      shape = 4
+    )
+}
+
+# Add icons (unchanged)
+icons <- load_icons()
+p_timeseries_icons <- add_facet_icons(p_timeseries, plot_df, icons)
+
+# --- Training plot (existing creation) ---
+training_all_df <- if (length(training_all) > 0) dplyr::bind_rows(training_all) else NULL
 p_training <- NULL
 if (!is.null(training_all_df)) {
-  training_all_df <- training_all_df %>% mutate(Replicate = rep_map[Population])
-  p_training <- ggplot(training_all_df, aes(x = generation, y = objective_value, color = Replicate)) +
+  training_all_df <- training_all_df %>% dplyr::mutate(Replicate = rep_map[Population])
+  p_training <- ggplot(training_all_df, aes(x = generation, y = objective_value, color = LLM, group = Replicate)) +
     scale_y_log10() +
     geom_line(linewidth = 1) +
     geom_point(size = 1.5) +
+    scale_color_manual(values = llm_cols) +
     theme_classic() +
-    labs(title = "Training Progress", x = "Generation", y = "Objective Value (log)")
+    labs(title = "Training Progress", x = "Generation", y = "Objective Value (log)", color = "Model") +
+    theme(legend.position = "none")
+
+  # --- Red crosses on the best population's training curve ---
+  if (!is.na(best_pop_id)) {
+    best_training_df <- training_all_df %>% dplyr::filter(Population == best_pop_id)
+    p_training <- p_training +
+      ggplot2::geom_point(
+        data = best_training_df,
+        aes(x = generation, y = objective_value),
+        color = "red",
+        size = 0.5,
+        shape = 4
+      )
+  }
 }
 
-# --- Combine using cowplot ---
-combined <- plot_grid(
-  if (!is.null(p_training)) p_training else NULL,
-  p_timeseries_icons,
-  ncol = 2,
-  rel_widths = c(1, 1)
+# --- Training plot ---
+# --- Training plot (existing creation) ---
+training_all_df <- if (length(training_all) > 0) dplyr::bind_rows(training_all) else NULL
+p_training <- NULL
+if (!is.null(training_all_df)) {
+  training_all_df <- training_all_df %>% dplyr::mutate(Replicate = rep_map[Population])
+  p_training <- ggplot(training_all_df, aes(x = generation, y = objective_value, color = LLM, group = Replicate)) +
+    scale_y_log10() +
+    geom_line(linewidth = 1) +
+    geom_point(size = 1.5) +
+    scale_color_manual(values = llm_cols) +
+    theme_classic() +
+    labs(title = "Training Progress", x = "Generation", y = "Objective Value (log)", color = "Model") +
+    theme(legend.position = "none")
+
+  # --- Red dots on the best population's training curve ---
+  if (!is.na(best_pop_id)) {
+    best_training_df <- training_all_df %>% dplyr::filter(Population == best_pop_id)
+    p_training <- p_training +
+      ggplot2::geom_point(
+        data = best_training_df,
+        aes(x = generation, y = objective_value),
+        color = "red",
+        size = 0.5
+      )
+  }
+}
+
+# --- Combine using cowplot with shared legend (robust & finite) ---
+
+# Ensure output dir exists
+figures_dir <- if (exists("figures_dir")) figures_dir else "Figures"
+dir.create(figures_dir, recursive = TRUE, showWarnings = FALSE)
+
+# ---- 1) Legend builder that never collapses ----
+# expects llm_names and llm_cols already defined upstream
+# --- Legend builder with optional 'Best Performer' entry ---
+# Uses short LLM names already present in llm_names / llm_cols from earlier steps
+
+# 1) Build legend levels (append 'Best Performer' if we found one)
+legend_levels <- c("Ground Truth", sort(llm_names))
+if (!is.na(best_pop_id)) {
+  legend_levels <- c(legend_levels, "Best Performer")
+}
+
+# 2) Data for legend points with shapes
+legend_data <- data.frame(
+  x   = seq_along(legend_levels),
+  y   = 1,
+  LLM = factor(legend_levels, levels = legend_levels),
+  shape_val = ifelse(legend_levels == "Best Performer", 4, 16)  # 4 = cross, 16 = circle
 )
 
-# --- Save ---
-figures_dir <- "Figures"
-dir.create(figures_dir, recursive = TRUE, showWarnings = FALSE)
-png(file.path(figures_dir, "NPZ_combined_with_icons.png"), width = 8, height = 10, units = "in", res = 300)
-grid.draw(combined)
-dev.off()
-svg(file.path(figures_dir, "NPZ_combined_with_icons.svg"), width = 8, height = 10)
-grid.draw(combined)
-dev.off()
+# 3) Color map: start with GT + LLMs, then add 'Best Performer' = red when present
+values_map <- c("Ground Truth" = "black", llm_cols)
+if (!is.na(best_pop_id)) {
+  values_map <- c(values_map, "Best Performer" = "red")
+}
 
+# 4) Shape map for legend
+shape_map <- setNames(legend_data$shape_val, legend_levels)
+
+# 5) Build the legend plot with explicit shape per entry
+legend_plot <- ggplot(legend_data, aes(x = x, y = y)) +
+  geom_point(aes(color = LLM, shape = LLM), size = 4, show.legend = TRUE) +
+  scale_color_manual(
+    values = values_map,
+    name   = "Model",
+    breaks = legend_levels,
+    drop   = FALSE,
+    guide = guide_legend(
+      nrow = 1,
+      override.aes = list(
+        shape = shape_map[legend_levels],
+        size = 4
+      )
+    )
+  ) +
+  scale_shape_manual(
+    values = shape_map,
+    name   = "Model",
+    breaks = legend_levels,
+    drop   = FALSE,
+    guide = "none"
+  ) +
+  theme_void() +
+  theme(
+    legend.position = "bottom",
+    legend.text     = element_text(size = 9, margin = margin(r = 8)),
+    legend.title    = element_text(size = 10, face = "bold"),
+    legend.key.size = unit(0.7, "cm"),
+    legend.spacing.x = unit(0.3, "cm"),
+    plot.margin = margin(t = 10, r = 80, b = 10, l = 80)
+  )
+
+legend_grob <- cowplot::get_legend(legend_plot)
+
+# --- Fallback manual legend row (if guide extraction fails) ---
+legend_gg <- if (inherits(legend_grob, "zeroGrob")) {
+  key_df <- data.frame(
+    LLM = factor(legend_levels, levels = legend_levels),
+    x = seq_along(legend_levels), y = 1
+  )
+  manual_legend <- ggplot(key_df, aes(x, y)) +
+    geom_point(aes(color = LLM), size = 4) +
+    geom_text(aes(label = LLM), hjust = 0, nudge_x = 0.25, size = 3.5) +
+    scale_color_manual(values = values_map, guide = "none", drop = FALSE) +
+    coord_cartesian(clip = "off") +
+    theme_void() +
+    theme(plot.margin = margin(5.5, 5.5, 5.5, 5.5))
+  cowplot::ggdraw(manual_legend)
+} else {
+  cowplot::ggdraw(legend_grob)
+}
+
+
+
+
+# ---- 2) Wrap grobs so cowplot treats them like ggplots ----
+# p_timeseries_icons is a gtable (from add_facet_icons), so wrap it;
+# legend_grob is also a gtable
+p_timeseries_icons_gg <- cowplot::ggdraw(p_timeseries_icons)
+
+# If legend extraction failed or yielded a zeroGrob, build a manual key row instead
+legend_gg <- if (inherits(legend_grob, "zeroGrob")) {
+  # Fallback: a "manual legend row" (no guide-box), visually similar
+  key_df <- data.frame(LLM = factor(legend_levels, levels = legend_levels), x = seq_along(legend_levels), y = 1)
+  manual_legend <- ggplot(key_df, aes(x, y)) +
+    geom_point(aes(color = LLM), size = 4) +
+    geom_text(aes(label = LLM), hjust = 0, nudge_x = 0.25, size = 3.5) +
+    scale_color_manual(values = c("Ground Truth" = "black", llm_cols), guide = "none", drop = FALSE) +
+    coord_cartesian(clip = "off") +
+    theme_void() +
+    theme(plot.margin = margin(5.5, 5.5, 5.5, 5.5))
+  cowplot::ggdraw(manual_legend)
+} else {
+  cowplot::ggdraw(legend_grob)
+}
+
+# ---- 3) Build the upper row (with or without the training panel) ----
+upper_row <- if (!is.null(p_training)) {
+  cowplot::plot_grid(
+    cowplot::ggdraw(p_training),
+    p_timeseries_icons_gg,
+    ncol = 2,
+    rel_widths = c(1, 1),
+    align = "h",
+    axis = "tb"
+  )
+} else {
+  p_timeseries_icons_gg
+}
+
+# ---- 4) Add the legend at the bottom (use finite relative heights) ----
+combined_with_legend <- cowplot::plot_grid(
+  upper_row,
+  legend_gg,
+  ncol = 1,
+  rel_heights = c(1, 0.16) # Adequate height for legend
+)
+
+# ---- 5) Save robustly (ggsave draws grid/cowplot content correctly) ----
+ggplot2::ggsave(
+  file.path(figures_dir, "NPZ_combined_with_icons.png"),
+  combined_with_legend,
+  width = 12, height = 10, dpi = 300
+)
+ggplot2::ggsave(
+  file.path(figures_dir, "NPZ_combined_with_icons.svg"),
+  combined_with_legend,
+  width = 12, height = 10
+)
+
+# --- Alternative (manual devices): explicitly draw the grid object ---
+# png(file.path(figures_dir, "NPZ_combined_with_icons.png"), width = 12, height = 10, units = "in", res = 300)
+# grid::grid.newpage(); grid::grid.draw(combined_with_legend); dev.off()
+# svg(file.path(figures_dir, "NPZ_combined_with_icons.svg"), width = 12, height = 10)
+# grid::grid.newpage(); grid::grid.draw(combined_with_legend); dev.off()
+
+# List every INDIVIDUAL_* directory that exists in a population (both locations)
+list_all_individual_ids <- function(pop_dir) {
+  ids_top <- list.dirs(pop_dir, full.names = TRUE, recursive = FALSE)
+  ids_top <- basename(ids_top[grepl("^INDIVIDUAL_", basename(ids_top))])
+
+  culled_dir <- file.path(pop_dir, "CULLED")
+  ids_culled <- if (dir.exists(culled_dir)) {
+    d <- list.dirs(culled_dir, full.names = TRUE, recursive = FALSE)
+    basename(d[grepl("^INDIVIDUAL_", basename(d))])
+  } else {
+    character(0)
+  }
+
+  unique(c(ids_top, ids_culled))
+}
+
+# Reuse your strict scores.json reader (evaluate_ecological_characteristics.py output)
 extract_ecological_scores <- function(metadata_path, individual_dir) {
-  # Strict: read ONLY scores.json written by evaluate_ecological_characteristics.py
   scores_path <- file.path(individual_dir, "scores.json")
   if (!file.exists(scores_path)) {
     return(NULL)
   }
-
   sj <- safe_fromJSON(scores_path)
   if (is.null(sj) || is.null(sj$characteristic_scores) || is.null(sj$aggregate_scores)) {
     return(NULL)
@@ -239,14 +532,11 @@ extract_ecological_scores <- function(metadata_path, individual_dir) {
 
   cs <- sj$characteristic_scores
   agg <- sj$aggregate_scores
-
-  # Helper to pull numeric scores for each named characteristic
   get_score <- function(name) {
     v <- tryCatch(cs[[name]][["score"]], error = function(e) NA_real_)
     if (is.null(v)) NA_real_ else suppressWarnings(as.numeric(v))
   }
 
-  # --- Nine granular components (exact keys from the Python scorer) ---
   nutrient_equation_uptake <- get_score("nutrient_equation_uptake")
   nutrient_equation_recycling <- get_score("nutrient_equation_recycling")
   nutrient_equation_mixing <- get_score("nutrient_equation_mixing")
@@ -256,8 +546,8 @@ extract_ecological_scores <- function(metadata_path, individual_dir) {
   phytoplankton_equation_mixing <- get_score("phytoplankton_equation_mixing")
   zooplankton_equation_growth <- get_score("zooplankton_equation_growth")
   zooplankton_equation_mortality <- get_score("zooplankton_equation_mortality")
+  zooplankton_equation_mixing <- get_score("zooplankton_equation_mixing")
 
-  # --- Extras (count + description + optional list) ---
   extras_count <- suppressWarnings(as.numeric(sj$extra_components_count))
   if (is.na(extras_count)) extras_count <- NA_real_
   extras_description <- if (!is.null(sj$extra_components_description)) {
@@ -271,16 +561,11 @@ extract_ecological_scores <- function(metadata_path, individual_dir) {
     NA_character_
   }
 
-  # Build a single-row data.frame for this individual
   data.frame(
     individual = basename(individual_dir),
-
-    # Aggregates from scores.json (no fallbacks)
-    total_score = suppressWarnings(as.numeric(agg$raw_total)), # unnormalized (max ≈ 9)
-    normalized_total = suppressWarnings(as.numeric(agg$normalized_total)), # 0–1
-    final_score = suppressWarnings(as.numeric(agg$final_score)), # may be NA if absent
-
-    # Granular components (9)
+    total_score = suppressWarnings(as.numeric(agg$raw_total)),
+    normalized_total = suppressWarnings(as.numeric(agg$normalized_total)),
+    final_score = suppressWarnings(as.numeric(agg$final_score)),
     nutrient_equation_uptake = nutrient_equation_uptake,
     nutrient_equation_recycling = nutrient_equation_recycling,
     nutrient_equation_mixing = nutrient_equation_mixing,
@@ -290,8 +575,7 @@ extract_ecological_scores <- function(metadata_path, individual_dir) {
     phytoplankton_equation_mixing = phytoplankton_equation_mixing,
     zooplankton_equation_growth = zooplankton_equation_growth,
     zooplankton_equation_mortality = zooplankton_equation_mortality,
-
-    # Extras
+    zooplankton_equation_mixing = zooplankton_equation_mixing,
     extras_count = extras_count,
     extras_description = extras_description,
     extras_list_json = extras_list_json,
@@ -299,7 +583,29 @@ extract_ecological_scores <- function(metadata_path, individual_dir) {
   )
 }
 
-# Helper: find the directory that contains scores.json for a given individual ID
+# If scores.json is missing, return a stub row with NA scores so we still include the individual
+stub_ecology_row <- function(individual_dir) {
+  data.frame(
+    individual = basename(individual_dir),
+    total_score = NA_real_, normalized_total = NA_real_, final_score = NA_real_,
+    nutrient_equation_uptake = NA_real_,
+    nutrient_equation_recycling = NA_real_,
+    nutrient_equation_mixing = NA_real_,
+    phytoplankton_equation_growth = NA_real_,
+    phytoplankton_equation_grazing_loss = NA_real_,
+    phytoplankton_equation_mortality = NA_real_,
+    phytoplankton_equation_mixing = NA_real_,
+    zooplankton_equation_growth = NA_real_,
+    zooplankton_equation_mortality = NA_real_,
+    zooplankton_equation_mixing = NA_real_,
+    extras_count = NA_real_,
+    extras_description = NA_character_,
+    extras_list_json = NA_character_,
+    stringsAsFactors = FALSE
+  )
+}
+
+# Helper: find the directory that contains scores.json for a given individual ID (prefer CULLED if present)
 find_scores_dir <- function(pop_dir, individual_id) {
   candidates <- c(
     file.path(pop_dir, "CULLED", individual_id),
@@ -309,170 +615,700 @@ find_scores_dir <- function(pop_dir, individual_id) {
   if (length(hit) == 0) NULL else hit[1]
 }
 
-ecology_results <- list()
-for (p in npz_pops) {
-  pop_dir <- p$pop_dir
-  meta_path <- file.path(pop_dir, "population_metadata.json")
-  pop_meta <- safe_fromJSON(meta_path)
-  if (is.null(pop_meta)) next
-
-  # Kept individuals from population metadata
-  kept_df <- tryCatch(bind_rows(pop_meta$generations$best_individuals), error = function(e) NULL)
-  kept_ids <- if (!is.null(kept_df) && "individual" %in% names(kept_df)) unique(kept_df$individual) else character(0)
-  if (length(kept_ids) == 0) next
-
-  # Only consider individuals that HAVE scores.json (in CULLED or top-level)
-  indiv_dirs <- lapply(kept_ids, function(id) find_scores_dir(pop_dir, id))
-  indiv_dirs <- indiv_dirs[!vapply(indiv_dirs, is.null, logical(1))]
-  if (length(indiv_dirs) == 0) next
-
-  for (indiv_dir in indiv_dirs) {
-    eco <- extract_ecological_scores(NA, indiv_dir) # metadata_path ignored (strict scores.json)
-    if (!is.null(eco)) {
-      eco$objective_value <- get_objective_value(indiv_dir)
-      eco$Population <- basename(pop_dir)
-      ecology_results[[length(ecology_results) + 1]] <- eco
-    }
+# Helper: find *any* directory for an individual (even if scores.json is absent), to read objective_value if available
+find_individual_dir_any <- function(pop_dir, individual_id) {
+  culled <- file.path(pop_dir, "CULLED", individual_id)
+  top <- file.path(pop_dir, individual_id)
+  if (dir.exists(culled)) {
+    return(culled)
   }
+  if (dir.exists(top)) {
+    return(top)
+  }
+  NULL
 }
-ecology_all <- if (length(ecology_results) > 0) bind_rows(ecology_results) else NULL
-# Collect ecological scores from "kept" individuals across all NPZ populations (mirrors your approach). [1](https://csiroau-my.sharepoint.com/personal/spi085_csiro_au/Documents/Microsoft%20Copilot%20Chat%20Files/analyze_NPZ.txt)
-ecology_results <- list()
 
+# ---- Build ecology_all from ALL individuals (no kept_ids filter) ----
+ecology_results <- list()
 for (p in npz_pops) {
   pop_dir <- p$pop_dir
-  meta_path <- file.path(pop_dir, "population_metadata.json")
-  pop_meta <- safe_fromJSON(meta_path)
-  if (is.null(pop_meta)) next
 
-  # Kept individuals from metadata (same field you used): generations$best_individuals → individual column. [1](https://csiroau-my.sharepoint.com/personal/spi085_csiro_au/Documents/Microsoft%20Copilot%20Chat%20Files/analyze_NPZ.txt)
-  kept_df <- tryCatch(bind_rows(pop_meta$generations$best_individuals), error = function(e) NULL)
-  kept_ids <- if (!is.null(kept_df) && "individual" %in% names(kept_df)) unique(kept_df$individual) else character(0)
+  # Enumerate all INDIVIDUAL_* IDs in top-level and CULLED
+  all_ids <- list_all_individual_ids(pop_dir)
 
-  # Helper to find metadata.json for an individual (culled vs toplevel), same logic you wrote. [1](https://csiroau-my.sharepoint.com/personal/spi085_csiro_au/Documents/Microsoft%20Copilot%20Chat%20Files/analyze_NPZ.txt)
-  find_metadata_file <- function(individual_id) {
-    culled_path   <- file.path(pop_dir, "CULLED", individual_id, "metadata.json")
-    toplevel_path <- file.path(pop_dir, individual_id, "metadata.json")
-    if (file.exists(culled_path)) return(culled_path)
-    if (file.exists(toplevel_path)) return(toplevel_path)
-    NULL
-  }
+  if (length(all_ids) == 0) next
 
-  files <- sapply(kept_ids, find_metadata_file)
-  files <- files[!sapply(files, is.null)]
-  for (fp in files) {
-    indiv_dir <- dirname(fp)
-    eco <- extract_ecological_scores(fp, indiv_dir)
-    if (!is.null(eco)) {
-      eco$objective_value <- get_objective_value(indiv_dir)
-      eco$Population <- basename(pop_dir)
-      ecology_results[[length(ecology_results) + 1]] <- eco
+  for (id in all_ids) {
+    # Prefer the directory that has scores.json; otherwise fall back to any existing dir
+    scores_dir <- find_scores_dir(pop_dir, id)
+    indiv_dir <- if (!is.null(scores_dir)) scores_dir else find_individual_dir_any(pop_dir, id)
+    if (is.null(indiv_dir)) {
+      print("skipping")
+      print(indiv_dir)
+      next
     }
+    eco <- extract_ecological_scores(NA, indiv_dir)
+    if (is.null(eco)) eco <- stub_ecology_row(indiv_dir)
+
+    # Attach objective value (may be NA if model_report.json is absent)
+    eco$objective_value <- get_objective_value(indiv_dir)
+    eco$Population <- basename(pop_dir)
+    eco$llm <- if (!is.null(p$meta$llm_choice)) p$meta$llm_choice else "Unknown"
+
+    ecology_results[[length(ecology_results) + 1]] <- eco
   }
 }
 
 ecology_all <- if (length(ecology_results) > 0) bind_rows(ecology_results) else NULL
+# (From here on, your downstream plots/tables use ecology_all and will automatically
+# filter to complete cases where needed, but counts will include every individual.)
 
-# --- TOTAL vs OBJECTIVE with axis break + bottom axis only ---
+# ==== Ecological score (normalized_total) vs Objective value: robust analysis & visuals ====
+suppressPackageStartupMessages({
+  library(dplyr)
+  library(ggplot2)
+})
 
-library(ggbreak)
+stopifnot(!is.null(ecology_all), nrow(ecology_all) > 0)
 
-if (!is.null(ecology_all) && nrow(ecology_all) > 0) {
-  results_base <- ecology_all %>%
-    mutate(
-      objective_value = suppressWarnings(as.numeric(objective_value)),
-      total_score     = suppressWarnings(as.numeric(total_score))
-    )
+# -------- Data prep --------
+# Use normalized_total as ecological score in [0,1], and objective_value as performance (lower is better).
+df <- ecology_all %>%
+  transmute(
+    Population = as.character(Population),
+    individual = as.character(individual),
+    llm        = as.character(llm),
+    obj        = suppressWarnings(as.numeric(objective_value)),
+    eco        = suppressWarnings(as.numeric(normalized_total))
+  ) %>%
+  # Keep valid rows (objective must be >0 to allow log-scale if needed)
+  filter(is.finite(obj), obj > 0, is.finite(eco), eco >= 0, eco <= 1)
 
-  results_clean <- results_base %>%
-    filter(
-      !is.na(objective_value), !is.na(total_score),
-      is.finite(objective_value), is.finite(total_score),
-      objective_value > 0
-    )
+if (nrow(df) < 3) stop("Not enough valid rows for analysis (need >= 3).")
 
-  eco_threshold <- 6.0
-  obj_threshold <- 0.1
+# -------- Robust association measures (interpretation: negative => higher eco ↔ lower objective) --------
+spearman <- suppressWarnings(cor.test(df$eco, df$obj, method = "spearman", exact = FALSE))
+kendall <- suppressWarnings(cor.test(df$eco, df$obj, method = "kendall", exact = FALSE))
 
-  low_eco_scores <- results_clean %>% filter(total_score < eco_threshold)
-  good_performers <- results_clean %>% filter(objective_value < obj_threshold)
+# Concordance probability: C = P{obj_i < obj_j | eco_i > eco_j}
+concordance_probability <- function(eco, obj, max_pairs = 2e6, seed = 42L) {
+  set.seed(seed)
+  n <- length(eco)
+  if (n < 2) {
+    return(NA_real_)
+  }
+  m <- min(max_pairs, n * (n - 1) / 2)
+  i <- sample.int(n, size = m, replace = TRUE)
+  j <- sample.int(n, size = m, replace = TRUE)
+  keep <- (i != j) & (eco[i] > eco[j]) & is.finite(obj[i]) & is.finite(obj[j])
+  i <- i[keep]
+  j <- j[keep]
+  if (length(i) == 0) {
+    return(NA_real_)
+  }
+  xi <- obj[i]
+  xj <- obj[j]
+  valid <- (xi != xj)
+  if (!any(valid)) {
+    return(NA_real_)
+  }
+  mean(xi[valid] < xj[valid])
+}
+C <- concordance_probability(df$eco, df$obj)
 
-  low_eco_model <- if (nrow(low_eco_scores) >= 2) tryCatch(lm(total_score ~ objective_value, data = low_eco_scores), error = function(e) NULL) else NULL
-  good_perf_model <- if (nrow(good_performers) >= 2) tryCatch(lm(total_score ~ objective_value, data = good_performers), error = function(e) NULL) else NULL
+#####################################
+# ==== Ecological score vs Objective: SIMPLE LM (fits include all, y capped at 1.0) ====
+# ==== Outliers shown with arrowheads + unified & per‑LLM stats (R², adj‑R², p, n) ====
 
-  low_eco_r2 <- if (!is.null(low_eco_model)) summary(low_eco_model)$r.squared else NA_real_
-  good_perf_r2 <- if (!is.null(good_perf_model)) summary(good_perf_model)$r.squared else NA_real_
+suppressPackageStartupMessages({
+  library(dplyr)
+  library(ggplot2)
+})
 
-  model_comparison_label <- sprintf(
-    "Low eco (<%.1f): %s\nGood performers (<%.1f obj): %s",
-    eco_threshold,
-    if (!is.na(low_eco_r2)) sprintf("R² = %.3f", low_eco_r2) else "not enough data",
-    obj_threshold,
-    if (!is.na(good_perf_r2)) sprintf("R² = %.3f", good_perf_r2) else "not enough data"
+# Safety: define short_llm() if not already defined upstream
+if (!exists("short_llm")) {
+  short_llm <- function(x) ifelse(grepl("/", x), sub(".*/", "", x), x)
+}
+
+stopifnot(!is.null(ecology_all), nrow(ecology_all) > 0)
+
+# --- Constants ---
+cap_val <- 1.0 # clamp threshold for objective (used for fitting and plotting)
+tri_offset <- 0.05 # arrowhead vertical offset above clamp
+
+# --- PLOTTING DATA (ALL points with obj > 0). Create llm_short here to avoid missing column issues. ---
+df_plot <- ecology_all %>%
+  transmute(
+    Population = as.character(Population),
+    individual = as.character(individual),
+    llm        = as.character(llm),
+    obj        = suppressWarnings(as.numeric(objective_value)),
+    eco        = suppressWarnings(as.numeric(normalized_total))
+  ) %>%
+  filter(is.finite(obj), obj > 0, is.finite(eco)) %>%
+  mutate(
+    eco        = pmin(pmax(eco, 0), 1), # clamp eco to [0,1]
+    llm_short  = short_llm(llm), # short label for legend/stats
+    is_clamped = obj > cap_val,
+    obj_plot   = pmin(obj, cap_val), # visual y value
+    tri_y      = ifelse(is_clamped, cap_val + tri_offset, NA_real_)
   )
 
-  # IQR-based outlier cutoff for the X axis (objective_value)
-  x_q <- quantile(results_clean$objective_value, probs = c(0.25, 0.75), na.rm = TRUE)
-  x_iqr <- diff(x_q)
-  x_thr <- x_q[2] + 1.5 * x_iqr
-  x_max <- suppressWarnings(max(results_clean$objective_value, na.rm = TRUE))
+if (nrow(df_plot) < 3) stop("Not enough valid rows to plot (need >= 3).")
 
-  p_ecology_total <- ggplot(results_clean, aes(x = objective_value, y = total_score)) +
-    geom_point(aes(color = case_when(
-      (total_score < eco_threshold) & (objective_value < obj_threshold) ~ "Both",
-      (total_score < eco_threshold) ~ "Low Eco Only",
-      (objective_value < obj_threshold) ~ "Good Performers Only",
-      TRUE ~ "Neither"
-    )), alpha = 0.6, size = 1.5) +
-    # {
-    #   if (!is.null(low_eco_model)) geom_smooth(data = low_eco_scores, method = "lm", se = FALSE, color = "#0173B2", linewidth = 1.2)
-    # } +
-    # {
-    #   if (!is.null(good_perf_model)) geom_smooth(data = good_performers, method = "lm", se = FALSE, color = "#DE8F05", linewidth = 1.2)
-    # } +
-    # geom_hline(yintercept = eco_threshold, linetype = "dashed", color = "gray50", alpha = 0.7) +
-    # geom_vline(xintercept = obj_threshold, linetype = "dashed", color = "gray50", alpha = 0.7) +
-    # scale_color_manual(
-    #   values = c("Low Eco Only" = "#0173B2", "Good Performers Only" = "#DE8F05", "Both" = "#CC78BC", "Neither" = "gray70"),
-    #   name = "Point Category",
-    #   labels = c("Low Eco Only" = "Low Eco Scores", "Good Performers Only" = "Good Performers", "Both" = "Both Groups", "Neither" = "Neither Group")
-    # ) +
-    scale_x_log10() + # compatible with ggbreak [4](https://cran.r-project.org/web//packages/ggbreak/vignettes/ggbreak.html)
-    theme_classic() +
-    labs(
-      x = "Objective Value (log scale)",
-      y = "Total Ecological Score",
-      caption = sprintf("n = %d individuals across %d NPZ populations", nrow(results_clean), length(unique(results_clean$Population)))
-    ) +
-    geom_text(
-      x = min(results_clean$objective_value, na.rm = TRUE),
-      y = max(results_clean$total_score, na.rm = TRUE) - 0.5,
-      label = model_comparison_label,
-      hjust = 0, vjust = 1, size = 3.5
+# --- FIT DATA (ALL points, but y is capped at 1.0 for the fit) ---
+df_fit <- df_plot %>%
+  transmute(
+    eco       = eco,
+    obj_fit   = obj_plot,
+    llm_short = llm_short
+  )
+
+# --- Palette (short LLM names) ---
+llm_levels <- sort(unique(df_plot$llm_short))
+llm_cols <- setNames(scales::hue_pal()(length(llm_levels)), llm_levels)
+
+# --- Unified linear model (capped y) ---
+fit_overall <- lm(obj_fit ~ eco, data = df_fit)
+overall_sum <- summary(fit_overall)
+
+# --- Per‑LLM linear models (capped y), robust to tiny groups/zero variance ---
+llm_splits <- split(df_fit, df_fit$llm_short)
+
+llm_models_list <- lapply(names(llm_splits), function(nm) {
+  d <- llm_splits[[nm]]
+  # Guard: need at least 2 points and variation in eco to estimate slope
+  if (nrow(d) >= 2 && is.finite(sd(d$eco)) && sd(d$eco) > 0) {
+    m <- lm(obj_fit ~ eco, data = d)
+    s <- summary(m)
+    data.frame(
+      llm_short = nm,
+      n = nrow(d),
+      intercept = unname(coef(m)[1]),
+      slope = unname(coef(m)[2]),
+      r_squared = s$r.squared,
+      adj_r_squared = s$adj.r.squared,
+      p_value = s$coefficients[2, 4],
+      stringsAsFactors = FALSE
     )
+  } else {
+    data.frame(
+      llm_short = nm,
+      n = nrow(d),
+      intercept = NA_real_,
+      slope = NA_real_,
+      r_squared = NA_real_,
+      adj_r_squared = NA_real_,
+      p_value = NA_real_,
+      stringsAsFactors = FALSE
+    )
+  }
+})
 
-  # Insert the axis break and hide the TOP axis (text, ticks, line)
-  if (is.finite(x_thr) && is.finite(x_max) && x_max > x_thr * 1.05) {
-    p_ecology_total <- p_ecology_total +
-      scale_x_break(c(x_thr, x_max), space = 0.18) + # break creates two subpanels (top & bottom) [4](https://cran.r-project.org/web//packages/ggbreak/vignettes/ggbreak.html)
-      theme(
-        axis.text.x.top  = element_blank(),
-        axis.ticks.x.top = element_blank(),
-        axis.line.x.top  = element_blank()
-      ) # hide the top axis elements; keep bottom only [1](https://ggplot2.tidyverse.org/reference/theme.html)[3](https://stackoverflow.com/questions/71992148/removing-duplicate-top-x-axis-in-ggplot-plus-add-axis-break)
+llm_models <- do.call(rbind, llm_models_list)
+
+# --- Persist summaries ---
+results_dir <- "Results/ecology_analysis"
+dir.create(results_dir, recursive = TRUE, showWarnings = FALSE)
+
+write.csv(
+  llm_models %>% arrange(llm_short),
+  file.path(results_dir, "modeling_by_llm_LINEAR_capped_fits.csv"),
+  row.names = FALSE
+)
+
+overall_out <- data.frame(
+  n = nrow(df_fit),
+  intercept = unname(coef(fit_overall)[1]),
+  slope = unname(coef(fit_overall)[2]),
+  r_squared = overall_sum$r.squared,
+  adj_r_squared = overall_sum$adj.r.squared,
+  p_value_slope = overall_sum$coefficients[2, "Pr(>|t|)"],
+  stringsAsFactors = FALSE
+)
+write.csv(overall_out, file.path(results_dir, "modeling_overall_LINEAR_capped_fits.csv"), row.names = FALSE)
+
+# --- Unified line predictions (clamped to [0, 1]) ---
+grid_eco <- seq(0, 1, length.out = 200)
+overall_line_df <- data.frame(
+  eco       = grid_eco,
+  obj       = pmin(pmax(as.numeric(predict(fit_overall, newdata = data.frame(eco = grid_eco))), 0), cap_val),
+  llm_short = "Overall"
+)
+
+# --- Vectorized formatter to avoid 'condition has length > 1' errors ---
+fmt_num_vec <- function(x) {
+  out <- rep("NA", length(x))
+  ok <- !is.na(x)
+  if (any(ok)) out[ok] <- formatC(x[ok], digits = 3, format = "fg", flag = "#")
+  out
+}
+
+# --- Annotation text (bottom-left): Unified + one line per LLM ---
+unified_line <- sprintf(
+  "Unified: R²=%s; p=%s; n=%d",
+  fmt_num_vec(overall_out$r_squared),
+  fmt_num_vec(overall_out$p_value_slope),
+  overall_out$n
+)
+
+llm_models_arr <- llm_models %>% arrange(llm_short)
+llm_lines <- sprintf(
+  "%s: R²=%s; p=%s; n=%d",
+  llm_models_arr$llm_short,
+  fmt_num_vec(llm_models_arr$r_squared),
+  fmt_num_vec(llm_models_arr$p_value),
+  llm_models_arr$n
+)
+
+ann_text <- paste(c(unified_line, llm_lines), collapse = "\n")
+
+# Position (bottom-left white space). Bump ann_y if text block is long.
+y_max <- cap_val + tri_offset + 0.02
+ann_x <- 0.02
+ann_y <- 0.06 * y_max
+
+# --- Plot ---
+fig_dir <- "Figures"
+dir.create(fig_dir, recursive = TRUE, showWarnings = FALSE)
+
+p_scatter_linear <- ggplot() +
+  # points at/under clamp
+  geom_point(
+    data = df_plot %>% filter(!is_clamped),
+    aes(x = eco, y = obj_plot, color = llm_short),
+    alpha = 0.8, size = 1.9
+  ) +
+  # points above clamp (drawn at clamp line)
+  geom_point(
+    data = df_plot %>% filter(is_clamped),
+    aes(x = eco, y = obj_plot, color = llm_short),
+    alpha = 0.95, size = 1.9, show.legend = TRUE
+  ) +
+  # arrowhead triangles above clamp
+  {
+    if (any(df_plot$is_clamped)) {
+      geom_point(
+        data = df_plot %>% filter(is_clamped),
+        aes(x = eco, y = tri_y - 0.035, color = llm_short, fill = llm_short),
+        shape = 24, size = 1.6, stroke = 0.45, show.legend = FALSE
+      )
+    } else {
+      NULL
+    }
+  } +
+  # per‑LLM LM lines (fits on capped y)
+  geom_smooth(
+    data = df_fit,
+    aes(x = eco, y = obj_fit, color = llm_short),
+    method = "lm", se = FALSE, linewidth = 1.0
+  ) +
+  # unified overall LM line in black (also a legend entry)
+  geom_path(
+    data = overall_line_df,
+    aes(x = eco, y = obj, color = llm_short),
+    linewidth = 1.2, inherit.aes = FALSE, show.legend = TRUE
+  ) +
+  # clamp reference
+  geom_hline(yintercept = cap_val, linetype = "dotted", color = "grey40") +
+  # stats annotation
+  annotate("text",
+    x = ann_x, y = ann_y,
+    label = ann_text,
+    hjust = 0, vjust = 0,
+    size = 3.3, lineheight = 1.05
+  ) +
+  # colors (add 'Overall' = black to palette)
+  scale_color_manual(values = c(llm_cols, "Overall" = "black"), name = "LLM") +
+  scale_fill_manual(values = llm_cols, guide = "none") +
+  scale_x_continuous(
+    limits = c(0, 1),
+    breaks = seq(0, 1, by = 0.1),
+    expand = expansion(mult = c(0.01, 0.01))
+  ) +
+  scale_y_continuous(
+    limits = c(0, y_max),
+    breaks = c(seq(0, cap_val, by = 0.1), cap_val + tri_offset),
+    labels = function(y) ifelse(abs(y - (cap_val + tri_offset)) < 1e-8, "↑", scales::number_format()(y)),
+    expand = expansion(mult = c(0.01, 0.01))
+  ) +
+  labs(
+    x = "Ecological score",
+    y = "Objective value",
+    # title = "Ecological score vs Objective — simple LM fits (y capped at 1.0 for fitting)",
+    # subtitle = "All points shown; outliers with arrowheads. Black line = unified LM. Bottom-left: R², adj‑R², p, n for Unified & each LLM."
+  ) +
+  theme_classic()
+
+# Save
+ggsave(file.path(fig_dir, "eco_vs_objective.png"),
+  p_scatter_linear,
+  width = 9.5, height = 6, dpi = 300
+)
+ggsave(file.path(fig_dir, "eco_vs_objective.svg"),
+  p_scatter_linear,
+  width = 9.5, height = 6
+)
+
+cat(sprintf(
+  "Scatter saved with unified & per‑LLM stats. Fit rows: %d; plot rows: %d; summaries in %s\n",
+  nrow(df_fit), nrow(df_plot), results_dir
+))
+
+#####################################
+# ==== Write analysis_summary_ALL.txt with per‑LLM stats + best/worst by objective AND ecological score ====
+suppressPackageStartupMessages({
+  library(dplyr)
+})
+
+
+results_dir <- "Results/ecology_analysis"
+dir.create(results_dir, recursive = TRUE, showWarnings = FALSE)
+
+# Safety: short_llm() should exist already; define if missing.
+if (!exists("short_llm")) {
+  short_llm <- function(x) ifelse(grepl("/", x), sub(".*/", "", x), x)
+}
+
+# Build a clean table for summaries (keep objective_value > 0; coerce numerics)
+summary_df <- ecology_all %>%
+  mutate(
+    objective_value = suppressWarnings(as.numeric(objective_value)),
+    total_score = suppressWarnings(as.numeric(total_score)),
+    normalized_total = suppressWarnings(as.numeric(normalized_total)),
+    final_score = suppressWarnings(as.numeric(final_score)),
+    # component / mechanism columns (coerce to numeric safely if present)
+    nutrient_equation_uptake = suppressWarnings(as.numeric(nutrient_equation_uptake)),
+    nutrient_equation_recycling = suppressWarnings(as.numeric(nutrient_equation_recycling)),
+    nutrient_equation_mixing = suppressWarnings(as.numeric(nutrient_equation_mixing)),
+    phytoplankton_equation_growth = suppressWarnings(as.numeric(phytoplankton_equation_growth)),
+    phytoplankton_equation_grazing_loss = suppressWarnings(as.numeric(phytoplankton_equation_grazing_loss)),
+    phytoplankton_equation_mortality = suppressWarnings(as.numeric(phytoplankton_equation_mortality)),
+    phytoplankton_equation_mixing = suppressWarnings(as.numeric(phytoplankton_equation_mixing)),
+    zooplankton_equation_growth = suppressWarnings(as.numeric(zooplankton_equation_growth)),
+    zooplankton_equation_mortality = suppressWarnings(as.numeric(zooplankton_equation_mortality)),
+    zooplankton_equation_mixing = suppressWarnings(as.numeric(zooplankton_equation_mixing)),
+    llm = as.character(llm),
+    llm_short = short_llm(llm),
+    Population = as.character(Population),
+    individual = as.character(individual)
+  ) %>%
+  filter(is.finite(objective_value), objective_value > 0)
+
+# Helper for compact numeric formatting (scalar-safe)
+fmt <- function(x) {
+  if (length(x) == 0 || is.na(x)) "NA" else formatC(x, digits = 3, format = "fg", flag = "#")
+}
+
+# Detect which mechanism columns are present in this dataset
+mechanism_cols <- c(
+  "nutrient_equation_uptake",
+  "nutrient_equation_recycling",
+  "nutrient_equation_mixing",
+  "phytoplankton_equation_growth",
+  "phytoplankton_equation_grazing_loss",
+  "phytoplankton_equation_mortality",
+  "phytoplankton_equation_mixing",
+  "zooplankton_equation_growth",
+  "zooplankton_equation_mortality",
+  "zooplankton_equation_mixing"
+)
+mechanism_cols <- mechanism_cols[mechanism_cols %in% colnames(summary_df)]
+
+# Threshold to consider a mechanism "embedded" (you can tune this)
+mech_high_thr <- 0.75
+
+sink(file.path(results_dir, "analysis_summary_ALL.txt"))
+
+cat("Analysis Summary (ALL NPZ populations)\n")
+cat("================\n\n")
+
+# Overall counts
+cat("Number of individuals analyzed (objective > 0): ", nrow(summary_df), "\n", sep = "")
+cat("Number of NPZ populations: ", length(unique(summary_df$Population)), "\n", sep = "")
+cat("Number of LLMs: ", length(unique(summary_df$llm_short)), "\n\n", sep = "")
+
+# Overall summary table
+cat("Overall Summary Statistics (objective > 0):\n")
+print(summary(summary_df[, c("objective_value", "normalized_total", "final_score", "total_score")], digits = 3))
+cat("\n")
+
+# Overall correlations (examples)
+if (nrow(summary_df) >= 3) {
+  if (any(is.finite(summary_df$total_score))) {
+    total_cor <- suppressWarnings(cor.test(summary_df$total_score, summary_df$objective_value))
+    cat(sprintf(
+      "Correlation (Total Score vs Objective): r = %.3f (p = %.3e)\n",
+      total_cor$estimate, total_cor$p.value
+    ))
+  }
+  if (any(is.finite(summary_df$normalized_total))) {
+    eco_cor <- suppressWarnings(cor.test(summary_df$normalized_total, summary_df$objective_value))
+    cat(sprintf(
+      "Correlation (Normalized Ecological Score vs Objective): r = %.3f (p = %.3e)\n",
+      eco_cor$estimate, eco_cor$p.value
+    ))
+  }
+  cat("\n")
+} else {
+  cat("Not enough complete cases to calculate overall correlations.\n\n")
+}
+
+# ---- Per‑LLM summaries ----
+cat("Per‑LLM Summary Statistics (objective > 0):\n")
+cat("------------------------------------------\n\n")
+
+llm_levels <- sort(unique(summary_df$llm_short))
+
+# Collect per‑mechanism CSV rows as we print to the text file
+per_mech_rows <- list()
+
+for (llm_name in llm_levels) {
+  d <- summary_df %>% filter(llm_short == llm_name)
+
+  cat(sprintf("LLM: %s  (n = %d)\n", llm_name, nrow(d)))
+
+  # Objective stats
+  obj_mean <- mean(d$objective_value, na.rm = TRUE)
+  obj_sd <- sd(d$objective_value, na.rm = TRUE)
+  obj_med <- median(d$objective_value, na.rm = TRUE)
+  obj_min <- min(d$objective_value, na.rm = TRUE)
+  obj_max <- max(d$objective_value, na.rm = TRUE)
+  cat(sprintf(
+    "  Objective  -> mean=%s, sd=%s, median=%s, min=%s, max=%s\n",
+    fmt(obj_mean), fmt(obj_sd), fmt(obj_med), fmt(obj_min), fmt(obj_max)
+  ))
+
+  # Ecological score stats (normalized_total)
+  eco_has <- any(is.finite(d$normalized_total))
+  if (eco_has) {
+    eco_mean <- mean(d$normalized_total, na.rm = TRUE)
+    eco_sd <- sd(d$normalized_total, na.rm = TRUE)
+    eco_med <- median(d$normalized_total, na.rm = TRUE)
+    eco_min <- min(d$normalized_total, na.rm = TRUE)
+    eco_max <- max(d$normalized_total, na.rm = TRUE)
+    cat(sprintf(
+      "  Ecological (normalized_total) -> mean=%s, sd=%s, median=%s, min=%s, max=%s\n",
+      fmt(eco_mean), fmt(eco_sd), fmt(eco_med), fmt(eco_min), fmt(eco_max)
+    ))
+  } else {
+    cat("  Ecological (normalized_total) -> no finite values\n")
   }
 
-  figures_dir <- "Figures"
-  dir.create(figures_dir, recursive = TRUE, showWarnings = FALSE)
-  ggsave(file.path(figures_dir, "ecological_vs_objective_total_ALL.png"), p_ecology_total, width = 8, height = 6)
-  ggsave(file.path(figures_dir, "ecological_vs_objective_total_ALL.svg"), p_ecology_total, width = 8, height = 6)
+  # Total score (from characteristic aggregation), if present
+  tot_has <- any(is.finite(d$total_score))
+  if (tot_has) {
+    tot_mean <- mean(d$total_score, na.rm = TRUE)
+    tot_sd <- sd(d$total_score, na.rm = TRUE)
+    tot_med <- median(d$total_score, na.rm = TRUE)
+    tot_min <- min(d$total_score, na.rm = TRUE)
+    tot_max <- max(d$total_score, na.rm = TRUE)
+    cat(sprintf(
+      "  Total Score -> mean=%s, sd=%s, median=%s, min=%s, max=%s\n",
+      fmt(tot_mean), fmt(tot_sd), fmt(tot_med), fmt(tot_min), fmt(tot_max)
+    ))
+  } else {
+    cat("  Total Score -> no finite values\n")
+  }
+
+  # Final score, if present
+  fin_has <- any(is.finite(d$final_score))
+  if (fin_has) {
+    fin_mean <- mean(d$final_score, na.rm = TRUE)
+    fin_sd <- sd(d$final_score, na.rm = TRUE)
+    fin_med <- median(d$final_score, na.rm = TRUE)
+    fin_min <- min(d$final_score, na.rm = TRUE)
+    fin_max <- max(d$final_score, na.rm = TRUE)
+    cat(sprintf(
+      "  Final Score -> mean=%s, sd=%s, median=%s, min=%s, max=%s\n",
+      fmt(fin_mean), fmt(fin_sd), fmt(fin_med), fmt(fin_min), fmt(fin_max)
+    ))
+  } else {
+    cat("  Final Score -> no finite values\n")
+  }
+
+  # Best/worst individuals within this LLM (by objective_value; lower is better)
+  best_row <- d %>% slice_min(order_by = objective_value, n = 1, with_ties = FALSE)
+  worst_row <- d %>% slice_max(order_by = objective_value, n = 1, with_ties = FALSE)
+
+  if (nrow(best_row) == 1) {
+    cat(sprintf(
+      "  Best by objective (lowest): %s  [Pop: %s]  obj=%s; eco=%s; total=%s; final=%s\n",
+      best_row$individual, best_row$Population,
+      fmt(best_row$objective_value),
+      fmt(best_row$normalized_total),
+      fmt(best_row$total_score),
+      fmt(best_row$final_score)
+    ))
+  }
+  if (nrow(worst_row) == 1) {
+    cat(sprintf(
+      "  Worst by objective (highest): %s  [Pop: %s]  obj=%s; eco=%s; total=%s; final=%s\n",
+      worst_row$individual, worst_row$Population,
+      fmt(worst_row$objective_value),
+      fmt(worst_row$normalized_total),
+      fmt(worst_row$total_score),
+      fmt(worst_row$final_score)
+    ))
+  }
+
+  # Best/worst individuals within this LLM (by ecological score; HIGHER is better)
+  if (eco_has) {
+    d_eco <- d %>% filter(is.finite(normalized_total))
+    if (nrow(d_eco) >= 1) {
+      best_eco <- d_eco %>% slice_max(order_by = normalized_total, n = 1, with_ties = FALSE)
+      worst_eco <- d_eco %>% slice_min(order_by = normalized_total, n = 1, with_ties = FALSE)
+
+      cat(sprintf(
+        "  Best by ecological score (highest eco): %s  [Pop: %s]  eco=%s; obj=%s; total=%s; final=%s\n",
+        best_eco$individual, best_eco$Population,
+        fmt(best_eco$normalized_total),
+        fmt(best_eco$objective_value),
+        fmt(best_eco$total_score),
+        fmt(best_eco$final_score)
+      ))
+
+      cat(sprintf(
+        "  Worst by ecological score (lowest eco): %s  [Pop: %s]  eco=%s; obj=%s; total=%s; final=%s\n",
+        worst_eco$individual, worst_eco$Population,
+        fmt(worst_eco$normalized_total),
+        fmt(worst_eco$objective_value),
+        fmt(worst_eco$total_score),
+        fmt(worst_eco$final_score)
+      ))
+    } else {
+      cat("  Best/Worst by ecological score: no finite values\n")
+    }
+  } else {
+    cat("  Best/Worst by ecological score: no finite values\n")
+  }
+
+  # Optional: correlation (eco vs objective) within this LLM
+  if (eco_has && nrow(d) >= 3) {
+    llm_cor <- suppressWarnings(cor.test(d$normalized_total, d$objective_value))
+    cat(sprintf(
+      "  Corr (eco vs objective): r=%s (p=%s)\n",
+      fmt(llm_cor$estimate), fmt(llm_cor$p.value)
+    ))
+  }
+
+  # ---- Per‑mechanism summaries for this LLM ----
+  if (length(mechanism_cols) > 0) {
+    cat(sprintf("  Per‑mechanism ecological characteristics (threshold for 'embedded' = %.2f):\n", mech_high_thr))
+
+    for (m in mechanism_cols) {
+      v <- suppressWarnings(as.numeric(d[[m]]))
+      finite <- is.finite(v)
+      n_mech <- sum(finite)
+
+      if (n_mech == 0) {
+        cat(sprintf("    %s -> no finite values\n", m))
+        # accumulate CSV row with no finite values
+        per_mech_rows[[length(per_mech_rows) + 1]] <- data.frame(
+          llm_short = llm_name, mechanism = m, n = 0,
+          mean = NA_real_, sd = NA_real_, median = NA_real_,
+          min = NA_real_, max = NA_real_,
+          n_high = 0, high_threshold = mech_high_thr,
+          best_individual = NA_character_, best_score = NA_real_,
+          best_objective = NA_real_, worst_individual = NA_character_,
+          worst_score = NA_real_, worst_objective = NA_real_,
+          stringsAsFactors = FALSE
+        )
+      } else {
+        m_mean <- mean(v[finite], na.rm = TRUE)
+        m_sd <- sd(v[finite], na.rm = TRUE)
+        m_med <- median(v[finite], na.rm = TRUE)
+        m_min <- min(v[finite], na.rm = TRUE)
+        m_max <- max(v[finite], na.rm = TRUE)
+        n_high <- sum(v[finite] >= mech_high_thr)
+
+        cat(sprintf(
+          "    %s -> n=%d; mean=%s, sd=%s, median=%s, min=%s, max=%s; high(≥%.2f)=%d\n",
+          m, n_mech, fmt(m_mean), fmt(m_sd), fmt(m_med), fmt(m_min), fmt(m_max), mech_high_thr, n_high
+        ))
+
+        # best/worst by mechanism score (HIGHER is assumed better for mechanism score)
+        d_mech <- d %>% filter(is.finite(.data[[m]]))
+        best_mech <- d_mech %>% slice_max(order_by = .data[[m]], n = 1, with_ties = FALSE)
+        worst_mech <- d_mech %>% slice_min(order_by = .data[[m]], n = 1, with_ties = FALSE)
+
+        if (nrow(best_mech) == 1) {
+          cat(sprintf(
+            "      Best %s: %s [Pop: %s] score=%s; obj=%s\n",
+            m, best_mech$individual, best_mech$Population,
+            fmt(best_mech[[m]]), fmt(best_mech$objective_value)
+          ))
+        }
+        if (nrow(worst_mech) == 1) {
+          cat(sprintf(
+            "      Worst %s: %s [Pop: %s] score=%s; obj=%s\n",
+            m, worst_mech$individual, worst_mech$Population,
+            fmt(worst_mech[[m]]), fmt(worst_mech$objective_value)
+          ))
+        }
+
+        # accumulate CSV row
+        per_mech_rows[[length(per_mech_rows) + 1]] <- data.frame(
+          llm_short = llm_name, mechanism = m, n = n_mech,
+          mean = m_mean, sd = m_sd, median = m_med,
+          min = m_min, max = m_max,
+          n_high = n_high, high_threshold = mech_high_thr,
+          best_individual = if (nrow(best_mech) == 1) best_mech$individual else NA_character_,
+          best_score = if (nrow(best_mech) == 1) suppressWarnings(as.numeric(best_mech[[m]])) else NA_real_,
+          best_objective = if (nrow(best_mech) == 1) best_mech$objective_value else NA_real_,
+          worst_individual = if (nrow(worst_mech) == 1) worst_mech$individual else NA_character_,
+          worst_score = if (nrow(worst_mech) == 1) suppressWarnings(as.numeric(worst_mech[[m]])) else NA_real_,
+          worst_objective = if (nrow(worst_mech) == 1) worst_mech$objective_value else NA_real_,
+          stringsAsFactors = FALSE
+        )
+      }
+    }
+  } else {
+    cat("  Per‑mechanism ecological characteristics: no mechanism columns detected\n")
+  }
+
+  cat("\n")
 }
-# --- COMPONENTS vs OBJECTIVE with axis break + bottom axis only ---
 
-library(ggbreak)
+sink()
 
-if (!is.null(ecology_all) && nrow(ecology_all) > 0) {
-  component_scores <- c(
+# ---- Save per‑mechanism summary CSV across all LLMs ----
+if (length(per_mech_rows) > 0) {
+  per_mech_df <- do.call(rbind, per_mech_rows)
+  write.csv(per_mech_df, file.path(results_dir, "per_mechanism_summary_by_llm.csv"), row.names = FALSE)
+} else {
+  # still create an empty file with header for consistency
+  per_mech_df <- data.frame(
+    llm_short = character(), mechanism = character(), n = integer(),
+    mean = double(), sd = double(), median = double(),
+    min = double(), max = double(),
+    n_high = integer(), high_threshold = double(),
+    best_individual = character(), best_score = double(), best_objective = double(),
+    worst_individual = character(), worst_score = double(), worst_objective = double(),
+    stringsAsFactors = FALSE
+  )
+  write.csv(per_mech_df, file.path(results_dir, "per_mechanism_summary_by_llm.csv"), row.names = FALSE)
+}
+
+message("analysis_summary_ALL.txt written with per‑LLM and per‑mechanism statistics; CSV saved: Results/ecology_analysis/per_mechanism_summary_by_llm.csv")
+# ==== END analysis_summary_ALL.txt extension ====
+
+# ==== Categorical distributions with fixed bar width per category × LLM ====
+suppressPackageStartupMessages({
+  library(dplyr)
+  library(tidyr)
+  library(ggplot2)
+})
+
+# Preconditions / helpers
+stopifnot(exists("ecology_all"), is.data.frame(ecology_all), nrow(ecology_all) > 0)
+if (!exists("short_llm")) {
+  short_llm <- function(x) ifelse(grepl("/", x), sub(".*/", "", x), x)
+}
+
+# Mechanism columns (reuse if already defined)
+if (!exists("mechanism_cols")) {
+  mechanism_cols <- c(
     "nutrient_equation_uptake",
     "nutrient_equation_recycling",
     "nutrient_equation_mixing",
@@ -481,136 +1317,211 @@ if (!is.null(ecology_all) && nrow(ecology_all) > 0) {
     "phytoplankton_equation_mortality",
     "phytoplankton_equation_mixing",
     "zooplankton_equation_growth",
-    "zooplankton_equation_mortality"
+    "zooplankton_equation_mortality",
+    "zooplankton_equation_mixing"
+  )
+  mechanism_cols <- mechanism_cols[mechanism_cols %in% colnames(ecology_all)]
+}
+if (length(mechanism_cols) == 0) {
+  stop("No ecological mechanism columns found in ecology_all.")
+}
+
+# Categorical mapping: 0..3
+score_levels <- c(0L, 1L, 2L, 3L)
+score_labels <- c(
+  "absent/incorrect",
+  "present",
+  "alternate",
+  "truth match"
+)
+
+# --- Identify best performing individual per LLM (by objective value) ---
+best_per_llm_cat <- ecology_all %>%
+  mutate(
+    llm = as.character(llm),
+    llm_short = short_llm(llm),
+    objective_value = suppressWarnings(as.numeric(objective_value))
+  ) %>%
+  filter(is.finite(objective_value)) %>%
+  group_by(llm_short) %>%
+  slice_min(order_by = objective_value, n = 1, with_ties = FALSE) %>%
+  ungroup() %>%
+  select(llm_short, individual, Population, objective_value)
+
+cat("\nBest performers by LLM for categorical plot asterisks:\n")
+print(best_per_llm_cat)
+cat("\n")
+
+# Extract ecological scores for best performers in long format
+best_scores_long <- ecology_all %>%
+  mutate(
+    llm = as.character(llm),
+    llm_short = short_llm(llm)
+  ) %>%
+  inner_join(best_per_llm_cat, by = c("llm_short", "individual")) %>%
+  select(llm_short, individual, all_of(mechanism_cols)) %>%
+  pivot_longer(
+    cols = all_of(mechanism_cols),
+    names_to = "mechanism",
+    values_to = "score"
+  ) %>%
+  mutate(
+    score_num = suppressWarnings(as.integer(as.character(score))),
+    score_cat = factor(score_num, levels = score_levels, labels = score_labels, ordered = TRUE)
+  ) %>%
+  filter(!is.na(score_cat))
+
+# Prepare long data for all individuals
+df_mech_long <- ecology_all %>%
+  mutate(
+    llm = as.character(llm),
+    llm_short = short_llm(llm)
+  ) %>%
+  select(Population, individual, llm_short, all_of(mechanism_cols)) %>%
+  pivot_longer(
+    cols = all_of(mechanism_cols),
+    names_to = "mechanism",
+    values_to = "score"
+  ) %>%
+  mutate(
+    score_num = suppressWarnings(as.integer(as.character(score))),
+    score_cat = factor(score_num, levels = score_levels, labels = score_labels, ordered = TRUE)
+  ) %>%
+  filter(!is.na(score_cat))
+
+if (nrow(df_mech_long) == 0) stop("No categorical mechanism scores available to plot.")
+
+# All LLM levels we want to keep (even if absent in a particular bin)
+llm_levels <- sort(unique(df_mech_long$llm_short))
+
+# Count & COMPLETE the grid so every (mechanism × score_cat × LLM) exists (n=0 if missing)
+df_counts <- df_mech_long %>%
+  count(mechanism, llm_short, score_cat, name = "n") %>%
+  tidyr::complete(
+    mechanism,
+    score_cat = factor(score_labels, levels = score_labels, ordered = TRUE),
+    llm_short = factor(llm_levels, levels = llm_levels),
+    fill = list(n = 0)
+  ) %>%
+  arrange(mechanism, score_cat, llm_short)
+
+# Toggle raw counts vs proportions per (mechanism × LLM)
+normalize_counts <- FALSE # set TRUE to show proportions within each LLM per mechanism
+if (normalize_counts) {
+  df_counts <- df_counts %>%
+    group_by(mechanism, llm_short) %>%
+    mutate(n_total = sum(n), value = ifelse(n_total > 0, n / n_total, 0)) %>%
+    ungroup()
+} else {
+  df_counts <- df_counts %>%
+    mutate(value = n)
+}
+
+# Color palette for LLMs
+llm_cols <- setNames(scales::hue_pal()(length(llm_levels)), llm_levels)
+
+# Use position_dodge2 with preserve = "single" to keep each bar's width fixed
+pos_fixed <- position_dodge2(width = 0.8, preserve = "single", padding = 0.05)
+
+# Prepare asterisk data: create a complete grid with placeholders for all LLMs
+# First, mark which combinations should show asterisks (best performers)
+best_markers <- best_scores_long %>%
+  mutate(show_asterisk = TRUE) %>%
+  select(mechanism, llm_short, score_cat, show_asterisk)
+
+# Create complete grid for asterisks (all mechanism x score_cat x llm_short combinations)
+asterisk_data <- df_counts %>%
+  left_join(best_markers, by = c("mechanism", "llm_short", "score_cat")) %>%
+  mutate(
+    show_asterisk = ifelse(is.na(show_asterisk), FALSE, show_asterisk),
+    # Only show asterisk label where marked AND there's a bar (value > 0)
+    label = ifelse(show_asterisk & value > 0, "*", ""),
+    # Position asterisk slightly above the bar (or at 0 for empty placeholders)
+    y_pos = ifelse(value > 0, value * 1.05, 0)
   )
 
-  results_long <- ecology_all %>%
-    mutate(objective_value = suppressWarnings(as.numeric(objective_value))) %>%
-    dplyr::select(Population, individual, objective_value, all_of(component_scores)) %>%
-    tidyr::pivot_longer(cols = all_of(component_scores), names_to = "characteristic", values_to = "score") %>%
-    mutate(
-      score = suppressWarnings(as.numeric(score)),
-      characteristic_clean = gsub("_", " ", tools::toTitleCase(characteristic))
-    ) %>%
-    filter(
-      !is.na(objective_value), !is.na(score),
-      is.finite(objective_value), is.finite(score),
-      objective_value > 0
-    )
+cat("\nAsterisk data summary (showing asterisks):\n")
+print(asterisk_data %>% filter(show_asterisk) %>% select(mechanism, llm_short, score_cat, value, label, y_pos))
+cat("\n")
 
-  # Shared outlier threshold for X across facets (IQR-based)
-  x_q <- quantile(results_long$objective_value, probs = c(0.25, 0.75), na.rm = TRUE)
-  x_iqr <- diff(x_q)
-  x_thr <- x_q[2] + 1.5 * x_iqr
-  x_max <- suppressWarnings(max(results_long$objective_value, na.rm = TRUE))
+# Create a dummy layer for legend entry (asterisk)
+dummy_asterisk <- data.frame(
+  score_cat = factor(score_labels[1], levels = score_labels),
+  value = NA_real_,
+  llm_short = "Best Performer",
+  mechanism = mechanism_cols[1]
+)
 
-  # Correlation label per facet (unchanged)
-  correlations <- results_long %>%
-    group_by(characteristic_clean) %>%
-    summarise(
-      n = n(),
-      var_score = var(score, na.rm = TRUE),
-      var_obj = var(objective_value, na.rm = TRUE),
-      r = if (!is.na(var_score) && var_score > 0 && !is.na(var_obj) && var_obj > 0 && n >= 3) cor(score, objective_value) else NA_real_,
-      p = if (!is.na(r)) tryCatch(cor.test(score, objective_value)$p.value, error = function(e) NA_real_) else NA_real_
-    ) %>%
-    mutate(label = ifelse(!is.na(r) & !is.na(p), sprintf("r = %.2f\np = %.2e", r, p), "not enough data"))
+p_mech_dist_cat_fixed <- ggplot(
+  df_counts,
+  aes(x = score_cat, y = value, fill = llm_short)
+) +
+  geom_col(position = pos_fixed, width = 0.7, alpha = 0.95) +
+  # Add asterisks for best performers - use fill aesthetic to match bar positioning
+  {
+    if (nrow(asterisk_data) > 0) {
+      geom_text(
+        data = asterisk_data,
+        aes(x = score_cat, y = y_pos, label = label, fill = llm_short),
+        position = pos_fixed,
+        size = 6,
+        # fontface = "bold",
+        color = "black",
+        show.legend = FALSE
+      )
+    } else {
+      NULL
+    }
+  } +
+  # Add dummy point for legend (invisible, but creates legend entry)
+  geom_point(
+    data = dummy_asterisk,
+    aes(x = score_cat, y = value, shape = llm_short),
+    size = 0,
+    alpha = 0,
+    show.legend = TRUE
+  ) +
+  facet_wrap(~mechanism, scales = "free_y", ncol = 4,
+           labeller = labeller(mechanism = ~stringr::str_to_sentence(gsub("_", " ", gsub("equation", "-", .))))) +
+  scale_fill_manual(values = llm_cols, name = "LLM", drop = FALSE) +
+  scale_shape_manual(
+    values = c("Best Performer" = 8),
+    name = "",
+    labels = c("Best Performer" = "*  Best Performer")
+  ) +
+  scale_x_discrete(drop = FALSE) +
+  labs(
+    x = "Raw score category",
+    y = if (normalize_counts) "Proportion within LLM" else "Count of individuals"
+  ) +
+  theme_classic() +
+  theme(
+    legend.position = c(0.85, -0.04),
+    legend.justification = c(1, 0),
+    legend.background = element_rect(fill = "white", color = "white"),
+    legend.box.background = element_rect(fill = "white", color = NA),
+    legend.direction = "vertical",
+    legend.box = "vertical",
+    strip.text = element_text(size = 10),
+    axis.text.x = element_text(angle = 30, hjust = 1),
+    strip.background = element_blank()
+  ) +
+  guides(
+    fill = guide_legend(order = 1, title = "LLM", ncol = 1),
+    shape = guide_legend(order = 2, title = NULL, ncol = 1)
+  )
 
-  p_ecology_components <- ggplot(results_long, aes(x = objective_value, y = score)) +
-    geom_point(alpha = 0.6, color = "#0072B2") +
-    geom_smooth(method = "lm", se = FALSE, color = "#D55E00", linetype = "dashed") +
-    scale_x_log10() + # compatible with ggbreak’s break scales [4](https://cran.r-project.org/web//packages/ggbreak/vignettes/ggbreak.html)
-    facet_wrap(~characteristic_clean, ncol = 2) +
-    geom_text(
-      data = correlations,
-      x = min(results_long$objective_value, na.rm = TRUE),
-      y = max(results_long$score, na.rm = TRUE),
-      label = correlations$label,
-      hjust = 0, vjust = 1, size = 3
-    ) +
-    theme_classic() +
-    labs(
-      x = "Objective Value (log scale)",
-      y = "Score",
-      caption = sprintf("n = %d individuals across %d NPZ populations", length(unique(results_long$individual)), length(unique(results_long$Population)))
-    )
+# Save
+fig_dir <- "Figures"
+dir.create(fig_dir, recursive = TRUE, showWarnings = FALSE)
+ggsave(file.path(fig_dir, "ecology_mechanism.png"),
+  p_mech_dist_cat_fixed,
+  width = 11, height = 7.5, dpi = 300
+)
+ggsave(file.path(fig_dir, "ecology_mechanism.svg"),
+  p_mech_dist_cat_fixed,
+  width = 11, height = 7.5
+)
 
-  # Insert the same X-axis break across all facets; hide the top axis elements
-  if (is.finite(x_thr) && is.finite(x_max) && x_max > x_thr * 1.05) {
-    p_ecology_components <- p_ecology_components +
-      scale_x_break(c(x_thr, x_max), space = 0.18) + # break produces top & bottom subpanels per facet [4](https://cran.r-project.org/web//packages/ggbreak/vignettes/ggbreak.html)
-      theme(
-        axis.text.x.top  = element_blank(),
-        axis.ticks.x.top = element_blank(),
-        axis.line.x.top  = element_blank()
-      ) # keep bottom axis only in all facets [1](https://ggplot2.tidyverse.org/reference/theme.html)
-  }
-
-  figures_dir <- "Figures"
-  dir.create(figures_dir, recursive = TRUE, showWarnings = FALSE)
-  ggsave(file.path(figures_dir, "ecological_characteristics_vs_objective_ALL.png"), p_ecology_components, width = 12, height = 8)
-  ggsave(file.path(figures_dir, "ecological_characteristics_vs_objective_ALL.svg"), p_ecology_components, width = 12, height = 8)
-}
-# --- EXTRAS summary across populations ---
-
-if (!is.null(ecology_all) && nrow(ecology_all) > 0) {
-  extras_df <- ecology_all %>%
-    dplyr::select(Population, individual, extras_count, extras_description, extras_list_json) %>%
-    mutate(
-      extras_count = suppressWarnings(as.numeric(extras_count)),
-      extras_description = as.character(extras_description),
-      extras_list_json = as.character(extras_list_json)
-    )
-
-  # Save a tidy table
-  results_dir <- "Manuscript/Results/ecology_analysis"
-  dir.create(results_dir, recursive = TRUE, showWarnings = FALSE)
-  write.csv(extras_df, file.path(results_dir, "extras_summary_ALL.csv"), row.names = FALSE)
-
-  # Bar chart of extras_count distribution per population
-  extras_counts <- extras_df %>%
-    filter(!is.na(extras_count)) %>%
-    group_by(Population) %>%
-    summarise(mean_extras = mean(extras_count, na.rm = TRUE), n = n())
-
-  p_extras <- ggplot(extras_counts, aes(x = Population, y = mean_extras)) +
-    geom_col(fill = "#3EBCD2") +
-    theme_classic() +
-    labs(title = "Mean Extras Count by Population", x = "Population", y = "Mean Extras Count")
-
-  figures_dir <- "Figures"
-  dir.create(figures_dir, recursive = TRUE, showWarnings = FALSE)
-  ggsave(file.path(figures_dir, "extras_mean_by_population.png"), p_extras, width = 8, height = 4)
-  ggsave(file.path(figures_dir, "extras_mean_by_population.svg"), p_extras, width = 8, height = 4)
-}
-
-# Save combined ecology results
-results_dir <- "Manuscript/Results/ecology_analysis"
-dir.create(results_dir, recursive = TRUE, showWarnings = FALSE)
-write.csv(results_clean, file.path(results_dir, "ecological_scores_ALL.csv"), row.names = FALSE)
-
-# Text summary (generalized)
-sink(file.path(results_dir, "analysis_summary_ALL.txt"))
-cat("Analysis Summary (ALL NPZ populations)\n")
-cat("================\n\n")
-cat("Number of individuals analyzed:", nrow(results_clean), "\n")
-cat("Number of NPZ populations:", length(unique(results_clean$Population)), "\n\n")
-cat("Summary Statistics:\n")
-print(summary(results_clean))
-cat("\nCorrelations with objective value:\n")
-if (nrow(results_clean) >= 3) {
-  total_cor <- cor.test(results_clean$total_score, results_clean$objective_value)
-  cat(sprintf("Total Score: r = %.3f (p = %.3e)\n", total_cor$estimate, total_cor$p.value))
-  for (sc in component_scores) {
-    ct <- cor.test(results_clean[[sc]], results_clean$objective_value)
-    cat(sprintf("%s: r = %.3f (p = %.3e)\n",
-                gsub("_", " ", tools::toTitleCase(sc)),
-                ct$estimate, ct$p.value))
-  }
-} else {
-  cat("Not enough complete cases to calculate correlations.\n")
-}
-sink()
-
-
-message("Finished: NPZ_timeseries_all_populations.(png|svg); NPZ_training_all_populations.(png|svg) and (optional) ecology plots saved in Figures/")
+message("Saved fixed‑width categorical distribution to Figures/ecology_mechanism_distribution_by_llm_categorical_FIXEDWIDTH.{png,svg}")
+# ==== END fixed bar width categorical distributions ====

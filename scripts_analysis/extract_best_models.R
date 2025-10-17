@@ -88,16 +88,14 @@ format_llm_name <- function(llm) {
 }
 
 # ---------- Load analysis results ----------
-results <- fromJSON("Manuscript/Results/populations_analysis.json", simplifyVector = TRUE)
+results <- fromJSON("Results/populations_analysis.json", simplifyVector = TRUE)
 llm_stats <- results$stats$llm_statistics
 
-# ---------- Build LaTeX content ----------
-supplement_content <- c(
-  "\\section{Best Performing Models for CoTS Case Study}",
-  "\\label{sec:best_models_cots}",
-  "This section presents the best performing models from different LLM configurations for the Crown of Thorns Starfish (CoTS) case study.",
-  ""
-)
+# ---------- Create output directory ----------
+output_dir <- "Manuscript/best_models"
+if (!dir.exists(output_dir)) {
+  dir.create(output_dir, recursive = TRUE)
+}
 
 # We will count how many LLMs have valid COTS and NPZ picks
 cots_llms_with_results <- 0
@@ -130,9 +128,12 @@ for (llm in names(llm_stats)) {
     if (!is.null(best_indiv_cots)) {
       files <- extract_model_files(best_pop_cots, best_indiv_cots)
       llm_name <- format_llm_name(llm)
-
-      supplement_content <- c(
-        supplement_content,
+      
+      # Create filename from LLM name (sanitize for filesystem)
+      file_safe_name <- tolower(gsub("[^a-z0-9_]", "_", llm))
+      output_file <- file.path(output_dir, sprintf("cots_%s.tex", file_safe_name))
+      output_text_file <- file.path(output_dir, sprintf("cots_%s.txt", file_safe_name))
+      model_content <- c(
         sprintf("\\subsection{%s Model (CoTS)}", llm_name),
         sprintf("This model achieved an objective value of %.4f (Population %d).", best_obj_cots, best_pop_cots),
         "",
@@ -149,23 +150,21 @@ for (llm in names(llm_stats)) {
         "\\subsubsection{Model Parameters}",
         "\\begin{lstlisting}",
         files$params_json,
-        "\\end{lstlisting}",
-        "\\clearpage"
+        "\\end{lstlisting}"
       )
+      
+      writeLines(model_content, output_file)
+      system2("python3", args = c("scripts/format_latex_chars.py", output_file))
+      cat(sprintf("Written CoTS model for %s to %s\n", llm_name, output_file))
+      writeLines(model_content, output_text_file)
+      system2("python3", args = c("scripts/format_latex_chars.py", output_text_file))
+      cat(sprintf("Written CoTS model for %s to %s\n", llm_name, output_text_file))
       cots_llms_with_results <- cots_llms_with_results + 1
     }
   }
 }
 
 # ---------- NPZ Section ----------
-supplement_content <- c(
-  supplement_content,
-  "\\section{Best Performing Models for NPZ Case Study}",
-  "\\label{sec:best_models_npz}",
-  "This section presents the best performing models from different LLM configurations for the Nutrient-Phytoplankton-Zooplankton (NPZ) case study.",
-  ""
-)
-
 for (llm in names(llm_stats)) {
   stats <- llm_stats[[llm]]
   pops_vec <- stats$populations
@@ -189,9 +188,12 @@ for (llm in names(llm_stats)) {
     if (!is.null(best_indiv_npz)) {
       files <- extract_model_files(best_pop_npz, best_indiv_npz)
       llm_name <- format_llm_name(llm)
-
-      supplement_content <- c(
-        supplement_content,
+      
+      # Create filename from LLM name (sanitize for filesystem)
+      file_safe_name <- tolower(gsub("[^a-z0-9_]", "_", llm))
+      output_file <- file.path(output_dir, sprintf("npz_%s.tex", file_safe_name))
+      output_text_file <- file.path(output_dir, sprintf("npz_%s.txt", file_safe_name))
+      model_content <- c(
         sprintf("\\subsection{%s Model (NPZ)}", llm_name),
         sprintf("This model achieved an objective value of %.4f (Population %d).", best_obj_npz, best_pop_npz),
         "",
@@ -208,23 +210,21 @@ for (llm in names(llm_stats)) {
         "\\subsubsection{Model Parameters}",
         "\\begin{lstlisting}",
         files$params_json,
-        "\\end{lstlisting}",
-        "\\clearpage"
+        "\\end{lstlisting}"
       )
+      
+      writeLines(model_content, output_file)
+      system2("python3", args = c("scripts/format_latex_chars.py", output_file))
+      cat(sprintf("Written NPZ model for %s to %s\n", llm_name, output_file))
+      writeLines(model_content, output_text_file)
+      system2("python3", args = c("scripts/format_latex_chars.py", output_text_file))
+      cat(sprintf("Written NPZ model for %s to %s\n", llm_name, output_text_file))
       npz_llms_with_results <- npz_llms_with_results + 1
     }
   }
 }
 
 # ---------- Best Out-of-Sample Test Model ----------
-supplement_content <- c(
-  supplement_content,
-  "\\section{Best Out-of-Sample Test Model}",
-  "\\label{sec:best_out_of_sample}",
-  "This section presents the best performing out-of-sample test model (populations with \\texttt{train\\_test\\_split} < 1.0).",
-  ""
-)
-
 # Scan all populations and find best performer where train_test_split < 1.0
 pop_dirs <- list.files("POPULATIONS", pattern = "^POPULATION_\\d+$", full.names = TRUE)
 oos_candidates <- list()
@@ -273,42 +273,46 @@ if (length(oos_candidates) > 0) {
   idx_global <- which.min(vapply(oos_candidates, function(x) x$objective, numeric(1)))
   oos_best <- oos_candidates[[idx_global]]
   oos_files <- extract_model_files(oos_best$pop_num, oos_best$individual)
-
-  supplement_content <- c(
-    supplement_content,
+  
+  output_file <- file.path(output_dir, "oos_best.tex")
+  output_text_file <- file.path(output_dir, "oos_best.txt")
+  model_content <- c(
+    "\\subsection{Best Out-of-Sample Test Model}",
     sprintf(
       "The best out-of-sample model is from Population %d (%s), with objective value %.4f and \\texttt{train\\_test\\_split} = %.3f.",
       oos_best$pop_num, oos_best$category, oos_best$objective, oos_best$tts
     ),
     "",
-    "\\subsection{Model Intention}",
+    "\\subsubsection{Model Intention}",
     "\\begin{lstlisting}",
     oos_files$intention_txt,
     "\\end{lstlisting}",
     "",
-    "\\subsection{Model Implementation}",
+    "\\subsubsection{Model Implementation}",
     "\\begin{lstlisting}",
     oos_files$model_cpp,
     "\\end{lstlisting}",
     "",
-    "\\subsection{Model Parameters}",
+    "\\subsubsection{Model Parameters}",
     "\\begin{lstlisting}",
     oos_files$params_json,
-    "\\end{lstlisting}",
-    "\\clearpage"
+    "\\end{lstlisting}"
   )
+  
+  writeLines(model_content, output_file)
+  system2("python3", args = c("scripts/format_latex_chars.py", output_file))
+  cat(sprintf("Written out-of-sample model to %s\n", output_file))
+  writeLines(model_content, output_text_file)
+  system2("python3", args = c("scripts/format_latex_chars.py", output_text_file))
+  cat(sprintf("Written out-of-sample model to %s\n", output_text_file))
 } else {
-  supplement_content <- c(
-    supplement_content,
-    "No out-of-sample populations (with \\texttt{train\\_test\\_split} < 1.0) were found.",
-    "\\clearpage"
-  )
+  cat("No out-of-sample populations (with train_test_split < 1.0) were found.\n")
 }
 
-# ---------- Write and format ----------
-writeLines(supplement_content, "Manuscript/best_models.tex")
-
-# Run the LaTeX character formatting script
-system2("python3", args = "scripts/format_latex_chars.py Manuscript/best_models.tex")
-
-cat("Best models extracted and formatted, saved to Manuscript/best_models.tex\n")
+# ---------- Summary ----------
+cat(sprintf("\nBest models extracted to %s/\n", output_dir))
+cat(sprintf("  - %d CoTS models\n", cots_llms_with_results))
+cat(sprintf("  - %d NPZ models\n", npz_llms_with_results))
+if (length(oos_candidates) > 0) {
+  cat("  - 1 out-of-sample model\n")
+}

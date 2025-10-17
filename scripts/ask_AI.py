@@ -306,6 +306,13 @@ class Config:
             input_cost_per_million=0.25,
             output_cost_per_million=2.00
         ),
+        'openai/gpt-5-nano': ModelConfig(
+            provider='openrouter',
+            model_name='openai/gpt-5-nano',
+            max_tokens_limit=128000,
+            input_cost_per_million=0.25,
+            output_cost_per_million=2.00
+        ),
 
         # Claude Sonnet 4.5 (Anthropic via OpenRouter)
         'anthropic/claude-sonnet-4.5': ModelConfig(

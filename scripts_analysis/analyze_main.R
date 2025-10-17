@@ -14,6 +14,7 @@ source("scripts_analysis/iteration_figures.R")
 source("scripts_analysis/combine_validation_plots.R")
 source("scripts_analysis/analyze_NPZ_pops.r")
 
+
 # ---------------- Helpers ----------------
 
 # Determine NPZ vs COTS from response_file
@@ -105,12 +106,19 @@ main <- function() {
     best_perf <- safe_best_performer(population_data)
 
     # Capture per-population summary
+    llm_value <- if (!is.null(population_data$llm_choice)) {
+      as.character(population_data$llm_choice)
+    } else {
+      "Unknown"
+    }
+    
     per_population_summary[[as.character(pop_num)]] <- list(
       population = pop_num,
       category = category,
       train_test_split = tts,
       best_individual = best_perf$individual,
-      best_objective = best_perf$objective_value
+      best_objective = best_perf$objective_value,
+      llm = llm_value
     )
 
     # Get model report files and extract iterations
@@ -266,6 +274,86 @@ main <- function() {
   # Store per-population overview for downstream use
   results$populations_overview <- per_population_summary
 
+  # ---------------- Create Combined Validation Plot for Best OOS ----------------
+  if (!is.null(best_oos)) {
+    cat(sprintf("\nCreating combined validation plot for best out-of-sample performer...\n"))
+    cat(sprintf("Population %04d (%s) | Individual %s | Objective %.6f | train_test_split = %.3f\n",
+                best_oos$population[[1]], best_oos$category[[1]], best_oos$best_individual[[1]],
+                best_oos$best_objective[[1]], best_oos$train_test_split[[1]]))
+    
+    # Find the population directory
+    pop_idx <- which(population_numbers == best_oos$population[[1]])
+    if (length(pop_idx) > 0) {
+      best_individual_dir <- file.path(population_dirs[pop_idx], paste0("INDIVIDUAL_", best_oos$best_individual[[1]]))
+      validation_file <- file.path(best_individual_dir, "validation_report.json")
+      
+      if (file.exists(validation_file)) {
+        tryCatch({
+          create_combined_validation_plot(validation_file, "Figures")
+          cat("Combined validation plot saved to Figures/combined_validation.*\n")
+        }, error = function(e) {
+          cat("Error creating combined validation plot:", e$message, "\n")
+        })
+      } else {
+        cat(sprintf("Warning: Validation file not found at %s\n", validation_file))
+      }
+    }
+  } else {
+    cat("\nNo out-of-sample populations found - skipping combined validation plot.\n")
+  }
+
+  # ---------------- Experimental Design Completion Analysis ----------------
+  # Goal: 3 replicates each for LLM × Category × train_test_split=1
+  # LLMs: gpt-5, claude, gemini
+  # Categories: NPZ, COTS
+  # Each should have 10 generations unless converged
+  
+  llm_mapping <- list(
+    "openrouter:openai/gpt-5" = "GPT-5",
+    "openrouter:anthropic/claude-sonnet-4.5" = "Claude",
+    "openrouter:google/gemini-2.5-pro" = "Gemini"
+  )
+  
+  # Filter to train_test_split = 1 populations only
+  design_df <- pop_summary_df %>%
+    filter(train_test_split == 1) %>%
+    mutate(llm_short = sapply(llm, function(x) {
+      if (x %in% names(llm_mapping)) llm_mapping[[x]] else x
+    }))
+  
+  # Count by LLM and Category
+  design_counts <- design_df %>%
+    group_by(llm_short, category) %>%
+    summarise(
+      current_count = n(),
+      populations = list(population),
+      .groups = "drop"
+    ) %>%
+    mutate(
+      target_count = 3,
+      needed = pmax(0, target_count - current_count),
+      status = ifelse(current_count >= target_count, "Complete", sprintf("Need %d more", needed))
+    )
+  
+  # Calculate total missing runs
+  total_needed <- sum(design_counts$needed)
+  total_complete <- sum(design_counts$current_count >= design_counts$target_count)
+  total_cells <- nrow(design_counts)
+  
+  # Build experimental design summary
+  results$experimental_design <- list(
+    target_design = "3 replicates × 3 LLMs × 2 Categories × train_test_split=1",
+    target_populations = 18,
+    current_populations = nrow(design_df),
+    populations_needed = total_needed,
+    cells_complete = sprintf("%d/%d", total_complete, total_cells),
+    completion_status = design_counts %>%
+      rowwise() %>%
+      mutate(populations_list = paste(sprintf("POP_%04d", populations[[1]]), collapse = ", ")) %>%
+      ungroup() %>%
+      dplyr::select(llm_short, category, current_count, target_count, needed, status, populations_list)
+  )
+  
   # ---------------- Save updated results to JSON ----------------
   write_json(results, file.path(results_dir, "populations_analysis.json"), pretty = TRUE, auto_unbox = TRUE)
 
@@ -345,6 +433,36 @@ main <- function() {
     report_lines <- c(report_lines, "No out-of-sample populations found.\n")
   }
 
+  # Append experimental design completion
+  report_lines <- c(
+    report_lines,
+    "\nExperimental Design Completion (train_test_split=1 only):\n",
+    "--------------------------------------------------------\n",
+    sprintf("Target: %s\n", results$experimental_design$target_design),
+    sprintf("Progress: %d/%d populations (%d needed)\n",
+            results$experimental_design$current_populations,
+            results$experimental_design$target_populations,
+            results$experimental_design$populations_needed),
+    sprintf("Cells complete: %s\n\n", results$experimental_design$cells_complete)
+  )
+  
+  # Add detailed breakdown by LLM and Category
+  for (i in seq_along(design_counts$llm_short)) {
+    report_lines <- c(
+      report_lines,
+      sprintf(
+        "%s × %s: %d/%d replicate%s %s\n  Populations: %s\n",
+        design_counts$llm_short[i],
+        design_counts$category[i],
+        design_counts$current_count[i],
+        design_counts$target_count[i],
+        ifelse(design_counts$target_count[i] > 1, "s", ""),
+        design_counts$status[i],
+        paste(sprintf("%04d", design_counts$populations[[i]]), collapse = ", ")
+      )
+    )
+  }
+
   report_lines <- c(
     report_lines,
     "\nAnalysis Files:\n",
@@ -368,6 +486,15 @@ main <- function() {
     stderr = TRUE
   )
   cat(paste(result, collapse = "\n"), "\n")
+
+  # Run citation analysis
+  cat("\nRunning citation analysis...\n")
+  citation_result <- system2("python3",
+    args = "scripts_analysis/analyze_citations.py",
+    stdout = TRUE,
+    stderr = TRUE
+  )
+  cat(paste(citation_result, collapse = "\n"), "\n")
 
   # Create combined status plot for all populations
   if (length(all_population_data) > 0) {

@@ -2,14 +2,14 @@
 
 ## Overview
 
-This project implements "AI for Models of Ecosystems" (AIME), a novel framework that integrates large language models (LLMs) with evolutionary optimization to automate the discovery of interpretable ecological models from time-series data. AIME addresses the inverse problem of inferring ecologically meaningful mechanistic models that explain observed data while maintaining biological plausibility.
+This project implements "LLM-Enabled Mechanistic Modells for ecosystem Assessment" (LEMMA), a novel framework that integrates large language models (LLMs) with evolutionary optimization to automate the discovery of interpretable ecological models from time-series data. LEMMA addresses the inverse problem of inferring ecologically meaningful mechanistic models that explain observed data while maintaining biological plausibility.
 
-The framework utilizes a genetic algorithm to evolve and optimize ecological models, with LLMs assisting in model creation, evaluation, and improvement. AIME produces interpretable models with meaningful parameters that capture real biological processes, facilitating scientific insight and potentially accelerating management applications.
+The framework utilizes a genetic algorithm to evolve and optimize ecological models, with LLMs assisting in model creation, evaluation, and improvement. LEMMA produces interpretable models with meaningful parameters that capture real biological processes, facilitating scientific insight and potentially accelerating management applications.
 
-This repository contains the code and resources associated with the paper: "Data-Driven Discovery of Mechanistic Ecosystem Models with LLMs", which demonstrates AIME's capabilities through two complementary marine case studies:
+This repository contains the code and resources associated with the paper: "Data-Driven Discovery of Mechanistic Ecosystem Models with LLMs", which demonstrates LEMMA's capabilities through two complementary marine case studies:
 
-1. A nutrient-phytoplankton-zooplankton (NPZ) model, where AIME successfully recovered known ecological dynamics
-2. A Crown-of-Thorns starfish (COTS) model, where AIME-generated models approached human expert models in capturing outbreak dynamics
+1. A nutrient-phytoplankton-zooplankton (NPZ) model, where LEMMA successfully recovered known ecological dynamics
+2. A Crown-of-Thorns starfish (COTS) model, where LEMMA-generated models approached human expert models in capturing outbreak dynamics
 
 ## Prerequisites
 
@@ -83,7 +83,7 @@ To run the genetic algorithm:
 
 4. To run experiments:
    ```
-   python Experiments/experiment1_convergence.py [options]
+   python scripts_analysis/experiment1_convergence.py [options]
    ```
    Available options:
    - Same as genetic_algorithm.py, plus:
@@ -99,7 +99,7 @@ To run the genetic algorithm:
 - `search.py`: Performs RAG on local files and web search to obtain parameter values.
 - `model_functions.py`: Contains utility functions for model operations.
 - `POPULATIONS/`: Directory where all generated populations and their branches are stored.
-- `Experiments/`: Directory containing experimental scripts:
+- `scripts_analysis/`: Directory containing experimental scripts:
   - `experiment1_convergence.py`: Runs multiple iterations of the genetic algorithm to test convergence with different LLM models
   - `experiment2_prediction.py`: Tests model prediction capabilities
   - `experiment3_ecology.py`: Evaluates ecological implications
@@ -117,7 +117,7 @@ To run the genetic algorithm:
 
 ### genetic_algorithm.py
 
-This is the main script that orchestrates the entire genetic algorithm process for the AIME (AI for Models of Ecosystems) framework. Here's what it does:
+This is the main script that orchestrates the entire genetic algorithm process for LEMMA. Here's what it does:
 
 1. Processes command-line arguments and loads configuration from a JSON file with comprehensive validation.
 2. Initializes a new population or resumes from an existing one:
@@ -220,7 +220,7 @@ This script is designed to test the convergence properties of the genetic algori
    - Final objective values
    - Number of culled and broken individuals
    - Best individual's predictions
-3. Saves detailed results to JSON files in `Experiments/experiment_results/`
+3. Saves detailed results to JSON files in `scripts_analysis/experiment_results/`
 4. Supports command-line arguments for customizing:
    - LLM and RAG model choices
    - Number of iterations
@@ -346,4 +346,4 @@ If you encounter issues:
 4. Check the `make_model_output.txt` files in branch directories for detailed error logs.
 
 ![Proposed Architecture](images/conceptual_diagram.png)
-<!-- <img src="Figures/conceptual_diagram.png" alt="AIME Architecture" width="200"/> -->
+<!-- <img src="Figures/conceptual_diagram.png" alt="LEMMA Architecture" width="200"/> -->

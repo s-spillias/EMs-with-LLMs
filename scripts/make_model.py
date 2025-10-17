@@ -60,18 +60,32 @@ def enhance_parameter_descriptions(individual_dir, project_topic):
 
     # Read the model.cpp for additional context
     model_file = os.path.join(individual_dir, 'model.cpp')
-    with open(model_file, 'r') as f:
-        model_content = f.read()
+    try:
+        with open(model_file, 'r') as f:
+            model_content = f.read()
+    except Exception as e:
+        print(f"Error reading model.cpp: {e}")
+        print("Skipping parameter enhancement due to file reading issues")
+        return
 
     # Create a list of current descriptions
     descriptions = []
-    for param in params_data['parameters']:
+    for param in params_data.get('parameters', []):
         # Skip if already enhanced
         if param.get('enhanced_semantic_description'):
             continue
+        
+        # Check if required keys exist
+        if 'parameter' not in param:
+            print(f"Warning: Parameter missing 'parameter' key, skipping: {param}")
+            continue
+            
+        # Use description if available, otherwise use empty string
+        description = param.get('description', '')
+        
         descriptions.append({
             'parameter': param['parameter'],
-            'description': param['description'],
+            'description': description,
         })
 
     # If all parameters already have enhanced descriptions, return
@@ -440,10 +454,21 @@ def handle_successful_run(individual_dir, project_topic, objective_value):
 
     except Exception as e:
         print(f"FATAL ERROR in post-processing: {e}")
-        print("Terminating process to prevent hanging...")
+        print("Marking individual as broken and returning large objective value...")
         import traceback
         traceback.print_exc()
-        sys.exit(1)
+        
+        # Mark individual as broken instead of terminating the process
+        error_message = f"Post-processing failed: {str(e)}\n{traceback.format_exc()}"
+        update_model_report(
+            individual_dir,
+            {
+                "status": "BROKEN",
+                "message": error_message,
+                "objective_value": float('inf')
+            }
+        )
+        return "BROKEN", float('inf')
 
     return "SUCCESS", objective_value
 
