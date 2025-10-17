@@ -1,96 +1,214 @@
-import os
-from scripts_analysis.form_utils import (
-    run_npz_workflow,
-    load_params_with_mapping,
-    EPS,
-    NPZ_COMPONENT_SPECS,
-)
+# Compare TRUTH (NPZ_model.py) vs LEMMA (model.cpp) functional components
+# Faceted overlays + "Missing from LEMMA | TRUTH" annotations
+import numpy as np
+import matplotlib.pyplot as plt
 
-# =============================================================================
-# TRUTH REFERENCE (VISIBLE, DO NOT EDIT)
-# =============================================================================
-TRUTH_PARAMS = {
-    "a": 0.2, "b": 0.2, "c": 0.4, "eN": 0.03,
-    "k": 0.05, "q": 0.075, "r": 0.10, "s": 0.04,
-    "N0_mix": 0.6,
-    "alpha": 0.25, "beta": 0.33, "gamma": 0.5,
-    "lambda_": 0.6, "mu_P": 0.035,
-}
+# ---------- TRUTH params (from NPZ_model.py) ----------
+a = 0.2
+b = 0.2
+c = 0.4
+e = 0.03
+k = 0.05
+q = 0.075
+r = 0.10
+s = 0.04
+N0 = 0.6
+alpha = 0.25
+beta = 0.33
+gamma = 0.5
+lambda_ = 0.6
+mu_hsat = 0.035
 
-TRUTH_EQUATIONS = r"""
-# Nutrient–Phytoplankton–Zooplankton (TRUTH) functional forms (Do Not Edit)
+# Initial conditions (used to hold other states constant when needed)
+N_init = 0.4
+P_init = 0.1
+Z_init = 0.05
 
-uptake  = (N / (eN + N + EPS)) * (a / (b + c*P + EPS)) * P
-grazing = lambda_ * (P^2) / (mu_P^2 + P^2 + EPS) * Z
+# ---------- LEMMA params (mapped to TRUTH to enable comparison) ----------
+mu_max = a / b          # baseline rate
+K_N = e                 # nutrient half-sat
+f_T = 1.0               # hold temp effect neutral
+f_I = 1.0               # hold light effect neutral
 
-dP/dt = uptake - grazing - r*P - (s + k)*P
-dZ/dt = alpha*grazing - q*Z
-dN/dt = -uptake + r*P + beta*grazing + gamma*q*Z + k*(N0_mix - N)
+g_max = lambda_
+K_G = mu_hsat
+h = 2.0
 
-Derived TRUTH flux components:
-P_mort  = r*P + (s + k)*P
-Z_growth= alpha*grazing
-Z_mort  = q*Z
-reminZ  = gamma*q*Z
-reminP  = r*P
-reminG  = beta*grazing
-mixN    = k*(N0_mix - N)
-dN      = -uptake + reminP + reminG + reminZ + mixN
-"""
+e_Z = alpha
+m_P = r + s
+r_P = (r / (r + s)) if (r + s) > 0 else 0.0
+m_Z = q
+gamma_Z = 0.0           # disable quadratic Z mortality for shape-only compare
+r_Z = 0.0               # TRUTH has no Z->N mortality term
+ex_Z = gamma * q
 
-# =============================================================================
-# LEMMA PLUGIN (LLM edits ONLY inside this block)
-# =============================================================================
-# Map symbol names -> keys in parameters_metadata.json
-# IMPORTANT: Values are read from `optimized_value`.
-# STRICT: no defaults injected; fix mapping if a key is missing.
-PARAM_MAP = {
-    # Example keys; verify/adjust to match parameters_metadata.json in each workspace
-    "a": "a", "b": "b", "c": "c", "eN": "eN",
-    "k": "k", "q": "q", "r": "r", "s": "s",
-    "N0_mix": "N0_mix",
-    "alpha": "alpha", "beta": "beta", "gamma": "gamma",
-    "lambda_": "lambda", "mu_P": "mu_P",
-}
+k_mix = k
+N_star = N0
+k_rem = 0.0             # TRUTH has no D pool
+k_sink = 0.0
+# ---------- TRUTH components ----------
+def uptake_truth(N, P):
+    return (N / (e + N)) * (a / (b + c * P)) * P
 
-def lemma_fluxes(t, N, P, Z, p):
-    """
-    Implement LEMMA (TMB) functional forms with parameters loaded from parameters_metadata.json.
-    You MUST return at least:
-        {'uptake': ..., 'grazing': ...}
-    You MAY return additional components (e.g., 'P_mort', 'mixN'); the framework will align
-    the TRUTH∪LEMMA union and impute missing counterparts for ISD.
+def recycling_truth(N, P, Z):
+    graz = (lambda_ * P**2 / (mu_hsat**2 + P**2)) * Z
+    return r * P + beta * graz + gamma * q * Z
 
-    IMPORTANT:
-    - Access parameters strictly via p['...'] that are mapped by PARAM_MAP to `optimized_value`.
-    - Do NOT rely on defaults; fix mapping if keys are missing.
-    - Do NOT edit the TRUTH reference block above.
-    """
-    # --- LLM: Replace the example below with the exact LEMMA forms from model.cpp ---
-    # uptake  = (N / (p["eN"] + N + EPS)) * (p["a"] / (p["b"] + p["c"]*P + EPS)) * P
-    # grazing = p["lambda_"] * (P**2) / (p["mu_P"]**2 + P**2 + EPS) * Z
-    # return {"uptake": uptake, "grazing": grazing}
+def mixing_truth_N(N):
+    return k * (N0 - N)
 
-    raise NotImplementedError("Insert LEMMA functional forms and return at least {'uptake', 'grazing'}.")
+def growth_truth_P(N, P):
+    return uptake_truth(N, P)
 
-# =============================================================================
-# End LEMMA PLUGIN
-# =============================================================================
+def grazing_loss_truth(P, Z):
+    return (lambda_ * P**2 / (mu_hsat**2 + P**2)) * Z
 
-def main():
-    # STRICT source: read from parameters_metadata.json (optimized_value)
-    params = load_params_with_mapping("parameters_metadata.json", PARAM_MAP, defaults=None)
+def mortality_truth_P(P):
+    return (r + s) * P
 
-    # Surface TRUTH components & TRUTH reference for the LLM (read-only)
-    print("TRUTH_COMPONENTS:", list(NPZ_COMPONENT_SPECS.keys()))
-    print("TRUTH_PARAMS_REFERENCE:", TRUTH_PARAMS)
-    print("TRUTH_EQUATIONS_REFERENCE_BEGIN")
-    print(TRUTH_EQUATIONS.strip())
-    print("TRUTH_EQUATIONS_REFERENCE_END")
+def mixing_truth_P(P):
+    return k * P
 
-    notes = "NPZ comparison via plugin (LLM edits: PARAM_MAP + lemma_fluxes; params from parameters_metadata.json/optimized_value)"
-    run_npz_workflow(lemma_fluxes, params, notes=notes)
+def growth_truth_Z(P, Z):
+    return alpha * (lambda_ * P**2 / (mu_hsat**2 + P**2)) * Z
 
-if __name__ == "__main__":
-    os.environ.setdefault("MPLBACKEND", "Agg")
-    main()
+def mortality_truth_Z(Z):
+    return q * Z
+
+# ---------- LEMMA components ----------
+def uptake_lemma(N, P):
+    f_N = N / (K_N + N)
+    mu = mu_max * f_T * f_I * f_N
+    return mu * P
+
+def recycling_lemma(N, P, Z, D=0.0):
+    RpN = r_P * m_P * P
+    RzN = r_Z * m_Z * Z
+    Ex  = ex_Z * Z
+    Rem = k_rem * D
+    return RpN + RzN + Ex + Rem
+
+def mixing_lemma_N(N):
+    return k_mix * (N_star - N)
+
+def growth_lemma_P(N, P):
+    return uptake_lemma(N, P)
+
+def grazing_loss_lemma(P, Z):
+    holl = (P**h) / (K_G**h + P**h)
+    g_rate = g_max * f_T * holl
+    return g_rate * Z
+
+def mortality_lemma_P(P):
+    return m_P * P
+
+def growth_lemma_Z(P, Z):
+    return e_Z * grazing_loss_lemma(P, Z)
+
+def mortality_lemma_Z(Z):
+    return m_Z * Z + gamma_Z * Z**2
+
+# ---------- Faceted plotting ----------
+P_range = np.linspace(0.0, 2.0, 400)
+N_range = np.linspace(0.0, 2.0, 400)
+Z_range = np.linspace(0.0, 2.0, 400)
+
+Z_fixed = Z_init
+N_fixed = N_init
+
+facets = [
+    ("nutrient_equation_uptake", "Uptake U(N,P)",
+     lambda: (P_range,
+              uptake_truth(N_fixed, P_range),
+              uptake_lemma(N_fixed, P_range),
+              "x=P (N fixed)")
+    ),
+    ("nutrient_equation_recycling", "Recycling to N",
+     lambda: (P_range,
+              recycling_truth(N_fixed, P_range, Z_fixed),
+              recycling_lemma(N_fixed, P_range, Z_fixed),
+              "x=P (N,Z fixed)")
+    ),
+    ("nutrient_equation_mixing", "N mixing",
+     lambda: (N_range,
+              mixing_truth_N(N_range),
+              mixing_lemma_N(N_range),
+              "x=N")
+    ),
+    ("phytoplankton_equation_growth", "P growth",
+     lambda: (P_range,
+              growth_truth_P(N_fixed, P_range),
+              growth_lemma_P(N_fixed, P_range),
+              "x=P (N fixed)")
+    ),
+    ("phytoplankton_equation_grazing_loss", "P grazing loss",
+     lambda: (P_range,
+              grazing_loss_truth(P_range, Z_fixed),
+              grazing_loss_lemma(P_range, Z_fixed),
+              "x=P (Z fixed)")
+    ),
+    ("phytoplankton_equation_mortality", "P mortality",
+     lambda: (P_range,
+              mortality_truth_P(P_range),
+              mortality_lemma_P(P_range),
+              "x=P")
+    ),
+    ("phytoplankton_equation_mixing", "P mixing",
+     lambda: (P_range,
+              mixing_truth_P(P_range),
+              None,  # Missing in LEMMA
+              "x=P")
+    ),
+    ("zooplankton_equation_growth", "Z growth",
+     lambda: (P_range,
+              growth_truth_Z(P_range, Z_fixed),
+              growth_lemma_Z(P_range, Z_fixed),
+              "x=P (Z fixed)")
+    ),
+    ("zooplankton_equation_mortality", "Z mortality",
+     lambda: (Z_range,
+              mortality_truth_Z(Z_range),
+              mortality_lemma_Z(Z_range),
+              "x=Z")
+    ),
+    # ("zooplankton_equation_mixing", "Z mixing",
+    #  lambda: (Z_range,
+    #           None,   # Missing in TRUTH
+    #           None,   # Missing in LEMMA
+    #           "x=Z")
+    # ),
+]
+
+n = len(facets)
+cols = 3
+rows = int(np.ceil(n / cols))
+fig, axes = plt.subplots(rows, cols, figsize=(20, 8), sharex=False)
+axes = axes.flatten()
+
+for idx, (key, title, data_fn) in enumerate(facets):
+    ax = axes[idx]
+    x, y_truth, y_lemma, xlabel = data_fn()
+    ax.set_title(title)
+    ax.set_xlabel(xlabel)
+    ax.set_ylabel("Flux (g C m$^{-3}$ d$^{-1}$)")
+    if y_truth is not None:
+        ax.plot(x, y_truth, label="TRUTH", color="tab:blue")
+    if y_lemma is not None:
+        ax.plot(x, y_lemma, label="LEMMA", color="tab:orange", linestyle="--")
+    missing = []
+    if y_truth is None: missing.append("TRUTH")
+    if y_lemma is None: missing.append("LEMMA")
+    if missing:
+        msg = "Missing from " + (" & ".join(missing) if len(missing) > 1 else missing[0])
+        ax.text(0.5, 0.5, msg, ha="center", va="center", transform=ax.transAxes,
+                fontsize=12, color="red", bbox=dict(facecolor="white", alpha=0.6))
+    ax.grid(True, alpha=0.3)
+    ax.legend(loc="best", fontsize=9)
+
+# Hide any unused axes
+for j in range(idx + 1, rows * cols):
+    fig.delaxes(axes[j])
+
+fig.suptitle("Ecological characteristics: TRUTH vs LEMMA (functional forms)", fontsize=16)
+fig.tight_layout(rect=[0, 0.03, 1, 0.95])
+plt.show()
