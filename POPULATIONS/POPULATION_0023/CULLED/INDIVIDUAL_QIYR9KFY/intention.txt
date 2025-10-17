@@ -1,0 +1,110 @@
+MODEL ASSESSMENT AND IMPROVEMENT PLAN
+=====================================
+
+CURRENT MODEL EVALUATION:
+-------------------------
+The model includes the basic ecological structure for COTS-coral dynamics but has a critical flaw: the nutrient-mediated larval survival mechanism is completely disabled (nutrient_effect = 1.0). This mechanism is essential for capturing episodic outbreak dynamics on the Great Barrier Reef.
+
+KEY FINDINGS:
+1. The model cannot currently produce episodic outbreaks because it lacks the non-linear recruitment trigger
+2. All necessary parameters for nutrient effects are present but unused
+3. Linear immigration alone cannot generate the characteristic boom-bust cycles
+4. The Allee effect helps with low-density dynamics but doesn't create outbreak pulses
+
+ECOLOGICAL RATIONALE FOR IMPROVEMENT:
+------------------------------------
+Crown-of-Thorns outbreaks on the GBR are strongly associated with:
+- Major flood events bringing terrestrial nutrients
+- Phytoplankton blooms providing larval food
+- Dramatic (10-100x) increases in larval survival during these events
+- Threshold behavior: only major nutrient pulses trigger outbreaks
+
+The current model has placeholder nutrient parameters with literature-informed values:
+- log_nutrient_outbreak_threshold = 0.693 (threshold = 2.0 nutrient units)
+- nutrient_outbreak_multiplier = 2.0 (can boost survival 2x above baseline)
+- nutrient_response_steepness = 5.0 (sharp threshold response)
+- log_nutrient_half_sat = 0.0 (half-saturation = 1.0)
+
+These values suggest a moderate threshold response was intended, but the mechanism was never activated.
+
+PROPOSED CHANGE:
+---------------
+Activate the nutrient-mediated larval survival mechanism using a two-component response:
+
+1. BASELINE NUTRIENT RESPONSE (Michaelis-Menten):
+   - Provides gradual increase in larval survival with nutrients
+   - Saturates at moderate nutrient levels
+   - Formula: nutrient / (nutrient + nutrient_half_sat)
+
+2. OUTBREAK THRESHOLD RESPONSE (Sigmoid):
+   - Adds sharp boost when nutrients exceed outbreak threshold
+   - Creates episodic recruitment pulses during flood events
+   - Formula: nutrient_outbreak_multiplier / (1 + exp(-steepness * (nutrient - threshold)))
+
+COMBINED EFFECT:
+   nutrient_effect = baseline_response × (1 + outbreak_boost)
+
+This creates:
+- Gradual response to moderate nutrients (baseline)
+- Sharp recruitment pulses during major flood events (threshold)
+- Episodic outbreak dynamics matching GBR observations
+
+MATHEMATICAL IMPLEMENTATION:
+---------------------------
+Replace line in EQUATION 2b (currently disabled):
+   Type nutrient_effect = Type(1.0);
+
+With:
+   // Baseline Michaelis-Menten response to nutrients
+   Type nutrient_baseline = nutrient_curr / (nutrient_curr + nutrient_half_sat + eps);
+   
+   // Sigmoid outbreak response when nutrients exceed threshold
+   Type nutrient_deviation = nutrient_curr - nutrient_outbreak_threshold;
+   Type outbreak_boost = nutrient_outbreak_multiplier / 
+                        (Type(1.0) + exp(-nutrient_response_steepness * nutrient_deviation));
+   
+   // Combined effect: baseline × (1 + outbreak boost)
+   Type nutrient_effect = nutrient_baseline * (Type(1.0) + outbreak_boost);
+
+BACKWARD COMPATIBILITY:
+----------------------
+Since nutrient_dat is not currently in the data files, the model defaults nutrient_curr to 1.0.
+This maintains the current behavior until nutrient forcing data becomes available.
+When nutrient_dat = 1.0 (baseline):
+- nutrient_baseline ≈ 0.5 (with half_sat = 1.0)
+- outbreak_boost ≈ 0.27 (below threshold of 2.0)
+- nutrient_effect ≈ 0.63
+
+This represents moderate larval survival under baseline conditions, which is ecologically reasonable.
+
+EXPECTED OUTCOMES:
+-----------------
+1. Model will now respond to nutrient_dat forcing data when available
+2. Low nutrients → low larval survival → population decline
+3. Moderate nutrients (baseline = 1.0) → moderate survival → stable populations
+4. High nutrients (>threshold = 2.0) → explosive recruitment → outbreaks
+5. Creates boom-bust cycles as nutrient pulses come and go
+
+PARAMETER CONSIDERATIONS:
+------------------------
+Current parameter values appear reasonable for initial testing:
+- Threshold at 2.0 nutrient units is moderate
+- 2x multiplier is conservative (literature suggests 10-100x possible)
+- Steepness of 5.0 creates sharp but not extreme threshold
+- These can be optimized during model fitting
+
+DATA REQUIREMENTS (FUTURE):
+---------------------------
+When nutrient forcing data becomes available, it should represent:
+- Phytoplankton biomass, OR
+- Chlorophyll-a concentrations, OR
+- River discharge as proxy for nutrient input
+- Scaled to match the parameter bounds (threshold ~2.0)
+
+VALIDATION APPROACH:
+-------------------
+After implementation, validate by checking:
+1. Do outbreaks occur following high nutrient events?
+2. Is there a lag between nutrient pulse and COTS peak (~2-3 years)?
+3. Do populations decline when nutrients return to baseline?
+4. Are outbreak magnitudes realistic (10-100x background levels)?

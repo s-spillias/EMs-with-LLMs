@@ -1,0 +1,78 @@
+Assessment and targeted improvement for COTS outbreak modeling
+
+A) Current model structure and intended dynamics
+- The model includes:
+  - Coral guilds (fast/slow) with space-limited growth, SST-driven bleaching mortality and growth suppression.
+  - COTS adults with Allee effect, an SST Gaussian modifier, carrying capacity linked to coral cover, a Type II/III multi-prey functional response, and a fecundity boost from per-capita feeding.
+  - Exogenous larval immigration (cotsimm_dat) currently influencing adults (before this change).
+  - One-year lag on immigration and soft-clipped, differentiable transitions for numerical stability.
+
+- Observation models:
+  - COTS: log-normal
+  - Coral: logit-normal (on percentage-scaled to [0,1])
+
+B) Fit to data
+- The residuals file was not included in this chat, so I cannot quantify fit, bias, autocorrelation, or out-of-phase behavior at this time. Please share the residuals file to complete this section. Typical issues for this class of model include:
+  - Mis-timed outbreak peaks (phase error), with residuals showing positive/negative runs around outbreaks.
+  - Too-short or too-long outbreak duration (serial correlation in residuals).
+  - Amplitude mismatch for outbreaks (heavy-tailed residuals during peaks).
+
+C) Alignment with project context (episodic outbreaks, boom-bust)
+- Strengths:
+  - The model has key feedbacks (resource limitation via coral, SST modifiers, Allee effect) that can generate non-linear boom-bust behavior.
+  - Feeding saturation and prey preference are represented, which supports selective predation impacts on guilds.
+- Limitations relative to outbreak timing and duration:
+  - Adult recruitment is immediate (in the prior version): adult fecundity created new adults within one time step, and immigration added directly to adults. This reduces the natural multi-year buildup and juvenile cryptic phase known for COTS, which is crucial to outbreak persistence and timing.
+  - Immigration lags are limited to a single extra year; observed dynamics often imply multi-year contributions from juvenile cohorts.
+
+D) Missing or oversimplified ecological processes
+- Cryptic juvenile stage: Juveniles are unobserved for ~1–2 years and later contribute to adult pulses. Without this, models often produce outbreaks that are too “impulsive” and poorly phased with observed peaks.
+- Stage-specific density dependence: The Beverton–Holt term previously acted at the adult recruitment step. Evidence suggests much of the regulation occurs during juvenile stages (settlement/survival to adulthood).
+- Exogenous larval supply already exists (cotsimm_dat), but sending it directly to adults conflates larval supply with adult recruitment timing.
+
+E) Chosen improvement (one meaningful change)
+- Approach: Introduce an explicit juvenile state (J) with survival and maturation, and route both adult-produced larvae and exogenous larval supply into this juvenile pool. Adults increase from the prior-year juvenile pool via maturation, subject to density dependence set by adult carrying capacity (via coral).
+- Rationale:
+  - Captures multi-year lags, enables outbreak persistence and realistic boom-bust timing.
+  - Keeps environmental drivers and feeding feedbacks, but positions density dependence at the life stage where it plausibly acts strongest.
+  - Does not use current-time observations in predictions (no data leakage).
+- Mathematical summary (at time t, using states at t-1):
+  - Adult-produced larvae: L = rA * f_SST_A * Phi_A * fecundity_boost * A(t-1)
+  - Juvenile pool update:
+      J(t) = softclip( (1 - mJ) * J(t-1) + sJ * L + gamma_I * I_lag(t-1), tiny, +infty )
+      where I_lag(t-1) = (1 - rho_lag_I) * cotsimm(t-1) + rho_lag_I * cotsimm(t-2) [for t=1, use t-1 only]
+  - Adult update:
+      A(t) = softclip( A(t-1) + [phiJ * J(t-1)] / [1 + A(t-1)/(K_A(t-1)+tiny)] - mA * A(t-1), tiny, +infty )
+  - All other processes unchanged (coral dynamics, feeding, SST/bleaching effects).
+- Expected effects on fit:
+  - Better timing (phase) of adult peaks due to maturation delay.
+  - More realistic outbreak duration (longer persistence via juvenile reservoir).
+  - Potential reduction in residual autocorrelation across outbreak windows.
+
+F) Parameter updates
+- Added:
+  - sJ (dimensionless): larval-to-juvenile survival/settlement fraction from adult-produced larvae.
+  - mJ (yr^-1): juvenile mortality rate.
+  - phiJ (yr^-1): juvenile maturation rate to adults (≈ 1 / mean maturation time).
+  - J0 (ind m^-2): initial juvenile density.
+- Clarified:
+  - gamma_I now represents addition into the juvenile pool (not directly to adults).
+
+Suggested bounds (in parameters.json):
+  - sJ: [0.0, 0.5] (low survival from larva to juvenile is expected)
+  - mJ: [0.0, 3.0]
+  - phiJ: [0.0, 1.0] (0.5 ≈ 2-year maturation; 0.33 ≈ 3 years)
+  - J0: [0.0, 50.0]
+
+G) Notes on identifiability and calibration
+- sJ and rA both scale juvenile inputs; their product largely determines juvenile production. Prior information or fixing one can help identifiability. The exogenous cotsimm_dat pathway (gamma_I) provides an orthogonal source of variation to help separate effects.
+- If residuals show over-persistence of outbreaks after calibration, consider:
+  - increasing mJ or reducing phiJ,
+  - or decreasing sJ.
+- If peaks are still early, reduce phiJ; if too late, increase phiJ.
+
+H) Next steps requested
+- Please share the residuals file so I can:
+  - quantify fit (RMSE/MAE), check bias,
+  - inspect autocorrelation and phase errors,
+  - confirm that the juvenile reservoir addresses the observed misfit during outbreak windows.

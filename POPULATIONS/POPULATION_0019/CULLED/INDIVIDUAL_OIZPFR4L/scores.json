@@ -1,0 +1,73 @@
+{
+  "individual": "INDIVIDUAL_OIZPFR4L",
+  "qualitative_description": "The C++ candidate implements the main ecological roles of a simple NPZ: nutrient-limited phytoplankton growth (Michaelis\u2013Menten form), grazing by zooplankton (Holling Type II), assimilation of grazed carbon into zooplankton biomass (efficiency e), linear mortality for P and Z, and partitioning of non-assimilated grazing into fast recycling vs sinking export (f_sink). It differs from the TRUTH model in key structural ways: TRUTH uses a multiplicative light/self-shading term a/(b + c*P) (and a P^2-type saturating grazing function) while the candidate omits that light/self-shading factor and uses a standard Holling II grazing (g_max * P/(K_P + P)). The candidate also omits environmental mixing/entrainment terms for nutrients and zooplankton present in TRUTH (k*(N0-N) and k*P respectively), and uses an explicit fecal-pellet sinking partition (f_sink) not present in the TRUTH code. Implementation notes: the candidate uses forward Euler time-stepping and an observation likelihood / parameter-penalty framework (TMB) rather than a continuous ODE solver; those are modeling/implementation details rather than new ecological processes.",
+  "characteristic_scores": {
+    "nutrient_equation_uptake": {
+      "score": 2,
+      "category": "ALTERNATE",
+      "matched_form": "Michaelis-Menten uptake (N/(K_N+N) * r * P)",
+      "explanation": "Candidate: nutrient_limitation = N_prev / (K_N + N_prev); phyto_growth = r * nutrient_limitation * P_prev (lines: 'Type nutrient_limitation = N_prev / (K_N + N_prev + eps);' and 'Type phyto_growth = r * nutrient_limitation * P_prev;'). TRUTH uses N/(e+N) multiplied by an extra light/self-shading factor a/(b + c*P); candidate lacks that multiplicative light/self-shading term, so it matches a Michaelis\u2013Menten uptake alternate rather than TRUTH exactly."
+    },
+    "nutrient_equation_recycling": {
+      "score": 2,
+      "category": "ALTERNATE",
+      "matched_form": "Recycling from mortality and non-assimilated grazing (mortality + (1-e)*(1-f_sink)*grazing)",
+      "explanation": "Candidate: non_assimilated = (1-e) * grazing; fast_recycling = non_assimilated * (1 - f_sink); nutrient_recycling = phyto_mortality + zoo_mortality + fast_recycling (lines: 'Type non_assimilated = (Type(1.0) - e) * grazing;' 'Type fast_recycling = non_assimilated * (Type(1.0) - f_sink);' 'Type nutrient_recycling = phyto_mortality + zoo_mortality + fast_recycling;'). TRUTH has recycling terms (e.g. beta*lambda_*P^2/(mu^2+P^2)*Z, gamma*q*Z and r*P) but the candidate uses mortality+egestion partitioning instead (an alternate but common recycling formulation)."
+    },
+    "nutrient_equation_mixing": {
+      "score": 0,
+      "category": "NOT_PRESENT_OR_INCORRECT",
+      "matched_form": "",
+      "explanation": "TRUTH has an explicit mixing/entrainment term k*(N0 - N) in dN/dt. Candidate code does not include any term corresponding to environmental mixing/entrainment or an external nutrient supply (no k or N0 used in the dynamics)."
+    },
+    "phytoplankton_equation_growth": {
+      "score": 2,
+      "category": "ALTERNATE",
+      "matched_form": "Nutrient-limited growth (Michaelis\u2013Menten: r * N/(K_N+N) * P)",
+      "explanation": "Candidate growth: 'Type phyto_growth = r * nutrient_limitation * P_prev;' with nutrient_limitation = N_prev/(K_N + N_prev) (lines quoted). TRUTH growth is (N/(e+N))*(a/(b + c*P))*P \u2014 candidate implements the nutrient limitation piece but omits the multiplicative light/self-shading a/(b+c*P), hence an alternate (simpler Michaelis\u2013Menten) growth formulation."
+    },
+    "phytoplankton_equation_grazing_loss": {
+      "score": 2,
+      "category": "ALTERNATE",
+      "matched_form": "Holling Type II grazing (g_max * P / (K_P + P) * Z)",
+      "explanation": "Candidate: 'Type grazing_rate = (g_max * P_prev) / (K_P + P_prev + eps); Type grazing = grazing_rate * Z_prev;' (lines quoted). TRUTH uses a P^2/(mu^2 + P^2) saturating grazing (lambda_*P^2/(mu^2+P^2) * Z) so the candidate matches an alternate Holling II form."
+    },
+    "phytoplankton_equation_mortality": {
+      "score": 3,
+      "category": "TRUTH_MATCH",
+      "matched_form": "Linear phytoplankton mortality (m_P * P)",
+      "explanation": "Candidate: 'Type phyto_mortality = m_P * P_prev;' and included in dP_dt: 'dP_dt = phyto_growth - phyto_mortality - phyto_sinking - grazing;' (lines quoted). TRUTH uses a linear term r*P for phytoplankton loss (present as '- r * P' in dP/dt), so the candidate's linear mortality is structurally equivalent (name differs)."
+    },
+    "phytoplankton_equation_mixing": {
+      "score": 1,
+      "category": "SIMILAR_NOT_LISTED",
+      "matched_form": "Linear sinking loss (s_P * P) present; mixing/entrainment k*P absent",
+      "explanation": "Candidate includes 'Type phyto_sinking = s_P * P_prev;' and subtracts phyto_sinking in dP_dt (lines: 'Type phyto_sinking = s_P * P_prev;' and 'dP_dt = ... - phyto_sinking - ...;'). TRUTH had both sinking and mixing combined as (s + k)*P. The candidate provides sinking (a physical loss) but does not include an explicit mixing/entrainment term analogous to k*P, so it is similar but not a full match to the TRUTH 'mixing' component."
+    },
+    "zooplankton_equation_growth": {
+      "score": 2,
+      "category": "ALTERNATE",
+      "matched_form": "Assimilation of grazing (e * grazing)",
+      "explanation": "Candidate: 'Type zoo_growth = e * grazing;' and dZ_dt = zoo_growth - zoo_mortality (lines quoted). TRUTH uses alpha * lambda_ * P^2/(mu^2+P^2) * Z for zooplankton growth (a different functional form tied to the TRUTH grazing function); candidate uses assimilation efficiency times a Holling-II grazing, an alternate but standard implementation."
+    },
+    "zooplankton_equation_mortality": {
+      "score": 3,
+      "category": "TRUTH_MATCH",
+      "matched_form": "Linear zooplankton mortality (m_Z * Z)",
+      "explanation": "Candidate: 'Type zoo_mortality = m_Z * Z_prev;' and 'Type dZ_dt = zoo_growth - zoo_mortality;' (lines quoted). TRUTH uses a linear mortality q * Z. Structure is equivalent (linear loss term)."
+    },
+    "zooplankton_equation_mixing": {
+      "score": 0,
+      "category": "NOT_PRESENT_OR_INCORRECT",
+      "matched_form": "",
+      "explanation": "TRUTH includes a physical loss/mixing term for zooplankton implicitly through q or other terms (and mixing k can affect Z in other formulations). The candidate does not include an explicit mixing/entrainment or dilution term for Z (no k*Z or equivalent), only growth and mortality."
+    }
+  },
+  "aggregate_scores": {
+    "raw_total": 4.997,
+    "normalized_total": 0.5555926173004225,
+    "final_score": 0.5555926173004225
+  },
+  "extra_components_count": 1,
+  "extra_components_description": "1) Explicit partitioning of non-assimilated grazing into fast recycling vs sinking export via parameter f_sink and computed sinking_export (role: routes egested/egested material either to immediate recycling or to export out of the system)."
+}

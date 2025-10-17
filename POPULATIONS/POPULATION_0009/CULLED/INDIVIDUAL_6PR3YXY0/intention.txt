@@ -1,0 +1,61 @@
+Assessment of current model and rationale for improvement
+
+A. Fit to data (qualitative pending residuals)
+- A residuals file was referenced but not provided in this chat, so I cannot compute or summarize goodness-of-fit metrics here.
+- In similar NPZ models with constant light limitation, typical issues include:
+  - Over-prediction of phytoplankton peaks during bloom periods (insufficient self-limitation).
+  - Underestimation of post-bloom decline timing (growth remains too strong at high P).
+  - Nutrient drawdown too rapid or too persistent depending on recycling and exchange settings.
+
+Please provide the residuals file to confirm these patterns and to re-check after the code change proposed below.
+
+B. Alignment with the project context
+- The model simulates N, P, Z dynamics in a mixed layer with:
+  - Monod nutrient limitation (K_N),
+  - Light limitation (K_L, L_avail),
+  - Temperature modifiers via Q10 for P and Z processes,
+  - Zooplankton grazing with a Hill functional response (h),
+  - Mortality/excretion/remineralization and mixing with source waters (D_mix, N_in),
+  - Lognormal observation model.
+- This captures the core mixed-layer NPZ structure and is appropriate for the stated context.
+
+C. Missing or oversimplified processes
+- Light limitation as a constant (L_avail) ignores self-shading by phytoplankton and variability of underwater light climate. In the mixed layer, self-shading often provides a key negative feedback at high biomass.
+- Temperature currently does not vary with time; however, the project brief does not require seasonal forcing, so I did not add this complexity here.
+- No detritus pool; recycling is instantaneous via r_PN, r_ZN, ex_Z, and a fraction of unassimilated grazing routed to dissolved nutrients (f_egest_N). This is a common simplification and acceptable unless data clearly demand a D-compartment.
+- AE_Z is constant; in reality it may vary with food quality, but that adds state/stoichiometric complexity beyond the current scope.
+
+D. Parameter review
+- Values are broadly plausible for a temperate mixed layer:
+  - mu_max ~ 0.8 d^-1, K_N ~ 0.1 g C m^-3, Q10_P ~ 2.06, Q10_Z ~ 2.1
+  - g_max ~ 0.7 d^-1, K_P ~ 0.1 g C m^-3, h = 2 (Type III-like)
+  - AE_Z = 0.6, m_P = 0.05 d^-1, m_ZL = 0.02 d^-1, gamma_Z = 0.1
+  - D_mix = 0.05 d^-1, N_in = 0.5, f_egest_N = 0.7
+- None of the parameters are flagged as updated_from_literature = true, so no structural changes are mandated by updated evidence.
+- The primary structural simplification affecting realism is the constant light limitation, motivating the improvement below.
+
+Chosen ecological improvement: dynamic light limitation with self-shading
+
+Justification
+- Ecological reasoning: Phytoplankton biomass increases turbidity and optical absorption, reducing light availability in the mixed layer and thereby self-limiting growth. This negative feedback is central to mixed-layer bloom dynamics.
+- Mathematical approach: Beer–Lambert-like attenuation of available light by P (previous time step), with an attenuation coefficient k_I:
+  - I_eff = L_avail * exp(-k_I * P_prev)
+  - fL = I_eff / (K_L + I_eff)
+- Benefits:
+  - Reduces unrealistically high growth at high P, improving bloom peak and decline timing.
+  - Introduces a measurable feedback consistent with optical oceanography, without requiring extra state variables or external forcings.
+- Complexity trade-off: Adds a single parameter (k_I) and one exponential operation per time step; this is modest and justified by the strong ecological mechanism.
+- No data leakage: Only previous-step states are used in predictions.
+
+Implementation details
+- Added parameter k_I with bounds [0, 5] (units (g C m^-3)^-1), starting value 0.3. Bounds are biologically reasonable and prevent unbounded exponentiation.
+- Replaced the constant-light fL with a dynamic fL using I_eff = L_avail * exp(-k_I * P_prev) at all time steps (including initialization).
+- Added L_eff_pred diagnostic to report the effective light time series.
+- Added a weak smooth penalty to discourage k_I from leaving plausible ranges.
+- All other process and observation structures remain unchanged.
+
+Next steps
+- Please provide the residuals file so we can:
+  - Quantify pre- and post-change fit.
+  - Check if remaining structure (e.g., detritus or seasonal temperature/light) is needed.
+- If residuals show persistent biases (e.g., delayed nutrient recovery or misfit in Z dynamics), we can consider adding a detritus pool or time-varying environmental drivers as a second step.

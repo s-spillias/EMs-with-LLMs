@@ -1,0 +1,62 @@
+Assessment of current model and rationale for modification
+
+1) Fit to data and residuals
+- Residuals file was not included in this context, so I could not quantitatively inspect the fit. Conceptually, the current adult COTS process recruits new adults in the same year as spawning, which can cause outbreak peaks that are too synchronous with adult abundance and environmental drivers (SST, immigration). In systems like COTS where settlement-to-detectable adult typically spans ~2–3 years, models without a maturation delay often exhibit phase errors (peaks arriving too early) and difficulty capturing multi-year outbreak plateaus or the post-peak decline timing.
+
+- Likelihood structure is sensible (lognormal for adults; logit-normal for coral proportions) with SD floors to avoid degeneracy. If residuals show serial correlation in adult COTS, a missing internal state/delay is a common cause.
+
+2) Alignment with PROJECT CONTEXT
+- The context emphasizes episodic outbreaks with realistic timing, magnitude, and duration. The existing model includes:
+  - Temperature-modified larval performance (phi_T_COTS) and coral performance (phi_T_CORAL).
+  - Food-dependent adult survival (phi_food).
+  - Selective, saturating predation on corals with prey preference and Type II/III flexibility.
+  - Saturating immigration.
+- What is missing for outbreak realism is a maturation delay from local reproduction to the spawning adult stage. Without it, the model can struggle to produce the characteristic boom-bust cycles where recruitment pulses accumulate and then spill into the adult population with a lag.
+
+3) Missing or oversimplified ecological processes
+- Stage structure and maturation delay: Juveniles/subadults are not modeled; recruits immediately join the adult pool. Ecologically, COTS typically require ~2–3 years to become detectable, creating delayed density dependence that helps generate outbreak timing and multi-year dynamics.
+- Early-stage food dependence: Adult survival is food-modulated, but early stages are also resource-limited; incorporating food effects earlier can add a realistic bottleneck.
+- The rest of the coral dynamics and predation structure are already relatively rich (space limitation, selective predation with flexible functional response).
+
+Chosen improvement: Add a latent juvenile pool with food-dependent survival and a maturation delay
+
+Ecological reasoning
+- Introducing a single latent juvenile state J_t creates an indirect pathway and delayed feedback from reproduction to adult abundance. This is a parsimonious way to capture multi-year lags (1/gJ years on average), a key ingredient for reproducing episodic outbreaks.
+- Juvenile annual survival is modulated by total live coral availability via the existing phi_food term (no new data required), representing resource limitation before adulthood.
+
+Mathematical changes (annual time step)
+- Recruitment to juveniles:
+  recruits(t) = fec * C_t * phi_spawn(t) * phi_T_COTS(t)
+
+- Juvenile survival and maturation (new):
+  sJ(t)      = phi_food(t)
+  matured(t) = gJ * sJ(t) * J_t
+  J_{t+1}    = (1 - gJ) * sJ(t) * J_t + recruits(t)
+
+- Adults (modified to receive matured juveniles instead of direct recruits):
+  survival(t)  = exp( -[ mC + mC_food * (1 - phi_food(t)) ] )
+  C_surv(t)    = C_t * survival(t)
+  I(t)         = alpha_imm * cotsimm_dat(t) / (k_imm + cotsimm_dat(t))
+  C_raw_{t+1}  = C_surv(t) + matured(t) + I(t)
+  C_{t+1}      = C_raw_{t+1} / (1 + beta_dd * C_raw_{t+1})
+
+- Coral dynamics unchanged.
+
+Implementation notes
+- New parameter: logit_gJ, with gJ = inv_logit(logit_gJ), the annual maturation probability. A smooth penalty nudges gJ into [0.2, 0.7], corresponding to ~2–5 year average delays, consistent with the literature for time to detectable adult.
+- The juvenile pool is initialized at zero (no data leakage). This can be revisited if residuals suggest sensitivity to initial conditions.
+
+Expected impacts on fit and dynamics
+- Adds delayed density dependence that should improve timing and duration of outbreaks, reducing lag-1 residual autocorrelation in adult COTS and allowing recruitment pulses (from local reproduction or immigration-driven food increases) to express with realistic lags.
+- Food-dependent juvenile survival couples prey recovery to future COTS outbreaks, supporting boom-bust cycles where coral depletion subsequently lowers both adult survival and juvenile throughput, helping terminate outbreaks.
+
+Parameter review
+- Topt_cots is already updated from literature with narrow bounds and suits the Gaussian temperature response used.
+- No other parameter showed evidence here of literature updates that would force changes in functional form.
+- fec is reinterpreted as the effective annual production of juveniles that survive larval stages; magnitude may adjust in estimation to account for the new maturation step.
+
+Data leakage
+- Only previous-step predicted states are used in process updates. Observations are not used in process dynamics beyond t=0 initialization for adult and coral states.
+
+Next steps
+- Once residuals are available, check for (i) phase alignment of peaks, (ii) lagged autocorrelation, and (iii) amplitude bias. If necessary, consider a two-compartment juvenile pipeline for a more dispersed delay or introduce explicit juvenile mortality parameters.

@@ -1,0 +1,55 @@
+Assessment summary
+
+Fit to data:
+- Residuals file was not included in the provided files, so I could not quantitatively assess fit or patterns (bias, variance, autocorrelation). The analysis below is structural and based on expected behavior of outbreak systems. Please provide residuals to refine this assessment.
+
+How the current model addresses the PROJECT CONTEXT:
+- Outbreak triggers and boom phase: Positive feedbacks in recruitment via adult density (C^phi) and a smooth Allee effect, plus temperature-modulated recruitment, can create rapid increases. Immigration forcing (cotsimm_dat) can seed events.
+- Bust phase: Density-dependent adult mortality (gammaC*C^2) provides a mechanism for post-peak declines.
+- Coral impacts: A multi-prey Holling II/III blend with separate fast/slow coral terms captures selective predation pressure, and bleaching reduces coral growth above a temperature threshold.
+- Environmental drivers: Gaussian SST effect on recruitment and temperature-dependent coral growth/bleaching represent key thermal controls.
+
+Potential shortcomings relative to the context:
+- Missing prey-dependent starvation feedback on adults: When coral is depleted during an outbreak, adults should experience elevated mortality/starvation; current mortality is only baseline + density dependent in COTS themselves. This can delay or understate busts and allow unrealistically high predator persistence at low coral cover.
+- Recruitment resource term: Recruitment currently scales with a coral “resource index” (wF*F + wS*S). Empirically, larval survival is more tied to nutrient pulses (e.g., flood-driven phytoplankton) rather than live coral cover, while settlement substrate availability may depend on free space. This coupling may misattribute recruitment variation to coral cover. However, I am not changing this term here to keep one focused improvement.
+- External nutrient pulses: No explicit exogenous pulse to recruitment beyond cotsimm_dat. If residuals show clustered underprediction during known flood years, adding a nutrient covariate would be warranted.
+- Stage structure: A single juvenile pool with constant mJ and muJ may be oversimplified given ontogenetic diet shifts; acceptable for now.
+
+Parameter review highlights:
+- T_opt_bleach was updated from literature (value 32.65°C with refined bounds). The current heat-stress growth multiplier exp(-beta_bleach * temp_excess) remains structurally consistent with this update.
+- Other parameters are initial estimates and broad-bounded. Particularly phi, gammaC, mJ, muJ govern outbreak amplification/damping; they remain flexible for estimation.
+
+Chosen improvement: prey-dependent starvation mortality for adult COTS
+
+Ecological rationale:
+- During outbreaks, COTS rapidly deplete preferred coral prey, after which adult survival declines due to starvation and increased susceptibility to predation/disease. Introducing a coral-dependent mortality term produces sharper, more realistic busts and helps match observed timing and duration of declines once coral falls below a threshold.
+
+Mathematical form (added terms):
+- Let TCor_prev = F_prev + S_prev be total coral cover (%) at t-1.
+- Starvation signal (smooth logistic rising as coral declines below a threshold):
+  starv_frac = 1 / (1 + exp(-k_starv * (K_starv - TCor_prev)))
+  where:
+  - K_starv (% cover) is the mid-point threshold where starvation risk is 50%.
+  - k_starv (%^-1) controls steepness.
+- Additional adult mortality rate:
+  mu_starv = m_starv * starv_frac  [yr^-1]
+- Adult mortality updated to:
+  Mort_adult = (muC + mu_starv + gammaC * C_prev) * C_prev
+
+Why this improves outbreak dynamics:
+- Triggers busts when prey is exhausted, preventing prolonged high predator densities under low coral cover.
+- Couples predator dynamics to their resource base, a key feedback consistent with observed outbreak collapses.
+- Retains smooth differentiability and avoids data leakage by using t-1 states only.
+
+Parameterization and bounds (added):
+- K_starv (% cover): lower_bound 5.0, upper_bound 70.0
+- k_starv (%^-1): lower_bound 0.01, upper_bound 1.0
+- m_starv (yr^-1): lower_bound 0.0, upper_bound 2.0
+
+Implementation notes:
+- Added three new parameters (K_starv, k_starv, m_starv), smooth penalties for broad plausible ranges, and diagnostics to report starv_frac and mu_starv time series.
+- No current-time observations are used in predictions; only t-1 state variables drive transitions.
+
+Next steps once residuals are available:
+- Inspect whether residuals during peak and post-peak periods shrink and lose positive autocorrelation with this feedback.
+- If early boom timing is still off, consider adding an exogenous nutrient (flood/chl-a) covariate to recruitment or a saturating stock-recruitment form to avoid runaway dynamics without pulses.

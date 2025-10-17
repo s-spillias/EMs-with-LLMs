@@ -1,0 +1,66 @@
+ASSESSMENT
+
+1) Model fit to data
+- No residuals file was provided in the current bundle, so I cannot compute or summarize residual patterns directly. Structurally, the model is well-equipped to generate outbreaks (Allee effect on reproduction, density-dependent mortality, selective multi-prey functional response, coral bleaching, juvenile stage with maturation sensitive to coral).
+- A known shortcoming for COTS systems is replication of episodic recruitment pulses that are only partially explained by temperature and immigration; these pulses often relate to nutrient/runoff and larval retention. Without an explicit mechanism for such pulses, the model may underpredict peak sizes or mistime outbreak onsets.
+
+2) Alignment with PROJECT CONTEXT
+- The code captures the boom-bust ecology: strong positive feedbacks on the boom (Allee and fecundity scaling with adult density; prey availability) and strong negative feedbacks on the bust (density-dependent mortality; prey depletion).
+- Temperature effects on both recruitment and coral are present. However, triggers and year-to-year variability attributable to unobserved environmental drivers (e.g., river plume nutrients, current-driven retention) are not directly modeled.
+
+3) Potentially missing or oversimplified processes
+- Episodic larval survival and retention: missing explicit representation; immigration time series may be insufficient if pulses are not fully captured.
+- Coral heat-stress memory (multi-year suppression): bleaching currently acts only instantaneously; this could explain prolonged coral recovery lags but is secondary to outbreak triggering.
+- Interpretation of “resource” in recruitment: currently coral-based. This is reasonable as adult condition/fecundity modulation, but larval survival is more tied to planktonic resources; hence an additional environmental pathway is warranted.
+
+CHOSEN ECOLOGICAL IMPROVEMENT
+
+Approach: Environmental modifiers of processes
+- Add an unobserved environmental recruitment modifier as a lognormal AR(1) random effect u_rec(t), applied multiplicatively to recruitment via env_mod = exp(u_rec(t-1)).
+- Ecological justification: episodic nutrient/runoff conditions and retention enhance larval survival and settlement success. These drivers are not fully observed, vary interannually, and often exhibit short-lived persistence. A lognormal AR(1) multiplier captures heavy-tailed recruitment pulses and short-term serial correlation, improving timing and magnitude of outbreaks.
+
+Why this over alternatives
+- Does not require new covariates or files.
+- Targets the key outbreak trigger mechanism (episodic recruitment).
+- Keeps the model parsimonious and interpretable; other mechanisms (e.g., coral heat-stress memory) can be layered later if needed.
+
+STRUCTURAL CHANGES IN MODEL
+
+- Recruitment:
+  Rec_in = alpha_rec * C^phi * f_Allee * f_food * f_Trec * env_mod + immigration
+  where env_mod = exp(u_rec(t-1)), and u_rec follows AR(1): u_rec(0) ~ N(0, sigma^2), u_rec(t) ~ N(phi*u_rec(t-1), sigma^2*(1-phi^2)).
+- Interpretation:
+  f_food (from coral) is retained but interpreted as adult condition (fecundity) and maturation driver, while env_mod captures unobserved larval survival/retention variability.
+
+PARAMETERS
+
+Added:
+- sigma_rec_env (SD on log scale): governs variability of the recruitment environment.
+- ar1_rec_phi (dimensionless): AR(1) autocorrelation for short-term persistence.
+
+Bounds:
+- sigma_rec_env: [0.001, 2.0] to avoid degeneracy and allow substantial variability.
+- ar1_rec_phi: [-0.99, 0.99] ensuring stationarity.
+
+IMPLEMENTATION NOTES
+
+- No data leakage: env_mod uses u_rec(t-1) when computing Rec_in for the t update; t=0 initialization uses u_rec(0) consistently with other t=0 covariates.
+- Random effect likelihood contributions added for u_rec; u_rec is also reported to diagnose inferred recruitment pulses.
+- All existing processes and observation models are unchanged, preserving previous interpretability and fit where adequate.
+
+DATA LEAKAGE FIX
+
+- Previously, initial predictions used observed response variables at t=0: cots_pred(0) = cots_dat(0), fast_pred(0) = fast_dat(0), slow_pred(0) = slow_dat(0). This violated the requirement to avoid using *_dat in prediction calculations.
+- Introduced initial-state parameters (C0, F0, S0) to initialize the system without referencing observations. Predictions at t=0 now derive solely from parameters and covariates, and observations are incorporated only through the likelihood.
+
+SETUP FIX: EXPLICIT PREDICTION LOOP
+
+- To address the automated setup check reporting “Missing prediction equation” at the likelihood lines, the prediction equations are now expressed explicitly inside a single loop over t = 0..T-1:
+  - At the start of each t, we assign predictions cots_pred(t), fast_pred(t), slow_pred(t) from the current model states (C_t, F_t, S_t).
+  - Transitions to the next states (t+1) are then computed using covariates at time t only, ensuring no use of *_dat response variables in prediction calculations and avoiding data leakage.
+- This restructuring makes the prediction equations unambiguous to static checks while preserving the original model dynamics and timing semantics.
+
+NEXT STEPS
+
+- Once residuals are available, check whether the new u_rec reduces peak underprediction and improves timing of outbreak onsets. Inspect posterior u_rec against known runoff/chl-a proxies if available to validate ecological interpretation.
+- If prolonged post-heat coral suppression persists in residuals, consider adding a simple bleaching “memory” state in a subsequent iteration.

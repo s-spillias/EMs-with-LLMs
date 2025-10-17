@@ -1,0 +1,232 @@
+#include <TMB.hpp>
+
+template<class Type>
+Type objective_function<Type>::operator() ()
+{
+  // Data inputs - forcing variables
+  DATA_VECTOR(Year);                    // Time vector (years)
+  DATA_VECTOR(sst_dat);                 // Sea surface temperature (°C)
+  DATA_VECTOR(cotsimm_dat);             // COTS larval immigration rate (individuals/m²/year)
+  
+  // Data inputs - response variables
+  DATA_VECTOR(cots_dat);                // Adult COTS abundance (individuals/m²)
+  DATA_VECTOR(fast_dat);                // Fast-growing coral cover (%)
+  DATA_VECTOR(slow_dat);                // Slow-growing coral cover (%)
+  
+  // COTS population parameters
+  PARAMETER(log_cots_recruit_base);     // Log baseline recruitment rate from immigration (dimensionless)
+  PARAMETER(log_temp_effect);           // Log temperature effect on larval survival (°C⁻¹)
+  PARAMETER(temp_optimal);              // Optimal temperature for COTS recruitment (°C)
+  PARAMETER(log_cots_mort_base);        // Log baseline COTS mortality rate (year⁻¹)
+  PARAMETER(log_allee_threshold);       // Log Allee effect threshold density (individuals/m²)
+  PARAMETER(log_allee_strength);        // Log strength of Allee effect (dimensionless)
+  PARAMETER(log_density_mort);          // Log density-dependent mortality coefficient (m²/individuals/year)
+  PARAMETER(log_food_limitation);       // Log food limitation coefficient (% cover⁻¹)
+  
+  // Coral predation parameters
+  PARAMETER(log_attack_fast);           // Log attack rate on fast-growing corals (m²/individuals/year)
+  PARAMETER(log_attack_slow);           // Log attack rate on slow-growing corals (m²/individuals/year)
+  PARAMETER(log_handling_time);         // Log handling time for coral consumption (year)
+  PARAMETER(log_conversion_eff);        // Log conversion efficiency from coral to COTS biomass (dimensionless)
+  
+  // Coral growth parameters
+  PARAMETER(log_fast_growth);           // Log intrinsic growth rate of fast corals (year⁻¹)
+  PARAMETER(log_slow_growth);           // Log intrinsic growth rate of slow corals (year⁻¹)
+  PARAMETER(fast_carrying_cap);         // Carrying capacity for fast corals (% cover)
+  PARAMETER(slow_carrying_cap);         // Carrying capacity for slow corals (% cover)
+  
+  // Observation error parameters
+  PARAMETER(log_sigma_cots);            // Log standard deviation for COTS observations
+  PARAMETER(log_sigma_fast);            // Log standard deviation for fast coral observations
+  PARAMETER(log_sigma_slow);            // Log standard deviation for slow coral observations
+  
+  // Transform parameters to natural scale
+  Type cots_recruit_base = exp(log_cots_recruit_base);           // Baseline recruitment scaling factor
+  Type temp_effect = exp(log_temp_effect);                       // Temperature sensitivity parameter
+  Type cots_mort_base = exp(log_cots_mort_base);                 // Baseline mortality rate
+  Type allee_threshold = exp(log_allee_threshold);               // Density below which Allee effects occur
+  Type allee_strength = exp(log_allee_strength);                 // Magnitude of Allee effect
+  Type density_mort = exp(log_density_mort);                     // Density-dependent mortality coefficient
+  Type food_limitation = exp(log_food_limitation);               // Food limitation strength
+  Type attack_fast = exp(log_attack_fast);                       // Attack rate on Acropora
+  Type attack_slow = exp(log_attack_slow);                       // Attack rate on massive corals
+  Type handling_time = exp(log_handling_time);                   // Time spent handling prey
+  Type conversion_eff = exp(log_conversion_eff);                 // Biomass conversion efficiency
+  Type fast_growth = exp(log_fast_growth);                       // Acropora growth rate
+  Type slow_growth = exp(log_slow_growth);                       // Massive coral growth rate
+  Type sigma_cots = exp(log_sigma_cots);                         // COTS observation error
+  Type sigma_fast = exp(log_sigma_fast);                         // Fast coral observation error
+  Type sigma_slow = exp(log_sigma_slow);                         // Slow coral observation error
+  
+  // Add small constants for numerical stability
+  Type eps = Type(1e-8);
+  
+  // Minimum standard deviations to prevent numerical issues
+  Type min_sigma = Type(0.01);
+  Type sigma_cots_use = sigma_cots + min_sigma;
+  Type sigma_fast_use = sigma_fast + min_sigma;
+  Type sigma_slow_use = sigma_slow + min_sigma;
+  
+  // Get number of time steps
+  int n = Year.size();
+  
+  // Initialize prediction vectors
+  vector<Type> cots_pred(n);
+  vector<Type> fast_pred(n);
+  vector<Type> slow_pred(n);
+  
+  // Set initial conditions from first data point
+  cots_pred(0) = cots_dat(0);
+  fast_pred(0) = fast_dat(0);
+  slow_pred(0) = slow_dat(0);
+  
+  // Initialize negative log-likelihood
+  Type nll = Type(0.0);
+  
+  // Time loop - start from index 1 since initial conditions are set
+  for(int t = 1; t < n; t++) {
+    
+    // Get previous time step values to avoid data leakage
+    Type cots_prev = cots_pred(t-1);
+    Type fast_prev = fast_pred(t-1);
+    Type slow_prev = slow_pred(t-1);
+    
+    // Ensure non-negative values with small floor using CppAD::CondExpGe
+    cots_prev = CppAD::CondExpGe(cots_prev, eps, cots_prev, eps);
+    fast_prev = CppAD::CondExpGe(fast_prev, eps, fast_prev, eps);
+    slow_prev = CppAD::CondExpGe(slow_prev, eps, slow_prev, eps);
+    
+    // Total coral cover available as food
+    Type total_coral = fast_prev + slow_prev + eps;
+    
+    // === EQUATION 1: Temperature-dependent recruitment ===
+    // Gaussian temperature response centered on optimal temperature
+    Type temp_deviation = sst_dat(t-1) - temp_optimal;
+    Type temp_response = exp(-temp_effect * temp_deviation * temp_deviation);
+    
+    // Recruitment from larval immigration with temperature modulation
+    Type recruitment = cots_recruit_base * cotsimm_dat(t-1) * temp_response;
+    
+    // === EQUATION 2: Allee effect mortality ===
+    // Increased mortality at low densities due to reduced fertilization success
+    Type allee_effect = allee_strength * exp(-cots_prev / (allee_threshold + eps));
+    
+    // === EQUATION 3: Density-dependent mortality ===
+    // Mortality increases with crowding
+    Type density_effect = density_mort * cots_prev;
+    
+    // === EQUATION 4: Food limitation mortality ===
+    // Mortality increases when coral food is depleted
+    Type food_effect = food_limitation / (total_coral + eps);
+    
+    // === EQUATION 5: Total COTS mortality rate ===
+    Type cots_mortality = cots_mort_base + allee_effect + density_effect + food_effect;
+    
+    // === EQUATION 6: Type II functional response for fast coral consumption ===
+    // Per capita consumption rate with handling time limitation
+    Type consumption_fast = (attack_fast * fast_prev) / (Type(1.0) + handling_time * (attack_fast * fast_prev + attack_slow * slow_prev) + eps);
+    
+    // === EQUATION 7: Type II functional response for slow coral consumption ===
+    Type consumption_slow = (attack_slow * slow_prev) / (Type(1.0) + handling_time * (attack_fast * fast_prev + attack_slow * slow_prev) + eps);
+    
+    // === EQUATION 8: Total consumption converted to COTS growth ===
+    Type consumption_total = consumption_fast + consumption_slow;
+    Type cots_growth_from_food = conversion_eff * consumption_total * cots_prev;
+    
+    // === EQUATION 9: COTS population dynamics ===
+    // Change in COTS = recruitment + growth from feeding - mortality
+    Type dcots = recruitment + cots_growth_from_food - cots_mortality * cots_prev;
+    cots_pred(t) = CppAD::CondExpGe(cots_prev + dcots, eps, cots_prev + dcots, eps);
+    
+    // === EQUATION 10: Fast coral predation loss ===
+    // Total consumption by entire COTS population
+    Type fast_predation = consumption_fast * cots_prev;
+    
+    // === EQUATION 11: Fast coral logistic growth ===
+    // Growth limited by space availability
+    Type fast_logistic_growth = fast_growth * fast_prev * (Type(1.0) - fast_prev / (fast_carrying_cap + eps));
+    
+    // === EQUATION 12: Fast coral dynamics ===
+    Type dfast = fast_logistic_growth - fast_predation;
+    fast_pred(t) = CppAD::CondExpGe(fast_prev + dfast, eps, fast_prev + dfast, eps);
+    
+    // === EQUATION 13: Slow coral predation loss ===
+    Type slow_predation = consumption_slow * cots_prev;
+    
+    // === EQUATION 14: Slow coral logistic growth ===
+    Type slow_logistic_growth = slow_growth * slow_prev * (Type(1.0) - slow_prev / (slow_carrying_cap + eps));
+    
+    // === EQUATION 15: Slow coral dynamics ===
+    Type dslow = slow_logistic_growth - slow_predation;
+    slow_pred(t) = CppAD::CondExpGe(slow_prev + dslow, eps, slow_prev + dslow, eps);
+  }
+  
+  // Calculate likelihood for all observations
+  for(int t = 0; t < n; t++) {
+    // Log-normal likelihood for COTS (strictly positive, can span orders of magnitude)
+    Type log_cots_pred = log(cots_pred(t) + eps);
+    Type log_cots_obs = log(cots_dat(t) + eps);
+    nll -= dnorm(log_cots_obs, log_cots_pred, sigma_cots_use, true);
+    
+    // Normal likelihood for coral cover (percentage data, bounded)
+    nll -= dnorm(fast_dat(t), fast_pred(t), sigma_fast_use, true);
+    nll -= dnorm(slow_dat(t), slow_pred(t), sigma_slow_use, true);
+  }
+  
+  // Soft penalties to keep parameters in biologically reasonable ranges
+  // These are gentle nudges, not hard constraints
+  
+  // COTS mortality should be positive but not excessive (0.1 to 2.0 year⁻¹)
+  Type mort_upper_penalty = CppAD::CondExpGe(cots_mort_base, Type(2.0), cots_mort_base - Type(2.0), Type(0.0));
+  Type mort_lower_penalty = CppAD::CondExpGe(Type(0.05), cots_mort_base, Type(0.05) - cots_mort_base, Type(0.0));
+  nll += Type(0.01) * pow(mort_upper_penalty, 2);
+  nll += Type(0.01) * pow(mort_lower_penalty, 2);
+  
+  // Temperature optimum should be in tropical range (26-30°C)
+  Type temp_upper_penalty = CppAD::CondExpGe(temp_optimal, Type(32.0), temp_optimal - Type(32.0), Type(0.0));
+  Type temp_lower_penalty = CppAD::CondExpGe(Type(24.0), temp_optimal, Type(24.0) - temp_optimal, Type(0.0));
+  nll += Type(0.01) * pow(temp_upper_penalty, 2);
+  nll += Type(0.01) * pow(temp_lower_penalty, 2);
+  
+  // Carrying capacities should be reasonable (10-80% cover)
+  Type fast_cap_upper_penalty = CppAD::CondExpGe(fast_carrying_cap, Type(80.0), fast_carrying_cap - Type(80.0), Type(0.0));
+  Type fast_cap_lower_penalty = CppAD::CondExpGe(Type(10.0), fast_carrying_cap, Type(10.0) - fast_carrying_cap, Type(0.0));
+  Type slow_cap_upper_penalty = CppAD::CondExpGe(slow_carrying_cap, Type(80.0), slow_carrying_cap - Type(80.0), Type(0.0));
+  Type slow_cap_lower_penalty = CppAD::CondExpGe(Type(10.0), slow_carrying_cap, Type(10.0) - slow_carrying_cap, Type(0.0));
+  nll += Type(0.01) * pow(fast_cap_upper_penalty, 2);
+  nll += Type(0.01) * pow(fast_cap_lower_penalty, 2);
+  nll += Type(0.01) * pow(slow_cap_upper_penalty, 2);
+  nll += Type(0.01) * pow(slow_cap_lower_penalty, 2);
+  
+  // Conversion efficiency should be less than 1 (can't create biomass from nothing)
+  Type conv_penalty = CppAD::CondExpGe(conversion_eff, Type(1.0), conversion_eff - Type(1.0), Type(0.0));
+  nll += Type(0.1) * pow(conv_penalty, 2);
+  
+  // Report predictions
+  REPORT(cots_pred);
+  REPORT(fast_pred);
+  REPORT(slow_pred);
+  
+  // Report transformed parameters for interpretation
+  REPORT(cots_recruit_base);
+  REPORT(temp_effect);
+  REPORT(temp_optimal);
+  REPORT(cots_mort_base);
+  REPORT(allee_threshold);
+  REPORT(allee_strength);
+  REPORT(density_mort);
+  REPORT(food_limitation);
+  REPORT(attack_fast);
+  REPORT(attack_slow);
+  REPORT(handling_time);
+  REPORT(conversion_eff);
+  REPORT(fast_growth);
+  REPORT(slow_growth);
+  REPORT(fast_carrying_cap);
+  REPORT(slow_carrying_cap);
+  REPORT(sigma_cots);
+  REPORT(sigma_fast);
+  REPORT(sigma_slow);
+  
+  return nll;
+}

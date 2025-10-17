@@ -1,0 +1,52 @@
+PROJECT CONTEXT
+- Objective: Simulate nutrient (N), phytoplankton (P), and zooplankton (Z) dynamics in an oceanic mixed layer with ecological realism and numerical stability.
+
+ASSESSMENT OF CURRENT MODEL
+1) Fit to data
+- A residuals file was not provided in this chat. Without residuals, I cannot quantify bias/variance or temporal structure in errors.
+- Qualitative expectations: With multiplicative co-limitation (fN * fI), growth can be underestimated when both light and nutrients are modest, and overestimated when either resource should be strictly limiting. This often manifests as phase/timing mismatches or amplitude errors around bloom onset and decay.
+
+2) Alignment with project context
+- The state equations implement a classic NPZ structure with:
+  - Nutrient limitation via generalized Monod/Hill (hN >= 1).
+  - Light limitation via saturating function with P self-shading and background attenuation.
+  - Temperature effects (Q10) on growth and grazing.
+  - Zooplankton grazing with a sigmoidal prey response (h_exp) and Beddington-DeAngelis interference.
+  - Loss terms and remineralization fractions routing losses back to N.
+  - Vertical mixing to a deep nutrient reservoir.
+- The model is coherent with mixed-layer ecology and numerically safeguarded (non-negativity, lognormal obs, SD floors). It avoids data leakage by using only previous-step states.
+
+3) Potentially missing or oversimplified processes
+- Co-limitation structure: Multiplicative fN * fI can misrepresent strict limitation; Liebig-like limitation is commonly used in mixed-layer models.
+- Photoinhibition: At high light, phytoplankton growth may decline; current fI lacks a peaked P–I curve.
+- Stoichiometry/variable yields: Fixed y_PN ignores acclimation and nutrient quality effects.
+- Temperature effects on losses: mP1/mZ1 are not temperature-scaled; could matter seasonally.
+- Detrital/DOM pool: Quadratic P and Z losses are directly remineralized; an explicit detrital pool could change time lags.
+- Time-varying environment: I0, k_mix, and N_deep are static; seasonal forcing is omitted.
+
+PARAMETER REVIEW
+- Values and bounds look ecologically reasonable and consistent with the current structure. Some values cite literature (e.g., K_g updated), but do not conflict with the functional forms.
+- No parameters require immediate structural changes based on the listed values.
+
+CHOSEN ECOLOGICAL IMPROVEMENT
+- Implement Liebig-style co-limitation using a smooth minimum of fN and fI instead of a product:
+  Rationale:
+  - In mixed layers, the scarcest resource tends to dominate limitation.
+  - Multiplicative form can suppress growth excessively when both resources are moderate, and can inflate growth when one is actually limiting.
+  - The smooth-min preserves differentiability for optimization and makes no new parameters necessary.
+  Expected impact:
+  - More realistic growth under co-limitation, potentially improving bloom timing and amplitude and reducing systematic residual patterns tied to seasonally low light or nutrients.
+
+IMPLEMENTATION DETAILS
+- Added helper smooth_min(a, b, delta): (a + b - sqrt((a - b)^2 + delta)) / 2.
+- Replaced P_growth = mu_max * theta_mu * fN * fI * P with:
+  P_growth = mu_max * theta_mu * smooth_min(fN, fI) * P.
+- No new parameters; no changes to parameters.json.
+- Reporting unchanged except for an additional diagnostic f_lim_last (the final-step smooth min) to aid interpretation.
+- All predictions continue to use previous-step states only; no data leakage.
+
+NEXT STEPS
+- Once residuals are available, verify whether the change reduces bias during low-light/low-nutrient periods and bloom peaks. If issues persist, consider:
+  - Adding a peaked (photoinhibiting) light function (e.g., Steele or Platt) with an I_opt parameter.
+  - Temperature scaling for mP1/mZ1.
+  - Variable yield y_PN as a function of light or nutrient status.
