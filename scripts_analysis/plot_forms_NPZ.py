@@ -179,36 +179,104 @@ facets = [
     # ),
 ]
 
+import numpy as np
+import matplotlib.pyplot as plt
+from matplotlib.lines import Line2D
+from matplotlib.ticker import MaxNLocator
+
+# facets: list of tuples (key, title, data_fn)
+# where data_fn() -> (x, y_truth, y_lemma, xlabel)
+
 n = len(facets)
 cols = 3
 rows = int(np.ceil(n / cols))
-fig, axes = plt.subplots(rows, cols, figsize=(20, 8), sharex=False)
-axes = axes.flatten()
+
+# Compact figure; keep scales free
+fig, axes = plt.subplots(
+    rows, cols,
+    figsize=(min(9.5, 3.1 * cols), 2.6 * rows),  # tune to taste
+    sharex=False, sharey=False,
+    constrained_layout=True
+)
+axes = np.atleast_1d(axes).flatten()
+
+# Single figure-level legend proxies (so legend shows even if a series is missing)
+legend_proxies = [
+    Line2D([0], [0], color="tab:blue", label="TRUTH"),
+    Line2D([0], [0], color="tab:orange", linestyle="--", label="LEMMA"),
+]
+
+# ---- theme_classic()-like styling parameters ----
+bg_color = "white"
+axis_linewidth = 0.8
+tick_width = 0.8
+tick_length = 3
+
+fig.patch.set_facecolor(bg_color)
 
 for idx, (key, title, data_fn) in enumerate(facets):
     ax = axes[idx]
     x, y_truth, y_lemma, xlabel = data_fn()
-    ax.set_title(title)
-    ax.set_xlabel(xlabel)
-    ax.set_ylabel("Flux (g C m$^{-3}$ d$^{-1}$)")
+    ax.set_title(title, fontsize=10)
+    ax.set_facecolor(bg_color)
+
+    # Plot series (per-panel free scales)
     if y_truth is not None:
         ax.plot(x, y_truth, label="TRUTH", color="tab:blue")
     if y_lemma is not None:
         ax.plot(x, y_lemma, label="LEMMA", color="tab:orange", linestyle="--")
+
+    # Missing-series message
     missing = []
     if y_truth is None: missing.append("TRUTH")
     if y_lemma is None: missing.append("LEMMA")
     if missing:
         msg = "Missing from " + (" & ".join(missing) if len(missing) > 1 else missing[0])
-        ax.text(0.5, 0.5, msg, ha="center", va="center", transform=ax.transAxes,
-                fontsize=12, color="red", bbox=dict(facecolor="white", alpha=0.6))
-    ax.grid(True, alpha=0.3)
-    ax.legend(loc="best", fontsize=9)
+        ax.text(0.5, 0.9, msg, ha="center", va="center", transform=ax.transAxes,
+                fontsize=9, color="tab:orange", bbox=dict(facecolor="white", alpha=0.6))
+
+    # --- ggplot theme_classic() look ---
+    # No grid
+    ax.grid(False)
+
+    # Only left and bottom spines visible; clean, classic look
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+    ax.spines["left"].set_linewidth(axis_linewidth)
+    ax.spines["bottom"].set_linewidth(axis_linewidth)
+
+    # Outward ticks, compact labels
+    ax.tick_params(axis="both", which="both",
+                   direction="out", length=tick_length, width=tick_width, labelsize=8)
+
+    # Modest number of ticks (keeps it tidy with free scales)
+    ax.yaxis.set_major_locator(MaxNLocator(nbins=4))
+    ax.xaxis.set_major_locator(MaxNLocator(nbins=5))
+
+    # Axis labels only on the outer panels to save space
+    if idx % cols == 0:
+        ax.set_ylabel("Flux (g C m$^{-3}$ d$^{-1}$)", fontsize=9)
+    if idx // cols == rows - 1:
+        ax.set_xlabel(xlabel, fontsize=9)
 
 # Hide any unused axes
-for j in range(idx + 1, rows * cols):
+for j in range(n, rows * cols):
     fig.delaxes(axes[j])
 
-fig.suptitle("Ecological characteristics: TRUTH vs LEMMA (functional forms)", fontsize=16)
-fig.tight_layout(rect=[0, 0.03, 1, 0.95])
-plt.show()
+# ---- Legend outside on the right ----
+# Vertical stack (ncol=1) is usually best for a right-side legend.
+# bbox_inches='tight' in savefig ensures it’s included in the output.
+fig.legend(
+    handles=legend_proxies,
+    loc="center left",
+    bbox_to_anchor=(1.02, 0.5),  # just outside the right edge
+    frameon=False,
+    fontsize=9,
+    ncol=1,
+    borderaxespad=0.0
+)
+
+
+# Save tightly to include the external legend
+plt.savefig('Figures/NPZ_form_check.png', dpi=300, bbox_inches='tight')
+plt.close(fig)
