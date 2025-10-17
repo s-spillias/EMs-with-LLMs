@@ -1,0 +1,1001 @@
+You are a leading expert in constructing dynamic ecosystem models. You always use robust ecological theory to construct your models, which will be used for predicting future ecosystem states given data on initial conditions. Please create a Template Model Builder model for the following topic:Modeling episodic outbreaks of Crown of Thorns starfish on the Great Barrier Reef, with emphasis on accurately capturing the timing, magnitude, and duration of population explosions. The model should predict the characteristic boom-bust cycles where COTS numbers rapidly increase to outbreak levels then decline, while accounting for their selective predation on coral communities (slow-growing Faviidae and Porites, and fast-growing Acropora species). Special attention should be given to mechanisms that trigger and sustain outbreak events.. Start by writing intention.txt, in which you provide a concise summary of the ecological functioning of the model. In model.cpp, write your TMB model with the following important considerations:
+
+1. ECOLOGICAL PROCESSES:
+- Consider multiple forms of resource limitation (e.g., saturating functions, threshold effects)
+- Include process-specific efficiencies where biologically relevant
+- Think about how environmental conditions might modify rates
+- Consider indirect effects and feedback loops between components
+- Use functional responses that capture observed biological behaviors
+
+2. NUMERICAL STABILITY:
+- Always use small constants (e.g., Type(1e-8)) to prevent division by zero
+- Use smooth transitions instead of hard cutoffs in equations
+- Bound parameters within biologically meaningful ranges using smooth penalties rather than hard constraints
+  (and propose numeric lower/upper bounds per parameter when applicable; see parameters.json spec below)
+
+3. LIKELIHOOD CALCULATION:
+- Always include observations in the likelihood calculation, don't skip any based on conditions
+- Use fixed minimum standard deviations to prevent numerical issues when data values are small
+- Consider log-transforming data if it spans multiple orders of magnitude
+- Use appropriate error distributions (e.g., lognormal for strictly positive data)
+
+4. MODEL STRUCTURE:
+- Include comments after each line explaining the parameters (including their units and how to determine their values)
+- Provide a numbered list of descriptions for the equations
+- Ensure all _pred variables are included in the reporting section and called using REPORT()
+- Use '_pred' suffix for model predictions corresponding to '_dat' observations. Use the same _dat names as are found in the data file. Use the exact same time variable name as is provided in the first column of the datafile.
+- IMPORTANT: Never use current time step values of response variables (variables ending in '_dat') in prediction calculations. Only use values from previous time steps to avoid data leakage.
+- INITIAL CONDITIONS: Initialize your prediction vectors with the first data point using **name**_dat(0). For example: var1_pred(0) = var1_dat(0); var2_pred(0) = var2_dat(0); var3_pred(0) = var3_dat(0). This ensures initial conditions are drawn directly from the observed data rather than being optimization parameters.
+
+For the parameters.json file, please structure it as an array of parameter objects, where each parameter object must include the following fields:
+- parameter: The name of the parameter matching the model.cpp
+- value: The initial value for the parameter
+- description: A clear description of what the parameter represents, including units
+- source: Where the initial value comes from. IMPORTANT: If the source contains the word 'literature', this will automatically trigger downstream literature searches using Semantic Scholar and other academic databases to find citations and refine parameter values. Use 'literature' only when you want the system to search for academic papers. Use 'initial estimate' for parameters that are unlikely to have reported values in the literature.
+- import_type: Should be 'PARAMETER' for model parameters, or 'DATA_VECTOR'/'DATA_SCALAR' for data inputs
+- priority: A number indicating the optimization priority (1 for highest priority parameters to optimize first)
+- lower_bound (optional): Suggested biological lower bound as a number, or null if not applicable
+- upper_bound (optional): Suggested biological upper bound as a number, or null if not applicable
+
+Example structure:
+{
+  "parameters": [
+    {
+      "parameter": "growth_rate",
+      "value": 0.5,
+      "units": "dimensionsless | year ^-1",
+      "description": "Intrinsic growth rate (year^-1)",
+      "source": "literature",
+      "import_type": "PARAMETER",
+      "priority": 1,
+      "lower_bound": 0.0,
+      "upper_bound": null
+    }
+  ]
+}
+Warning: Input is not a terminal (fd=12).
+Skipping POPULATIONS/POPULATION_0022/INDIVIDUAL_MJEF2XUR/model.cpp that matches gitignore spec.
+Creating empty file POPULATIONS/POPULATION_0022/INDIVIDUAL_MJEF2XUR/model.cpp
+Skipping POPULATIONS/POPULATION_0022/INDIVIDUAL_MJEF2XUR/parameters.json that matches gitignore spec.
+Creating empty file POPULATIONS/POPULATION_0022/INDIVIDUAL_MJEF2XUR/parameters.json
+Skipping POPULATIONS/POPULATION_0022/INDIVIDUAL_MJEF2XUR/intention.txt that matches gitignore spec.
+Creating empty file POPULATIONS/POPULATION_0022/INDIVIDUAL_MJEF2XUR/intention.txt
+Added /home/spi085/Documents/_Projects/EMs-with-LLMs/Data/timeseries_data_COTS_response.csv to read-only files.
+Added /home/spi085/Documents/_Projects/EMs-with-LLMs/Data/timeseries_data_COTS_forcing.csv to read-only files.
+Excellent, this is a fascinating and important ecological modeling problem. Crafting a robust model for COTS outbreaks requires careful consideration of the interactions between the starfish and their coral prey, as well
+as the external factors that can trigger population explosions.                                                                                                                                                             
+
+Based on your request, I will construct a dynamic model that captures these key processes. Here is my plan:                                                                                                                 
+
+ 1 intention.txt: I will outline the model's ecological foundation. It will describe the predator-prey dynamics between COTS and two coral functional groups (fast- and slow-growing), the competition between coral types, 
+   and how episodic larval immigration events drive the characteristic "boom-bust" cycles of COTS populations.                                                                                                              
+ 2 model.cpp: I will implement the model in TMB. This will involve three coupled difference equations representing the populations of COTS, fast-growing corals, and slow-growing corals. The model will incorporate:       
+    • Logistic growth for corals, including inter-specific competition for space.                                                                                                                                           
+    • A Holling Type II functional response for COTS predation, reflecting feeding saturation and a preference for fast-growing corals.                                                                                     
+    • Density-dependent mortality for COTS to ensure self-regulation.                                                                                                                                                       
+    • The direct impact of larval immigration as a forcing function that initiates outbreaks.                                                                                                                               
+    • A lognormal likelihood function to appropriately model the strictly positive population and cover data.                                                                                                               
+ 3 parameters.json: I will define all necessary parameters, including their initial values, biological descriptions, units, and potential bounds. This file will clearly distinguish between model parameters to be         
+   estimated and the data vectors fed into the model. I will set optimization priorities to guide the fitting process, focusing first on the most sensitive parameters like predation and density-dependent mortality.      
+
+Here are the files for the COTS outbreak model.                                                                                                                                                                             
+
+POPULATIONS/POPULATION_0022/INDIVIDUAL_MJEF2XUR/intention.txt                                                                                                                                                               
+
+                                                                                                                                                                                                                            
+ @@ -0,0 +1,12 @@                                                                                                                                                                                                           
+ +This model simulates the population dynamics of Crown-of-Thorns Starfish (COTS) on a coral reef, focusing on the episodic outbreaks that characterize their life history. The model aims to predict the abundance of adul 
+ COTS and the percentage cover of two key coral groups: fast-growing (e.g., Acropora) and slow-growing (e.g., Faviidae, Porites) corals.                                                                                    
+ +                                                                                                                                                                                                                          
+ +Ecological Dynamics:                                                                                                                                                                                                      
+ +1. Coral Growth and Competition: Both fast- and slow-growing coral populations follow logistic growth, competing for limited space on the reef. The carrying capacity for each is reduced by the presence of the other.   
+ +                                                                                                                                                                                                                          
+ +2. COTS Predation: COTS are predators that consume both types of coral. This relationship is modeled using a Holling Type II functional response, which accounts for predator satiation at high coral densities. The mode 
+ incorporates a feeding preference, with COTS preferentially consuming the more palatable fast-growing corals.                                                                                                              
+ +                                                                                                                                                                                                                          
+ +3. COTS Population Dynamics: The COTS population grows based on the energy it gains from consuming corals, with different assimilation efficiencies for each coral type. Its population is regulated by both a constant   
+ natural mortality rate and a density-dependent mortality term, which becomes significant at high population densities, contributing to the "bust" phase of an outbreak.                                                    
+ +                                                                                                                                                                                                                          
+ +4. Outbreak Trigger: The model treats COTS larval immigration as an external forcing event. Pulses of immigration, as provided by the data, serve as the primary trigger for the "boom" phase of an outbreak, leading to  
+ rapid increase in the COTS population.                                                                                                                                                                                     
+ +                                                                                                                                                                                                                          
+ +The model structure captures the critical feedback loop: larval immigration triggers a COTS population boom, which leads to a decline in coral cover. The subsequent food scarcity, combined with density-dependent       
+ effects, causes the COTS population to crash, allowing the coral community to begin a slow recovery. This framework is designed to reproduce the characteristic boom-bust cycles observed in nature.                       
+                                                                                                                                                                                                                            
+
+POPULATIONS/POPULATION_0022/INDIVIDUAL_MJEF2XUR/model.cpp                                                                                                                                                                   
+
+                                                                                                                                                                                                                            
+ @@ -0,0 +1,166 @@                                                                                                                                                                                                          
+ +#include <TMB.hpp>                                                                                                                                                                                                        
+ +                                                                                                                                                                                                                          
+ +// Template for the COTS population dynamics model                                                                                                                                                                        
+ +template<class Type>                                                                                                                                                                                                      
+ +Type objective_function<Type>::operator() ()                                                                                                                                                                              
+ +{                                                                                                                                                                                                                         
+ +  // ------------------------------------------------------------------------                                                                                                                                             
+ +  // DATA SECTION                                                                                                                                                                                                         
+ +  // ------------------------------------------------------------------------                                                                                                                                             
+ +  // These are the data inputs from the CSV files.                                                                                                                                                                        
+ +                                                                                                                                                                                                                          
+ +  DATA_VECTOR(Year);          // The years of the time series                                                                                                                                                             
+ +  DATA_VECTOR(cots_dat);      // Observed COTS abundance (individuals/m2)                                                                                                                                                 
+ +  DATA_VECTOR(fast_dat);      // Observed fast-growing coral cover (%)                                                                                                                                                    
+ +  DATA_VECTOR(slow_dat);      // Observed slow-growing coral cover (%)                                                                                                                                                    
+ +  DATA_VECTOR(cotsimm_dat);   // COTS larval immigration rate (individuals/m2/year)                                                                                                                                       
+ +  DATA_VECTOR(sst_dat);       // Sea-surface temperature (not used in this version, but declared)                                                                                                                         
+ +                                                                                                                                                                                                                          
+ +  int n_steps = Year.size();  // The number of time steps in the simulation                                                                                                                                               
+ +                                                                                                                                                                                                                          
+ +  // ------------------------------------------------------------------------                                                                                                                                             
+ +  // PARAMETER SECTION                                                                                                                                                                                                    
+ +  // ------------------------------------------------------------------------                                                                                                                                             
+ +  // These are the model parameters that will be estimated.                                                                                                                                                               
+ +                                                                                                                                                                                                                          
+ +  // Coral growth parameters                                                                                                                                                                                              
+ +  PARAMETER(log_r_fast);      // Intrinsic growth rate of fast-growing corals (year^-1)                                                                                                                                   
+ +  PARAMETER(log_K_fast);      // Carrying capacity of fast-growing corals (%)                                                                                                                                             
+ +  PARAMETER(log_r_slow);      // Intrinsic growth rate of slow-growing corals (year^-1)                                                                                                                                   
+ +  PARAMETER(log_K_slow);      // Carrying capacity of slow-growing corals (%)                                                                                                                                             
+ +  PARAMETER(log_alpha_slow);  // Competition coefficient of slow corals on fast corals                                                                                                                                    
+ +  PARAMETER(log_alpha_fast);  // Competition coefficient of fast corals on slow corals                                                                                                                                    
+ +                                                                                                                                                                                                                          
+ +  // COTS predation parameters (Holling Type II)                                                                                                                                                                          
+ +  PARAMETER(log_a_fast);      // Attack rate of COTS on fast-growing corals (m2/individual/year)                                                                                                                          
+ +  PARAMETER(log_h_fast);      // Handling time of COTS on fast-growing corals (year/%)                                                                                                                                    
+ +  PARAMETER(log_a_slow);      // Attack rate of COTS on slow-growing corals (m2/individual/year)                                                                                                                          
+ +  PARAMETER(log_h_slow);      // Handling time of COTS on slow-growing corals (year/%)                                                                                                                                    
+ +                                                                                                                                                                                                                          
+ +  // COTS life history parameters                                                                                                                                                                                         
+ +  PARAMETER(log_e_fast);      // Assimilation efficiency of COTS from fast-growing corals                                                                                                                                 
+ +  PARAMETER(log_e_slow);      // Assimilation efficiency of COTS from slow-growing corals                                                                                                                                 
+ +  PARAMETER(log_m_cots);      // Natural mortality rate of COTS (year^-1)                                                                                                                                                 
+ +  PARAMETER(log_q_cots);      // Density-dependent mortality coefficient for COTS (m2/individual/year)                                                                                                                    
+ +                                                                                                                                                                                                                          
+ +  // Observation error parameters                                                                                                                                                                                         
+ +  PARAMETER(log_sd_cots);     // Standard deviation for COTS abundance observations (log scale)                                                                                                                           
+ +  PARAMETER(log_sd_fast);     // Standard deviation for fast coral cover observations (log scale)                                                                                                                         
+ +  PARAMETER(log_sd_slow);     // Standard deviation for slow coral cover observations (log scale)                                                                                                                         
+ +                                                                                                                                                                                                                          
+ +  // --- Parameter transformations ---                                                                                                                                                                                    
+ +  // Parameters are estimated in log-space to ensure they are positive.                                                                                                                                                   
+ +  Type r_fast = exp(log_r_fast);                                                                                                                                                                                          
+ +  Type K_fast = exp(log_K_fast);                                                                                                                                                                                          
+ +  Type r_slow = exp(log_r_slow);                                                                                                                                                                                          
+ +  Type K_slow = exp(log_K_slow);                                                                                                                                                                                          
+ +  Type alpha_slow = exp(log_alpha_slow);                                                                                                                                                                                  
+ +  Type alpha_fast = exp(log_alpha_fast);                                                                                                                                                                                  
+ +  Type a_fast = exp(log_a_fast);                                                                                                                                                                                          
+ +  Type h_fast = exp(log_h_fast);                                                                                                                                                                                          
+ +  Type a_slow = exp(log_a_slow);                                                                                                                                                                                          
+ +  Type h_slow = exp(log_h_slow);                                                                                                                                                                                          
+ +  Type e_fast = exp(log_e_fast);                                                                                                                                                                                          
+ +  Type e_slow = exp(log_e_slow);                                                                                                                                                                                          
+ +  Type m_cots = exp(log_m_cots);                                                                                                                                                                                          
+ +  Type q_cots = exp(log_q_cots);                                                                                                                                                                                          
+ +  Type sd_cots = exp(log_sd_cots);                                                                                                                                                                                        
+ +  Type sd_fast = exp(log_sd_fast);                                                                                                                                                                                        
+ +  Type sd_slow = exp(log_sd_slow);                                                                                                                                                                                        
+ +                                                                                                                                                                                                                          
+ +  // ------------------------------------------------------------------------                                                                                                                                             
+ +  // MODEL EQUATIONS                                                                                                                                                                                                      
+ +  // ------------------------------------------------------------------------                                                                                                                                             
+ +  // A short description of the model's core equations:                                                                                                                                                                   
+ +  // 1. Fast Coral Cover: Logistic growth minus COTS predation (Holling Type II).                                                                                                                                         
+ +  //    fast_pred(t) = fast_pred(t-1) + Growth - Predation                                                                                                                                                                
+ +  // 2. Slow Coral Cover: Logistic growth minus COTS predation (Holling Type II).                                                                                                                                         
+ +  //    slow_pred(t) = slow_pred(t-1) + Growth - Predation                                                                                                                                                                
+ +  // 3. COTS Abundance: Growth from predation minus natural and density-dependent mortality, plus immigration.                                                                                                            
+ +  //    cots_pred(t) = cots_pred(t-1) + Growth - Mortality + Immigration                                                                                                                                                  
+ +                                                                                                                                                                                                                          
+ +  // --- Prediction vectors ---                                                                                                                                                                                           
+ +  vector<Type> cots_pred(n_steps);                                                                                                                                                                                        
+ +  vector<Type> fast_pred(n_steps);                                                                                                                                                                                        
+ +  vector<Type> slow_pred(n_steps);                                                                                                                                                                                        
+ +                                                                                                                                                                                                                          
+ +  // --- Initial conditions ---                                                                                                                                                                                           
+ +  // Initialize the model predictions with the first data point.                                                                                                                                                          
+ +  cots_pred(0) = cots_dat(0);                                                                                                                                                                                             
+ +  fast_pred(0) = fast_dat(0);                                                                                                                                                                                             
+ +  slow_pred(0) = slow_dat(0);                                                                                                                                                                                             
+ +                                                                                                                                                                                                                          
+ +  // --- Time loop for simulation ---                                                                                                                                                                                     
+ +  for (int t = 1; t < n_steps; ++t) {                                                                                                                                                                                     
+ +    // --- Intermediate terms for clarity ---                                                                                                                                                                             
+ +                                                                                                                                                                                                                          
+ +    // Holling Type II denominator: represents predator saturation from handling both prey types.                                                                                                                         
+ +    Type holling_denom = Type(1.0) + a_fast * h_fast * fast_pred(t-1) + a_slow * h_slow * slow_pred(t-1) + Type(1e-8);                                                                                                    
+ +                                                                                                                                                                                                                          
+ +    // Predation on fast corals                                                                                                                                                                                           
+ +    Type predation_on_fast = (a_fast * fast_pred(t-1) * cots_pred(t-1)) / holling_denom;                                                                                                                                  
+ +                                                                                                                                                                                                                          
+ +    // Predation on slow corals                                                                                                                                                                                           
+ +    Type predation_on_slow = (a_slow * slow_pred(t-1) * cots_pred(t-1)) / holling_denom;                                                                                                                                  
+ +                                                                                                                                                                                                                          
+ +    // --- State variable predictions ---                                                                                                                                                                                 
+ +                                                                                                                                                                                                                          
+ +    // 1. Fast-growing coral dynamics                                                                                                                                                                                     
+ +    Type fast_growth = r_fast * fast_pred(t-1) * (Type(1.0) - (fast_pred(t-1) + alpha_slow * slow_pred(t-1)) / (K_fast + Type(1e-8)));                                                                                    
+ +    fast_pred(t) = fast_pred(t-1) + fast_growth - predation_on_fast;                                                                                                                                                      
+ +                                                                                                                                                                                                                          
+ +    // 2. Slow-growing coral dynamics                                                                                                                                                                                     
+ +    Type slow_growth = r_slow * slow_pred(t-1) * (Type(1.0) - (slow_pred(t-1) + alpha_fast * fast_pred(t-1)) / (K_slow + Type(1e-8)));                                                                                    
+ +    slow_pred(t) = slow_pred(t-1) + slow_growth - predation_on_slow;                                                                                                                                                      
+ +                                                                                                                                                                                                                          
+ +    // 3. COTS dynamics                                                                                                                                                                                                   
+ +    Type cots_growth = e_fast * predation_on_fast + e_slow * predation_on_slow;                                                                                                                                           
+ +    Type cots_mortality = m_cots * cots_pred(t-1) + q_cots * cots_pred(t-1) * cots_pred(t-1);                                                                                                                             
+ +    cots_pred(t) = cots_pred(t-1) + cots_growth - cots_mortality + cotsimm_dat(t-1);                                                                                                                                      
+ +                                                                                                                                                                                                                          
+ +    // --- Numerical stability constraints ---                                                                                                                                                                            
+ +    // Ensure predictions do not fall below a small positive number.                                                                                                                                                      
+ +    fast_pred(t) = CppAD::CondExpGe(fast_pred(t), Type(0.0), fast_pred(t), Type(1e-8));                                                                                                                                   
+ +    slow_pred(t) = CppAD::CondExpGe(slow_pred(t), Type(0.0), slow_pred(t), Type(1e-8));                                                                                                                                   
+ +    cots_pred(t) = CppAD::CondExpGe(cots_pred(t), Type(0.0), cots_pred(t), Type(1e-8));                                                                                                                                   
+ +  }                                                                                                                                                                                                                       
+ +                                                                                                                                                                                                                          
+ +  // ------------------------------------------------------------------------                                                                                                                                             
+ +  // LIKELIHOOD CALCULATION                                                                                                                                                                                               
+ +  // ------------------------------------------------------------------------                                                                                                                                             
+ +  Type nll = 0.0; // Initialize negative log-likelihood                                                                                                                                                                   
+ +                                                                                                                                                                                                                          
+ +  // Loop over all time steps to compare predictions with observations.                                                                                                                                                   
+ +  for (int t = 0; t < n_steps; ++t) {                                                                                                                                                                                     
+ +    // Lognormal distribution is used for strictly positive data (abundances, cover).                                                                                                                                     
+ +    // This is equivalent to a normal distribution on the log-transformed data/predictions.                                                                                                                               
+ +    // A small constant is added to prevent log(0).                                                                                                                                                                       
+ +    nll -= dnorm(log(cots_dat(t) + Type(1e-8)), log(cots_pred(t) + Type(1e-8)), sd_cots, true);                                                                                                                           
+ +    nll -= dnorm(log(fast_dat(t) + Type(1e-8)), log(fast_pred(t) + Type(1e-8)), sd_fast, true);                                                                                                                           
+ +    nll -= dnorm(log(slow_dat(t) + Type(1e-8)), log(slow_pred(t) + Type(1e-8)), sd_slow, true);                                                                                                                           
+ +  }                                                                                                                                                                                                                       
+ +                                                                                                                                                                                                                          
+ +  // ------------------------------------------------------------------------                                                                                                                                             
+ +  // REPORTING SECTION                                                                                                                                                                                                    
+ +  // ------------------------------------------------------------------------                                                                                                                                             
+ +  // These variables will be available in the model output.                                                                                                                                                               
+ +                                                                                                                                                                                                                          
+ +  REPORT(cots_pred);                                                                                                                                                                                                      
+ +  REPORT(fast_pred);                                                                                                                                                                                                      
+ +  REPORT(slow_pred);                                                                                                                                                                                                      
+ +                                                                                                                                                                                                                          
+ +  ADREPORT(r_fast);                                                                                                                                                                                                       
+ +  ADREPORT(K_fast);                                                                                                                                                                                                       
+ +  ADREPORT(r_slow);                                                                                                                                                                                                       
+ +  ADREPORT(K_slow);                                                                                                                                                                                                       
+ +  ADREPORT(a_fast);                                                                                                                                                                                                       
+ +  ADREPORT(h_fast);                                                                                                                                                                                                       
+ +  ADREPORT(a_slow);                                                                                                                                                                                                       
+ +  ADREPORT(h_slow);                                                                                                                                                                                                       
+ +  ADREPORT(e_fast);                                                                                                                                                                                                       
+ +  ADREPORT(e_slow);                                                                                                                                                                                                       
+ +  ADREPORT(m_cots);                                                                                                                                                                                                       
+ +  ADREPORT(q_cots);                                                                                                                                                                                                       
+ +                                                                                                                                                                                                                          
+ +  return nll;                                                                                                                                                                                                             
+ +}                                                                                                                                                                                                                         
+                                                                                                                                                                                                                            
+
+POPULATIONS/POPULATION_0022/INDIVIDUAL_MJEF2XUR/parameters.json                                                                                                                                                             
+
+                                                                                                                                                                                                                            
+ @@ -0,0 +1,73 @@                                                                                                                                                                                                           
+ +{                                                                                                                                                                                                                         
+ +  "parameters": [                                                                                                                                                                                                         
+ +    {                                                                                                                                                                                                                     
+ +      "parameter": "Year", "import_type": "DATA_VECTOR", "source": "Data/timeseries_data_COTS_forcing.csv", "value": null, "description": "Year of observation", "priority": null                                         
+ +    },                                                                                                                                                                                                                    
+ +    {                                                                                                                                                                                                                     
+ +      "parameter": "cots_dat", "import_type": "DATA_VECTOR", "source": "Data/timeseries_data_COTS_response.csv", "value": null, "description": "Observed COTS abundance (individuals/m2)", "priority": null               
+ +    },                                                                                                                                                                                                                    
+ +    {                                                                                                                                                                                                                     
+ +      "parameter": "fast_dat", "import_type": "DATA_VECTOR", "source": "Data/timeseries_data_COTS_response.csv", "value": null, "description": "Observed fast-growing coral cover (%)", "priority": null                  
+ +    },                                                                                                                                                                                                                    
+ +    {                                                                                                                                                                                                                     
+ +      "parameter": "slow_dat", "import_type": "DATA_VECTOR", "source": "Data/timeseries_data_COTS_response.csv", "value": null, "description": "Observed slow-growing coral cover (%)", "priority": null                  
+ +    },                                                                                                                                                                                                                    
+ +    {                                                                                                                                                                                                                     
+ +      "parameter": "cotsimm_dat", "import_type": "DATA_VECTOR", "source": "Data/timeseries_data_COTS_forcing.csv", "value": null, "description": "COTS larval immigration rate (individuals/m2/year)", "priority": null   
+ +    },                                                                                                                                                                                                                    
+ +    {                                                                                                                                                                                                                     
+ +      "parameter": "sst_dat", "import_type": "DATA_VECTOR", "source": "Data/timeseries_data_COTS_forcing.csv", "value": null, "description": "Sea-surface temperature (Celsius)", "priority": null                        
+ +    },                                                                                                                                                                                                                    
+ +    {                                                                                                                                                                                                                     
+ +      "parameter": "log_r_fast", "value": -0.51, "description": "Log intrinsic growth rate of fast-growing corals (Acropora).", "source": "literature", "import_type": "PARAMETER", "priority": 2, "units": "log(year^-1) 
+ "lower_bound": -2.3, "upper_bound": 0.69                                                                                                                                                                                   
+ +    },                                                                                                                                                                                                                    
+ +    {                                                                                                                                                                                                                     
+ +      "parameter": "log_K_fast", "value": 4.09, "description": "Log carrying capacity of fast-growing corals.", "source": "initial estimate", "import_type": "PARAMETER", "priority": 3, "units": "log(%)", "lower_bound" 
+ 2.3, "upper_bound": 4.6                                                                                                                                                                                                    
+ +    },                                                                                                                                                                                                                    
+ +    {                                                                                                                                                                                                                     
+ +      "parameter": "log_r_slow", "value": -1.61, "description": "Log intrinsic growth rate of slow-growing corals (Faviidae, Porites).", "source": "literature", "import_type": "PARAMETER", "priority": 2, "units":      
+ "log(year^-1)", "lower_bound": -3.0, "upper_bound": -0.69                                                                                                                                                                  
+ +    },                                                                                                                                                                                                                    
+ +    {                                                                                                                                                                                                                     
+ +      "parameter": "log_K_slow", "value": 3.91, "description": "Log carrying capacity of slow-growing corals.", "source": "initial estimate", "import_type": "PARAMETER", "priority": 3, "units": "log(%)", "lower_bound" 
+ 2.3, "upper_bound": 4.6                                                                                                                                                                                                    
+ +    },                                                                                                                                                                                                                    
+ +    {                                                                                                                                                                                                                     
+ +      "parameter": "log_alpha_slow", "value": 0.0, "description": "Log competition coefficient of slow corals on fast corals.", "source": "initial estimate", "import_type": "PARAMETER", "priority": 4, "units":         
+ "log(dimensionless)", "lower_bound": -2.3, "upper_bound": 1.6                                                                                                                                                              
+ +    },                                                                                                                                                                                                                    
+ +    {                                                                                                                                                                                                                     
+ +      "parameter": "log_alpha_fast", "value": 0.0, "description": "Log competition coefficient of fast corals on slow corals.", "source": "initial estimate", "import_type": "PARAMETER", "priority": 4, "units":         
+ "log(dimensionless)", "lower_bound": -2.3, "upper_bound": 1.6                                                                                                                                                              
+ +    },                                                                                                                                                                                                                    
+ +    {                                                                                                                                                                                                                     
+ +      "parameter": "log_a_fast", "value": -0.22, "description": "Log attack rate of COTS on fast-growing corals.", "source": "initial estimate", "import_type": "PARAMETER", "priority": 1, "units":                      
+ "log(m2/individual/year)", "lower_bound": -4.6, "upper_bound": 2.3                                                                                                                                                         
+ +    },                                                                                                                                                                                                                    
+ +    {                                                                                                                                                                                                                     
+ +      "parameter": "log_h_fast", "value": -0.69, "description": "Log handling time of COTS on fast-growing corals.", "source": "initial estimate", "import_type": "PARAMETER", "priority": 1, "units": "log(year/%)",     
+ "lower_bound": -4.6, "upper_bound": 2.3                                                                                                                                                                                    
+ +    },                                                                                                                                                                                                                    
+ +    {                                                                                                                                                                                                                     
+ +      "parameter": "log_a_slow", "value": -1.61, "description": "Log attack rate of COTS on slow-growing corals (lower preference).", "source": "initial estimate", "import_type": "PARAMETER", "priority": 1, "units":   
+ "log(m2/individual/year)", "lower_bound": -6.9, "upper_bound": 0.0                                                                                                                                                         
+ +    },                                                                                                                                                                                                                    
+ +    {                                                                                                                                                                                                                     
+ +      "parameter": "log_h_slow", "value": -0.69, "description": "Log handling time of COTS on slow-growing corals.", "source": "initial estimate", "import_type": "PARAMETER", "priority": 1, "units": "log(year/%)",     
+ "lower_bound": -4.6, "upper_bound": 2.3                                                                                                                                                                                    
+ +    },                                                                                                                                                                                                                    
+ +    {                                                                                                                                                                                                                     
+ +      "parameter": "log_e_fast", "value": -2.3, "description": "Log assimilation efficiency of COTS from fast-growing corals.", "source": "initial estimate", "import_type": "PARAMETER", "priority": 2, "units":         
+ "log(dimensionless)", "lower_bound": -6.9, "upper_bound": 0.0                                                                                                                                                              
+ +    },                                                                                                                                                                                                                    
+ +    {                                                                                                                                                                                                                     
+ +      "parameter": "log_e_slow", "value": -2.3, "description": "Log assimilation efficiency of COTS from slow-growing corals.", "source": "initial estimate", "import_type": "PARAMETER", "priority": 2, "units":         
+ "log(dimensionless)", "lower_bound": -6.9, "upper_bound": 0.0                                                                                                                                                              
+ +    },                                                                                                                                                                                                                    
+ +    {                                                                                                                                                                                                                     
+ +      "parameter": "log_m_cots", "value": -0.92, "description": "Log natural mortality rate of COTS.", "source": "literature", "import_type": "PARAMETER", "priority": 2, "units": "log(year^-1)", "lower_bound": -2.3,   
+ "upper_bound": 0.0                                                                                                                                                                                                         
+ +    },                                                                                                                                                                                                                    
+ +    {                                                                                                                                                                                                                     
+ +      "parameter": "log_q_cots", "value": -0.69, "description": "Log density-dependent mortality coefficient for COTS.", "source": "initial estimate", "import_type": "PARAMETER", "priority": 1, "units":                
+ "log(m2/individual/year)", "lower_bound": -4.6, "upper_bound": 2.3                                                                                                                                                         
+ +    },                                                                                                                                                                                                                    
+ +    {                                                                                                                                                                                                                     
+ +      "parameter": "log_sd_cots", "value": -1.61, "description": "Log standard deviation of observation error for COTS abundance.", "source": "initial estimate", "import_type": "PARAMETER", "priority": 5, "units":     
+ "log(individuals/m2)", "lower_bound": -4.6, "upper_bound": 0.69                                                                                                                                                            
+ +    },                                                                                                                                                                                                                    
+ +    {                                                                                                                                                                                                                     
+ +      "parameter": "log_sd_fast", "value": -1.61, "description": "Log standard deviation of observation error for fast coral cover.", "source": "initial estimate", "import_type": "PARAMETER", "priority": 5, "units":   
+ "log(%)", "lower_bound": -4.6, "upper_bound": 0.69                                                                                                                                                                         
+ +    },                                                                                                                                                                                                                    
+ +    {                                                                                                                                                                                                                     
+ +      "parameter": "log_sd_slow", "value": -1.61, "description": "Log standard deviation of observation error for slow coral cover.", "source": "initial estimate", "import_type": "PARAMETER", "priority": 5, "units":   
+ "log(%)", "lower_bound": -4.6, "upper_bound": 0.69                                                                                                                                                                         
+ +    }                                                                                                                                                                                                                     
+ +  ]                                                                                                                                                                                                                       
+ +}                                                                                                                                                                                                                         
+                                                                                                                                                                                                                            
+
+Tokens: 2.6k sent, 4.7k received. Cost: $0.05 message, $0.05 session.
+Committing POPULATIONS/POPULATION_0022/INDIVIDUAL_MJEF2XUR/intention.txt before applying edits.
+Committing POPULATIONS/POPULATION_0022/INDIVIDUAL_MJEF2XUR/model.cpp before applying edits.
+Committing POPULATIONS/POPULATION_0022/INDIVIDUAL_MJEF2XUR/parameters.json before applying edits.
+Unable to add /home/spi085/Documents/_Projects/EMs-with-LLMs/POPULATIONS/POPULATION_0022/INDIVIDUAL_MJEF2XUR/intention.txt: Cmd('git') failed due to: exit code(1)
+  cmdline: git add /home/spi085/Documents/_Projects/EMs-with-LLMs/POPULATIONS/POPULATION_0022/INDIVIDUAL_MJEF2XUR/intention.txt
+  stderr: 'The following paths are ignored by one of your .gitignore files:
+POPULATIONS
+hint: Use -f if you really want to add them.
+hint: Turn this message off by running
+hint: "git config advice.addIgnoredFile false"'
+Unable to add /home/spi085/Documents/_Projects/EMs-with-LLMs/POPULATIONS/POPULATION_0022/INDIVIDUAL_MJEF2XUR/model.cpp: Cmd('git') failed due to: exit code(1)
+  cmdline: git add /home/spi085/Documents/_Projects/EMs-with-LLMs/POPULATIONS/POPULATION_0022/INDIVIDUAL_MJEF2XUR/model.cpp
+  stderr: 'The following paths are ignored by one of your .gitignore files:
+POPULATIONS
+hint: Use -f if you really want to add them.
+hint: Turn this message off by running
+hint: "git config advice.addIgnoredFile false"'
+Unable to add /home/spi085/Documents/_Projects/EMs-with-LLMs/POPULATIONS/POPULATION_0022/INDIVIDUAL_MJEF2XUR/parameters.json: Cmd('git') failed due to: exit code(1)
+  cmdline: git add /home/spi085/Documents/_Projects/EMs-with-LLMs/POPULATIONS/POPULATION_0022/INDIVIDUAL_MJEF2XUR/parameters.json
+  stderr: 'The following paths are ignored by one of your .gitignore files:
+POPULATIONS
+hint: Use -f if you really want to add them.
+hint: Turn this message off by running
+hint: "git config advice.addIgnoredFile false"'
+Unable to commit: Cmd('git') failed due to: exit code(1)
+  cmdline: git commit -m feat: Add new individual MJEF2XUR to population 22 --no-verify -- /home/spi085/Documents/_Projects/EMs-with-LLMs/POPULATIONS/POPULATION_0022/INDIVIDUAL_MJEF2XUR/intention.txt 
+/home/spi085/Documents/_Projects/EMs-with-LLMs/POPULATIONS/POPULATION_0022/INDIVIDUAL_MJEF2XUR/model.cpp /home/spi085/Documents/_Projects/EMs-with-LLMs/POPULATIONS/POPULATION_0022/INDIVIDUAL_MJEF2XUR/parameters.json
+  stderr: 'error: pathspec '/home/spi085/Documents/_Projects/EMs-with-LLMs/POPULATIONS/POPULATION_0022/INDIVIDUAL_MJEF2XUR/intention.txt' did not match any file(s) known to git
+error: pathspec '/home/spi085/Documents/_Projects/EMs-with-LLMs/POPULATIONS/POPULATION_0022/INDIVIDUAL_MJEF2XUR/model.cpp' did not match any file(s) known to git
+error: pathspec '/home/spi085/Documents/_Projects/EMs-with-LLMs/POPULATIONS/POPULATION_0022/INDIVIDUAL_MJEF2XUR/parameters.json' did not match any file(s) known to git'
+Applied edit to POPULATIONS/POPULATION_0022/INDIVIDUAL_MJEF2XUR/intention.txt
+Applied edit to POPULATIONS/POPULATION_0022/INDIVIDUAL_MJEF2XUR/model.cpp
+Applied edit to POPULATIONS/POPULATION_0022/INDIVIDUAL_MJEF2XUR/parameters.json
+Initialized new individual: POPULATIONS/POPULATION_0022/INDIVIDUAL_MJEF2XUR
+Validating model for data leakage...
+Opening file: POPULATIONS/POPULATION_0022/INDIVIDUAL_MJEF2XUR/model.cpp
+File read successfully
+TMB convention check: {'uses_tmb_header': True, 'uses_data_macros': True, 'uses_vector_type': True, 'uses_standard_report': True, 'uses_objective_function': True, 'uses_std_vector': False, 'uses_string_report': False}
+Extracting vectors...
+Found data vectors: {'Year', 'sst_dat', 'cotsimm_dat', 'cots_dat', 'slow_dat', 'fast_dat'}
+Found prediction vectors: {'slow_pred', 'fast_pred', 'cots_pred'}
+Found reported vectors: {'h_fast', 'm_cots', 'fast_pred', 'K_slow', 'r_slow', 'K_fast', 'a_slow', 'h_slow', 'e_fast', 'r_fast', 'e_slow', 'slow_pred', 'a_fast', 'q_cots', 'cots_pred'}
+Finding initial conditions...
+Found 3 initial conditions
+Finding time-stepping loop...
+Found loop from line 94 to 126
+Looking for metadata file at: /home/spi085/Documents/_Projects/EMs-with-LLMs/POPULATIONS/POPULATION_0022/population_metadata.json
+Attempting to read CSV file: /home/spi085/Documents/_Projects/EMs-with-LLMs/Data/timeseries_data_COTS_response.csv
+Successfully read CSV file with 4 columns
+Found response variables from /home/spi085/Documents/_Projects/EMs-with-LLMs/Data/timeseries_data_COTS_response.csv: {'slow_dat', 'fast_dat', 'cots_dat'}
+[93m[PID 1824826] Running model for individual...[0m
+[0m[PID 1824826] Individual directory: POPULATIONS/POPULATION_0022/INDIVIDUAL_MJEF2XUR[0m
+[96m[PID 1824826] Launching Rscript... (timeout=none)[0m
+[93m[PID 1824826] R script stdout BEGIN >>>[0m
+[0mg++ -std=gnu++17 -I"/usr/share/R/include" -DNDEBUG -I"/home/spi085/R/x86_64-pc-linux-gnu-library/4.4/TMB/include" -I"/home/spi085/R/x86_64-pc-linux-gnu-library/4.4/RcppEigen/include"   -DTMB_EIGEN_DISABLE_WARNINGS   -DTMB_LIB_INIT=R_init_model  -DCPPAD_FRAMEWORK      -fpic  -O2  -c POPULATIONS/POPULATION_0022/INDIVIDUAL_MJEF2XUR/model.cpp -o POPULATIONS/POPULATION_0022/INDIVIDUAL_MJEF2XUR/model.o
+g++ -std=gnu++17 -shared -L/usr/lib/R/lib -Wl,-Bsymbolic-functions -flto=auto -ffat-lto-objects -Wl,-z,relro -o POPULATIONS/POPULATION_0022/INDIVIDUAL_MJEF2XUR/model.so POPULATIONS/POPULATION_0022/INDIVIDUAL_MJEF2XUR/model.o -L/usr/lib/R/lib -lR
+
+NA counts per required column:
+       Year    cots_dat    fast_dat    slow_dat     sst_dat cotsimm_dat 
+          0           0           0           0           0           0 
+
+NA counts per required column:
+       Year    cots_dat    fast_dat    slow_dat     sst_dat cotsimm_dat 
+          0           0           0           0           0           0 
+
+PARAMETER starts (first few):
+    log_r_fast     log_K_fast     log_r_slow     log_K_slow log_alpha_slow 
+         -0.51           4.09          -1.61           3.91           0.00 
+log_alpha_fast     log_a_fast     log_h_fast     log_a_slow     log_h_slow 
+          0.00          -0.22          -0.69          -1.61          -0.69 
+    log_e_fast     log_e_slow 
+         -2.30          -2.30 
+Starting model phases
+Number of phases: 5 
+Phase 1 
+Initial parameter values for phase 1 :
+log_a_fast log_h_fast log_a_slow log_h_slow log_q_cots 
+     -0.22      -0.69      -1.61      -0.69      -0.69 
+Final parameter values for phase 1 :
+log_a_fast log_h_fast log_a_slow log_h_slow log_q_cots 
+ 0.6377838 -2.1434837 -0.2005500 -1.6583513 -1.2660608 
+Convergence message: iteration limit reached without convergence (10) 
+Number of iterations: 150 
+Objective function value: 168.0493 
+Gradient at solution for phase 1 :
+          [,1]     [,2]      [,3]     [,4]     [,5]
+[1,] -63.74871 45.95358 -24.53232 68.12902 30.27382
+Phase 2 
+Initial parameter values for phase 2 :
+log_r_fast log_r_slow log_e_fast log_e_slow log_m_cots 
+     -0.51      -1.61      -2.30      -2.30      -0.92 
+Final parameter values for phase 2 :
+log_r_fast log_r_slow log_e_fast log_e_slow log_m_cots 
+-0.6107292 -1.7660520 -2.4684340 -2.0260864 -0.9042080 
+Convergence message: iteration limit reached without convergence (10) 
+Number of iterations: 150 
+Objective function value: 150.5086 
+Gradient at solution for phase 2 :
+         [,1]     [,2]     [,3]     [,4]     [,5]
+[1,] 24.82048 16.81863 3.495229 -22.8557 12.54943
+Phase 3 
+Initial parameter values for phase 3 :
+log_K_fast log_K_slow 
+      4.09       3.91 
+Final parameter values for phase 3 :
+log_K_fast log_K_slow 
+  4.091076   3.912491 
+Convergence message: both X-convergence and relative convergence (5) 
+Number of iterations: 13 
+Objective function value: 150.4851 
+Gradient at solution for phase 3 :
+              [,1]          [,2]
+[1,] -2.465708e-06 -3.309615e-07
+Phase 4 
+Initial parameter values for phase 4 :
+log_alpha_slow log_alpha_fast 
+             0              0 
+Final parameter values for phase 4 :
+log_alpha_slow log_alpha_fast 
+  0.0003288658  -0.0026643755 
+Convergence message: relative convergence (4) 
+Number of iterations: 11 
+Objective function value: 150.4831 
+Gradient at solution for phase 4 :
+             [,1]          [,2]
+[1,] 3.844959e-08 -3.776275e-07
+Phase 5 
+Initial parameter values for phase 5 :
+log_sd_cots log_sd_fast log_sd_slow 
+      -1.61       -1.61       -1.61 
+Final parameter values for phase 5 :
+log_sd_cots log_sd_fast log_sd_slow 
+ -0.6204984  -0.7614591  -1.0559713 
+Convergence message: relative convergence (4) 
+Number of iterations: 9 
+Objective function value: 47.29106 
+Gradient at solution for phase 5 :
+             [,1]         [,2]          [,3]
+[1,] 1.833859e-06 1.044572e-07 -1.231978e-07
+Final Phase
+Initial parameter values for final phase:
+    log_r_fast     log_K_fast     log_r_slow     log_K_slow log_alpha_slow 
+ -0.6107291763   4.0910756336  -1.7660520419   3.9124909391   0.0003288658 
+log_alpha_fast     log_a_fast     log_h_fast     log_a_slow     log_h_slow 
+ -0.0026643755   0.6377838326  -2.1434837360  -0.2005500280  -1.6583512508 
+    log_e_fast     log_e_slow     log_m_cots     log_q_cots    log_sd_cots 
+ -2.4684340283  -2.0260863670  -0.9042080034  -1.2660607762  -0.6204983984 
+   log_sd_fast    log_sd_slow 
+ -0.7614591228  -1.0559712832 
+Final parameter values for final phase:
+    log_r_fast     log_K_fast     log_r_slow     log_K_slow log_alpha_slow 
+  -0.660657129    4.117486886   -1.821095226    3.934780695   -0.008750966 
+log_alpha_fast     log_a_fast     log_h_fast     log_a_slow     log_h_slow 
+  -0.023031063    0.660028891   -2.128587533   -0.168631069   -1.720588975 
+    log_e_fast     log_e_slow     log_m_cots     log_q_cots    log_sd_cots 
+  -2.483406628   -1.980628636   -0.908308622   -1.202559039   -0.624818910 
+   log_sd_fast    log_sd_slow 
+  -0.779167534   -1.064005851 
+Convergence message: iteration limit reached without convergence (10) 
+Number of iterations: 150 
+Objective function value: 45.70873 
+Gradient at solution for final phase:
+          [,1]      [,2]     [,3]      [,4]     [,5]     [,6]        [,7]
+[1,] 0.3800464 -5.644853 3.304244 -1.803479 1.980033 1.554878 -0.02640966
+          [,8]      [,9]    [,10]    [,11]     [,12]    [,13]     [,14]
+[1,] -6.904345 -2.245645 1.650286 3.946006 -1.584999 -2.30188 -6.775459
+         [,15]     [,16]     [,17]
+[1,] 0.3208965 0.8705581 0.4098956
+All phases completed
+Successfully updated parameters_metadata.json with optimized values
+[1] "Train test split:"
+[1] 1
+
+Running model validation...
+No test data available (train_test_split >= 1.0)
+NULL
+
+DEBUG: Report contents:
+List of 3
+ $ cots_pred: num [1:26] 0.262 0.291 0.324 0.362 0.403 ...
+ $ fast_pred: num [1:26] 10.1 12.4 14.9 17.6 20.3 ...
+ $ slow_pred: num [1:26] 12.8 13.4 13.9 14.3 14.6 ...
+NULL
+
+DEBUG: Available variables in report:
+[1] "cots_pred" "fast_pred" "slow_pred"
+
+Checking predictions and calculating objective function...
+
+DEBUG: Processing cots_pred 
+DEBUG: First few predictions: 0.2615042 0.2906852 0.3242283 0.3617912 0.4027249 0.4460593 
+DEBUG: Summary statistics:
+   Min. 1st Qu.  Median    Mean 3rd Qu.    Max. 
+ 0.2615  0.3912  0.4869  0.7318  0.7037  2.6775 
+DEBUG: All zeros? FALSE 
+DEBUG: Any infinities? FALSE 
+
+DEBUG: Processing fast_pred 
+DEBUG: First few predictions: 10.06939 12.37455 14.91168 17.58214 20.25642 22.79456 
+DEBUG: Summary statistics:
+   Min. 1st Qu.  Median    Mean 3rd Qu.    Max. 
+  4.659   6.394  11.852  14.436  21.992  30.622 
+DEBUG: All zeros? FALSE 
+DEBUG: Any infinities? FALSE 
+
+DEBUG: Processing slow_pred 
+DEBUG: First few predictions: 12.77261 13.38844 13.91609 14.33091 14.61431 14.75697 
+DEBUG: Summary statistics:
+   Min. 1st Qu.  Median    Mean 3rd Qu.    Max. 
+  3.917   4.250   9.340   9.195  14.044  14.760 
+DEBUG: All zeros? FALSE 
+DEBUG: Any infinities? FALSE 
+
+DEBUG: Using the following variables for objective function:
+cots_dat -> cots_pred
+fast_dat -> fast_pred
+slow_dat -> slow_pred
+
+DEBUG: Calculating MSE for prediction variables only:
+
+DEBUG: cots_pred 
+Observed: 0.2615042 0.5498196 0.7268086 0.5522907 0.828121 0.5470078 ...
+Predicted: 0.2615042 0.2906852 0.3242283 0.3617912 0.4027249 0.4460593 ...
+MSE (normalized): 1.61299 
+
+DEBUG: fast_pred 
+Observed: 10.06939 17.72357 23.82758 19.41812 15.63542 32.45961 ...
+Predicted: 10.06939 12.37455 14.91168 17.58214 20.25642 22.79456 ...
+MSE (normalized): 0.3617313 
+
+DEBUG: slow_pred 
+Observed: 12.77261 16.41474 12.77729 12.27975 15.11516 12.81941 ...
+Predicted: 12.77261 13.38844 13.91609 14.33091 14.61431 14.75697 ...
+MSE (normalized): 0.2975056 
+
+DEBUG: MSE values:
+ cots_dat  fast_dat  slow_dat 
+1.6129904 0.3617313 0.2975056 
+
+DEBUG: Final objective value (mean of MSEs): 0.7574091 
+
+Final objective function value: 0.7574091 
+
+JSON_REPORT_START
+{
+  "status": "SUCCESS",
+  "objective_value": 0.7574,
+  "model_summary": ["            Length Class  Mode     ", "par         17     -none- numeric  ", "objective    1     -none- numeric  ", "convergence  1     -none- numeric  ", "iterations   1     -none- numeric  ", "evaluations  2     -none- numeric  ", "message      1     -none- character"],
+  "model_report": {
+    "cots_pred": [0.2615, 0.2907, 0.3242, 0.3618, 0.4027, 0.4461, 0.4905, 0.5348, 0.5772, 0.6167, 2.1521, 1.2838, 2.6775, 1.8073, 1.1339, 0.8855, 0.7309, 0.6221, 0.5423, 0.4833, 0.4406, 0.4111, 0.3927, 0.3839, 0.3835, 0.3907],
+    "fast_pred": [10.0694, 12.3746, 14.9117, 17.5821, 20.2564, 22.7946, 25.0728, 27.0067, 28.5621, 29.7519, 30.6218, 22.4552, 20.6027, 11.3287, 7.1302, 5.6608, 4.9505, 4.6587, 4.6618, 4.9129, 5.4032, 6.148, 7.1791, 8.5396, 10.2764, 12.4301],
+    "slow_pred": [12.7726, 13.3884, 13.9161, 14.3309, 14.6143, 14.757, 14.7604, 14.6363, 14.404, 14.0866, 13.7074, 11.5716, 10.6327, 8.0469, 6.3162, 5.3908, 4.7837, 4.3806, 4.124, 3.9776, 3.9165, 3.9225, 3.9813, 4.0813, 4.2121, 4.3629]
+  },
+  "plot_data": {
+    "cots_pred": {
+      "Year": [1980, 1981, 1982, 1983, 1984, 1985, 1986, 1987, 1988, 1989, 1990, 1991, 1992, 1993, 1994, 1995, 1996, 1997, 1998, 1999, 2000, 2001, 2002, 2003, 2004, 2005],
+      "Modeled": [0.2615, 0.2907, 0.3242, 0.3618, 0.4027, 0.4461, 0.4905, 0.5348, 0.5772, 0.6167, 2.1521, 1.2838, 2.6775, 1.8073, 1.1339, 0.8855, 0.7309, 0.6221, 0.5423, 0.4833, 0.4406, 0.4111, 0.3927, 0.3839, 0.3835, 0.3907],
+      "Observed": [0.2615, 0.5498, 0.7268, 0.5523, 0.8281, 0.547, 0.758, 0.6288, 0.4762, 0.6466, 0.9107, 2.152, 0.6446, 1.6723, 0.4766, 0.8075, 0.3635, 0.3728, 0.6173, 0.3107, 0.256, 0.2984, 0.3362, 0.2878, 0.3221, 0.4308]
+    },
+    "fast_pred": {
+      "Year": [1980, 1981, 1982, 1983, 1984, 1985, 1986, 1987, 1988, 1989, 1990, 1991, 1992, 1993, 1994, 1995, 1996, 1997, 1998, 1999, 2000, 2001, 2002, 2003, 2004, 2005],
+      "Modeled": [10.0694, 12.3746, 14.9117, 17.5821, 20.2564, 22.7946, 25.0728, 27.0067, 28.5621, 29.7519, 30.6218, 22.4552, 20.6027, 11.3287, 7.1302, 5.6608, 4.9505, 4.6587, 4.6618, 4.9129, 5.4032, 6.148, 7.1791, 8.5396, 10.2764, 12.4301],
+      "Observed": [10.0694, 17.7236, 23.8276, 19.4181, 15.6354, 32.4596, 21.5567, 34.1938, 18.8708, 27.3176, 44.3301, 13.3275, 11.3741, 8.3362, 15.207, 12.443, 11.0666, 10.6442, 2.3628, 2.76, 3.7236, 7.0355, 10.2239, 8.4754, 9.0819, 13.7314]
+    },
+    "slow_pred": {
+      "Year": [1980, 1981, 1982, 1983, 1984, 1985, 1986, 1987, 1988, 1989, 1990, 1991, 1992, 1993, 1994, 1995, 1996, 1997, 1998, 1999, 2000, 2001, 2002, 2003, 2004, 2005],
+      "Modeled": [12.7726, 13.3884, 13.9161, 14.3309, 14.6143, 14.757, 14.7604, 14.6363, 14.404, 14.0866, 13.7074, 11.5716, 10.6327, 8.0469, 6.3162, 5.3908, 4.7837, 4.3806, 4.124, 3.9776, 3.9165, 3.9225, 3.9813, 4.0813, 4.2121, 4.3629],
+      "Observed": [12.7726, 16.4147, 12.7773, 12.2798, 15.1152, 12.8194, 10.4631, 9.7251, 13.2014, 16.4512, 11.1393, 18.0832, 11.5223, 8.51, 9.1622, 5.3353, 8.6044, 7.2781, 2.629, 4.6951, 1.5948, 5.2172, 2.6041, 3.3618, 7.3289, 4.4014]
+    }
+  }
+}
+JSON_REPORT_END[0m
+[93m[PID 1824826] R script stdout END <<<[0m
+[93m[PID 1824826] R script stderr BEGIN >>>[0m
+[0mLoading required package: TMB
+Loading required package: jsonlite
+using C++ compiler: ‘g++ (Ubuntu 13.3.0-6ubuntu2~24.04) 13.3.0’
+Warning message:
+`aes_string()` was deprecated in ggplot2 3.0.0.
+ℹ Please use tidy evaluation idioms with `aes()`.
+ℹ See also `vignette("ggplot2-in-packages")` for more information.[0m
+[93m[PID 1824826] R script stderr END <<<[0m
+[96m[PID 1824826] JSON detected, parsing...[0m
+[96m[PID 1824826] Writing model report...[0m
+[94m[PID 1824826] Objective value: 0.7574[0m
+[96m[PID 1824826] Generating plots...[0m
+[94m[PID 1824826] Objective Value: 0.7574[0m
+[92m[PID 1824826] Successful model run[0m
+[0m----------------------------------------------[0m
+MODEL RUN FINISHED
+Model run successful. Objective value: 0.7574
+Model ran successful and returned meaningful objective value... enhancing parameter descriptions.
+Enhancing parameter descriptions...
+Asking gpt-4.1-mini
+Parameter descriptions enhanced successfully.
+Running parameter processing...
+DEBUG: get_params() called with directory_path: POPULATIONS/POPULATION_0022/INDIVIDUAL_MJEF2XUR
+DEBUG: population_dir: POPULATIONS/POPULATION_0022
+DEBUG: meta_file path: POPULATIONS/POPULATION_0022/population_metadata.json
+DEBUG: Checking if meta_file exists...
+DEBUG: meta_file exists, attempting to read...
+DEBUG: Successfully read meta_file
+DEBUG: rag_choice: gpt-4.1-mini, doc_store_dir: doc_store
+DEBUG: About to resolve model name...
+[get_params] Using model from rag_choice: 'gpt-4.1-mini' -> 'gpt-4.1-mini'
+[get_params] Using doc_store_dir: 'doc_store'
+Processing literature parameter: log_r_fast
+Searching for log_r_fast with query: Log intrinsic growth rate of fast-growing corals (year⁻¹)
+Engine order for log_r_fast: ['rag', 'semantic_scholar']
+Loading llama_index.core.storage.kvstore.simple_kvstore from /home/spi085/Documents/_Projects/EMs-with-LLMs/storage_chroma_doc_store/docstore.json.
+Loading llama_index.core.storage.kvstore.simple_kvstore from /home/spi085/Documents/_Projects/EMs-with-LLMs/storage_chroma_doc_store/index_store.json.
+Search results found for log_r_fast (engine=rag, attempt=1)
+S2 Response Status Code: 200
+S2 Query: Log intrinsic growth rate of fast-growing corals (year⁻¹)
+S2 Total results: 0
+No papers found.
+No search results for log_r_fast (engine=semantic_scholar, attempt=1)
+S2 Response Status Code: 200
+S2 Query: Log intrinsic growth rate of fast-growing corals (year⁻¹)
+S2 Total results: 0
+No papers found.
+No search results for log_r_fast (engine=semantic_scholar, attempt=2)
+S2 Response Status Code: 200
+S2 Query: Log intrinsic growth rate of fast-growing corals (year⁻¹)
+S2 Total results: 0
+No papers found.
+No search results for log_r_fast (engine=semantic_scholar, attempt=3)
+DEBUG: Aggregated 4 total source chunks for log_r_fast:
+ Source [1]: C:\Users\spi085\OneDrive - CSIRO\Documents\_Projects\SCCP-QuantModelling\doc_store\Condie et al (2021) - large scale interventions may delay decline of Great Barrier Reef.pdf
+ Source [2]: C:\Users\spi085\OneDrive - CSIRO\Documents\_Projects\SCCP-QuantModelling\doc_store\Pratchett-2017-Thirty years of research on cro.pdf
+ Source [3]: C:\Users\spi085\OneDrive - CSIRO\Documents\_Projects\SCCP-QuantModelling\doc_store\Rogers-2022-Culling corallivores improves shor.pdf
+ Source [4]: C:\Users\spi085\OneDrive - CSIRO\Documents\_Projects\SCCP-QuantModelling\doc_store\Morello-2014-Model to manage and reduce crown-.pdf
+Asking gpt-4.1-mini
+DEBUG: LLM response for log_r_fast: No relevant values found
+Processing literature parameter: log_r_slow
+Searching for log_r_slow with query: Log intrinsic growth rate of slow-growing corals (year⁻¹)
+Engine order for log_r_slow: ['rag', 'semantic_scholar']
+Search results found for log_r_slow (engine=rag, attempt=1)
+S2 Response Status Code: 200
+S2 Query: Log intrinsic growth rate of slow-growing corals (year⁻¹)
+S2 Total results: 1
+No search results for log_r_slow (engine=semantic_scholar, attempt=1)
+S2 Response Status Code: 200
+S2 Query: Log intrinsic growth rate of slow-growing corals (year⁻¹)
+S2 Total results: 1
+No search results for log_r_slow (engine=semantic_scholar, attempt=2)
+S2 Response Status Code: 200
+S2 Query: Log intrinsic growth rate of slow-growing corals (year⁻¹)
+S2 Total results: 1
+No search results for log_r_slow (engine=semantic_scholar, attempt=3)
+DEBUG: Aggregated 3 total source chunks for log_r_slow:
+ Source [1]: C:\Users\spi085\OneDrive - CSIRO\Documents\_Projects\SCCP-QuantModelling\doc_store\Condie et al (2021) - large scale interventions may delay decline of Great Barrier Reef.pdf
+ Source [2]: C:\Users\spi085\OneDrive - CSIRO\Documents\_Projects\SCCP-QuantModelling\doc_store\Pratchett-2017-Thirty years of research on cro.pdf
+ Source [3]: C:\Users\spi085\OneDrive - CSIRO\Documents\_Projects\SCCP-QuantModelling\doc_store\Rogers-2022-Culling corallivores improves shor.pdf
+Asking gpt-4.1-mini
+DEBUG: LLM response for log_r_slow: No relevant values found
+Processing literature parameter: log_m_cots
+Searching for log_m_cots with query: Log natural mortality rate of COTS (year⁻¹)
+Engine order for log_m_cots: ['semantic_scholar', 'rag']
+S2 Response Status Code: 200
+S2 Query: Log natural mortality rate of COTS (year⁻¹)
+S2 Total results: 44
+Search results found for log_m_cots (engine=semantic_scholar, attempt=1)
+Search results found for log_m_cots (engine=rag, attempt=1)
+DEBUG: Aggregated 8 total source chunks for log_m_cots:
+ Source [1]: https://www.semanticscholar.org/paper/178f1a8d1a95ab204f3ac04dd6e90f0ed888b9f7
+ Source [2]: https://www.semanticscholar.org/paper/955465b82c4ab1aa1ab0ca849f0c580a682c817a
+ Source [3]: https://www.semanticscholar.org/paper/e70cbf3a4249c5df55d7235d11d9a70006304ad8
+ Source [4]: https://www.semanticscholar.org/paper/e2eed907fdf824ec3424c0df041e0961d7bec787
+ Source [5]: https://www.semanticscholar.org/paper/effe5e616ead9b0f8f9f23cc7c14bc5d42e8358b
+ Source [6]: https://www.semanticscholar.org/paper/5f82d334fee7c6549be3250390e8efdf6201221b
+ Source [7]: C:\Users\spi085\OneDrive - CSIRO\Documents\_Projects\SCCP-QuantModelling\doc_store\Rogers-2022-Culling corallivores improves shor.pdf
+ Source [8]: C:\Users\spi085\OneDrive - CSIRO\Documents\_Projects\SCCP-QuantModelling\doc_store\Morello-2014-Model to manage and reduce crown-.pdf
+Asking gpt-4.1-mini
+DEBUG: LLM response for log_m_cots: {
+  "min": 0.875,
+  "max": 0.939,
+  "value": 0.907,
+  "relevant_text": "The natural mortality, fishing mortality and total mortality were 1.17, 1.21 and 2.38 respectively [3]; natural maturity M=0.458 yr-1 [4]; instantaneous rate of natural mortality was 0.371 year-1 [6]",
+  "citations_used": [3,4,6]
+}
+Parameter processing completed successfully.
+Re-running model after parameter processing...
+[93m[PID 1824826] Running model for individual...[0m
+[0m[PID 1824826] Individual directory: POPULATIONS/POPULATION_0022/INDIVIDUAL_MJEF2XUR[0m
+[93m[PID 1824826] Removed old compilation: model.o[0m
+[96m[PID 1824826] Launching Rscript... (timeout=none)[0m
+[93m[PID 1824826] R script stdout BEGIN >>>[0m
+[0mg++ -std=gnu++17 -I"/usr/share/R/include" -DNDEBUG -I"/home/spi085/R/x86_64-pc-linux-gnu-library/4.4/TMB/include" -I"/home/spi085/R/x86_64-pc-linux-gnu-library/4.4/RcppEigen/include"   -DTMB_EIGEN_DISABLE_WARNINGS   -DTMB_LIB_INIT=R_init_model  -DCPPAD_FRAMEWORK      -fpic  -O2  -c POPULATIONS/POPULATION_0022/INDIVIDUAL_MJEF2XUR/model.cpp -o POPULATIONS/POPULATION_0022/INDIVIDUAL_MJEF2XUR/model.o
+g++ -std=gnu++17 -shared -L/usr/lib/R/lib -Wl,-Bsymbolic-functions -flto=auto -ffat-lto-objects -Wl,-z,relro -o POPULATIONS/POPULATION_0022/INDIVIDUAL_MJEF2XUR/model.so POPULATIONS/POPULATION_0022/INDIVIDUAL_MJEF2XUR/model.o -L/usr/lib/R/lib -lR
+
+NA counts per required column:
+       Year    cots_dat    fast_dat    slow_dat     sst_dat cotsimm_dat 
+          0           0           0           0           0           0 
+
+NA counts per required column:
+       Year    cots_dat    fast_dat    slow_dat     sst_dat cotsimm_dat 
+          0           0           0           0           0           0 
+
+PARAMETER starts (first few):
+    log_r_fast     log_K_fast     log_r_slow     log_K_slow log_alpha_slow 
+         -0.51           4.09          -1.61           3.91           0.00 
+log_alpha_fast     log_a_fast     log_h_fast     log_a_slow     log_h_slow 
+          0.00          -0.22          -0.69          -1.61          -0.69 
+    log_e_fast     log_e_slow 
+         -2.30          -2.30 
+Starting model phases
+Number of phases: 5 
+Phase 1 
+Initial parameter values for phase 1 :
+log_a_fast log_h_fast log_a_slow log_h_slow log_q_cots 
+     -0.22      -0.69      -1.61      -0.69      -0.69 
+Final parameter values for phase 1 :
+log_a_fast log_h_fast log_a_slow log_h_slow log_q_cots 
+-0.7134387 -3.7960629 -0.7887228 -2.0308655 -1.2278849 
+Convergence message: false convergence (8) 
+Number of iterations: 41 
+Objective function value: 84919.81 
+Gradient at solution for phase 1 :
+          [,1]     [,2]      [,3]     [,4]         [,5]
+[1,] -41.76161 19.61451 -5.621313 35.72986 1.236162e-15
+Phase 2 
+Initial parameter values for phase 2 :
+log_r_fast log_r_slow log_e_fast log_e_slow log_m_cots 
+    -0.510     -1.610     -2.300     -2.300      0.907 
+Final parameter values for phase 2 :
+log_r_fast log_r_slow log_e_fast log_e_slow log_m_cots 
+-2.3000000 -3.0000000 -2.2999931 -2.2999942  0.9069522 
+Convergence message: relative convergence (4) 
+Number of iterations: 3 
+Objective function value: 84461.22 
+Gradient at solution for phase 2 :
+        [,1]     [,2]          [,3]          [,4]         [,5]
+[1,] 80.5362 113.0622 -5.865661e-07 -5.113134e-07 4.223004e-06
+Phase 3 
+Initial parameter values for phase 3 :
+log_K_fast log_K_slow 
+      4.09       3.91 
+Final parameter values for phase 3 :
+log_K_fast log_K_slow 
+  3.891266   3.212245 
+Convergence message: relative convergence (4) 
+Number of iterations: 8 
+Objective function value: 84410.41 
+Gradient at solution for phase 3 :
+             [,1]         [,2]
+[1,] -0.005451126 -0.008457882
+Phase 4 
+Initial parameter values for phase 4 :
+log_alpha_slow log_alpha_fast 
+             0              0 
+Final parameter values for phase 4 :
+log_alpha_slow log_alpha_fast 
+   -0.09078658     0.01325724 
+Convergence message: relative convergence (4) 
+Number of iterations: 5 
+Objective function value: 84410.26 
+Gradient at solution for phase 4 :
+             [,1]        [,2]
+[1,] -0.001408507 -0.00448803
+Phase 5 
+Initial parameter values for phase 5 :
+log_sd_cots log_sd_fast log_sd_slow 
+      -1.61       -1.61       -1.61 
+Final parameter values for phase 5 :
+log_sd_cots log_sd_fast log_sd_slow 
+  0.6900000  -0.4209763  -0.7858573 
+Convergence message: relative convergence (4) 
+Number of iterations: 13 
+Objective function value: 931.171 
+Gradient at solution for phase 5 :
+          [,1]         [,2]        [,3]
+[1,] -1667.863 7.898095e-09 2.98114e-08
+Final Phase
+Initial parameter values for final phase:
+    log_r_fast     log_K_fast     log_r_slow     log_K_slow log_alpha_slow 
+   -2.30000000     3.89126581    -3.00000000     3.21224541    -0.09078658 
+log_alpha_fast     log_a_fast     log_h_fast     log_a_slow     log_h_slow 
+    0.01325724    -0.71343869    -3.79606291    -0.78872276    -2.03086551 
+    log_e_fast     log_e_slow     log_m_cots     log_q_cots    log_sd_cots 
+   -2.29999311    -2.29999422     0.90695217    -1.22788492     0.69000000 
+   log_sd_fast    log_sd_slow 
+   -0.42097629    -0.78585729 
+Final parameter values for final phase:
+    log_r_fast     log_K_fast     log_r_slow     log_K_slow log_alpha_slow 
+    -2.3000000      4.6000000     -3.0000000      4.2803579     -2.3000000 
+log_alpha_fast     log_a_fast     log_h_fast     log_a_slow     log_h_slow 
+     1.6000000      0.5152465     -4.6000000      0.0000000     -1.1222840 
+    log_e_fast     log_e_slow     log_m_cots     log_q_cots    log_sd_cots 
+    -2.2691254     -2.5258404      0.8750000     -0.7753005      0.6900000 
+   log_sd_fast    log_sd_slow 
+    -0.5100530     -0.7881414 
+Convergence message: relative convergence (4) 
+Number of iterations: 40 
+Objective function value: 928.7956 
+Gradient at solution for final phase:
+          [,1]       [,2]     [,3]         [,4]       [,5]        [,6]
+[1,] 0.2921638 -0.2843112 2.185795 6.829399e-05 0.03830109 -0.07092981
+              [,7]       [,8]       [,9]       [,10]         [,11]
+[1,] -2.392871e-05 0.04167491 -0.2205707 4.60169e-05 -3.194919e-09
+             [,12]        [,13]        [,14]     [,15]         [,16]
+[1,] -9.764348e-10 1.555406e-08 2.986258e-17 -1667.863 -2.758898e-06
+            [,17]
+[1,] 5.529104e-05
+All phases completed
+Successfully updated parameters_metadata.json with optimized values
+[1] "Train test split:"
+[1] 1
+
+Running model validation...
+No test data available (train_test_split >= 1.0)
+NULL
+
+DEBUG: Report contents:
+List of 3
+ $ cots_pred: num [1:26] 2.62e-01 1.00e-08 1.00e-08 1.00e-08 1.00e-08 ...
+ $ fast_pred: num [1:26] 10.1 10.1 11 12 13.1 ...
+ $ slow_pred: num [1:26] 12.8 12.2 12.3 12.4 12.4 ...
+NULL
+
+DEBUG: Available variables in report:
+[1] "cots_pred" "fast_pred" "slow_pred"
+
+Checking predictions and calculating objective function...
+
+DEBUG: Processing cots_pred 
+DEBUG: First few predictions: 0.2615042 1e-08 1e-08 1e-08 1e-08 1e-08 
+DEBUG: Summary statistics:
+   Min. 1st Qu.  Median    Mean 3rd Qu.    Max. 
+ 0.0000  0.0000  0.0000  0.1293  0.0000  1.6000 
+DEBUG: All zeros? FALSE 
+DEBUG: Any infinities? FALSE 
+
+DEBUG: Processing fast_pred 
+DEBUG: First few predictions: 10.06939 10.13631 11.0365 12.00652 13.05001 14.17046 
+DEBUG: Summary statistics:
+   Min. 1st Qu.  Median    Mean 3rd Qu.    Max. 
+  4.890   8.552  11.421  11.563  13.793  21.031 
+DEBUG: All zeros? FALSE 
+DEBUG: Any infinities? FALSE 
+
+DEBUG: Processing slow_pred 
+DEBUG: First few predictions: 12.77261 12.23029 12.31312 12.35798 12.36173 12.32142 
+DEBUG: Summary statistics:
+   Min. 1st Qu.  Median    Mean 3rd Qu.    Max. 
+  4.384   5.119   6.547   8.243  12.197  12.773 
+DEBUG: All zeros? FALSE 
+DEBUG: Any infinities? FALSE 
+
+DEBUG: Using the following variables for objective function:
+cots_dat -> cots_pred
+fast_dat -> fast_pred
+slow_dat -> slow_pred
+
+DEBUG: Calculating MSE for prediction variables only:
+
+DEBUG: cots_pred 
+Observed: 0.2615042 0.5498196 0.7268086 0.5522907 0.828121 0.5470078 ...
+Predicted: 0.2615042 1e-08 1e-08 1e-08 1e-08 1e-08 ...
+MSE (normalized): 3.065893 
+
+DEBUG: fast_pred 
+Observed: 10.06939 17.72357 23.82758 19.41812 15.63542 32.45961 ...
+Predicted: 10.06939 10.13631 11.0365 12.00652 13.05001 14.17046 ...
+MSE (normalized): 0.7052212 
+
+DEBUG: slow_pred 
+Observed: 12.77261 16.41474 12.77729 12.27975 15.11516 12.81941 ...
+Predicted: 12.77261 12.23029 12.31312 12.35798 12.36173 12.32142 ...
+MSE (normalized): 0.4798182 
+
+DEBUG: MSE values:
+ cots_dat  fast_dat  slow_dat 
+3.0658931 0.7052212 0.4798182 
+
+DEBUG: Final objective value (mean of MSEs): 1.416978 
+
+Final objective function value: 1.416978 
+
+JSON_REPORT_START
+{
+  "status": "SUCCESS",
+  "objective_value": 1.417,
+  "model_summary": ["            Length Class  Mode     ", "par         17     -none- numeric  ", "objective    1     -none- numeric  ", "convergence  1     -none- numeric  ", "iterations   1     -none- numeric  ", "evaluations  2     -none- numeric  ", "message      1     -none- character"],
+  "model_report": {
+    "cots_pred": [0.2615, 1e-08, 1e-08, 1e-08, 1e-08, 1e-08, 1e-08, 1e-08, 1e-08, 1e-08, 1.5, 1e-08, 1.6, 1e-08, 1e-08, 1e-08, 1e-08, 1e-08, 1e-08, 1e-08, 1e-08, 1e-08, 1e-08, 1e-08, 1e-08, 1e-08],
+    "fast_pred": [10.0694, 10.1363, 11.0365, 12.0065, 13.05, 14.1705, 15.3712, 16.6551, 18.0251, 19.4831, 21.0309, 12.2339, 13.3002, 4.8895, 5.3535, 5.8589, 6.4089, 7.007, 7.6566, 8.3613, 9.1248, 9.951, 10.8435, 11.8064, 12.8432, 13.9576],
+    "slow_pred": [12.7726, 12.2303, 12.3131, 12.358, 12.3617, 12.3214, 12.2345, 12.0988, 11.9127, 11.6753, 11.3864, 7.6718, 7.693, 4.3845, 4.5164, 4.6447, 4.7682, 4.8857, 4.9956, 5.0966, 5.1871, 5.2653, 5.3295, 5.3781, 5.4093, 5.4214]
+  },
+  "plot_data": {
+    "cots_pred": {
+      "Year": [1980, 1981, 1982, 1983, 1984, 1985, 1986, 1987, 1988, 1989, 1990, 1991, 1992, 1993, 1994, 1995, 1996, 1997, 1998, 1999, 2000, 2001, 2002, 2003, 2004, 2005],
+      "Modeled": [0.2615, 1e-08, 1e-08, 1e-08, 1e-08, 1e-08, 1e-08, 1e-08, 1e-08, 1e-08, 1.5, 1e-08, 1.6, 1e-08, 1e-08, 1e-08, 1e-08, 1e-08, 1e-08, 1e-08, 1e-08, 1e-08, 1e-08, 1e-08, 1e-08, 1e-08],
+      "Observed": [0.2615, 0.5498, 0.7268, 0.5523, 0.8281, 0.547, 0.758, 0.6288, 0.4762, 0.6466, 0.9107, 2.152, 0.6446, 1.6723, 0.4766, 0.8075, 0.3635, 0.3728, 0.6173, 0.3107, 0.256, 0.2984, 0.3362, 0.2878, 0.3221, 0.4308]
+    },
+    "fast_pred": {
+      "Year": [1980, 1981, 1982, 1983, 1984, 1985, 1986, 1987, 1988, 1989, 1990, 1991, 1992, 1993, 1994, 1995, 1996, 1997, 1998, 1999, 2000, 2001, 2002, 2003, 2004, 2005],
+      "Modeled": [10.0694, 10.1363, 11.0365, 12.0065, 13.05, 14.1705, 15.3712, 16.6551, 18.0251, 19.4831, 21.0309, 12.2339, 13.3002, 4.8895, 5.3535, 5.8589, 6.4089, 7.007, 7.6566, 8.3613, 9.1248, 9.951, 10.8435, 11.8064, 12.8432, 13.9576],
+      "Observed": [10.0694, 17.7236, 23.8276, 19.4181, 15.6354, 32.4596, 21.5567, 34.1938, 18.8708, 27.3176, 44.3301, 13.3275, 11.3741, 8.3362, 15.207, 12.443, 11.0666, 10.6442, 2.3628, 2.76, 3.7236, 7.0355, 10.2239, 8.4754, 9.0819, 13.7314]
+    },
+    "slow_pred": {
+      "Year": [1980, 1981, 1982, 1983, 1984, 1985, 1986, 1987, 1988, 1989, 1990, 1991, 1992, 1993, 1994, 1995, 1996, 1997, 1998, 1999, 2000, 2001, 2002, 2003, 2004, 2005],
+      "Modeled": [12.7726, 12.2303, 12.3131, 12.358, 12.3617, 12.3214, 12.2345, 12.0988, 11.9127, 11.6753, 11.3864, 7.6718, 7.693, 4.3845, 4.5164, 4.6447, 4.7682, 4.8857, 4.9956, 5.0966, 5.1871, 5.2653, 5.3295, 5.3781, 5.4093, 5.4214],
+      "Observed": [12.7726, 16.4147, 12.7773, 12.2798, 15.1152, 12.8194, 10.4631, 9.7251, 13.2014, 16.4512, 11.1393, 18.0832, 11.5223, 8.51, 9.1622, 5.3353, 8.6044, 7.2781, 2.629, 4.6951, 1.5948, 5.2172, 2.6041, 3.3618, 7.3289, 4.4014]
+    }
+  }
+}
+JSON_REPORT_END[0m
+[93m[PID 1824826] R script stdout END <<<[0m
+[93m[PID 1824826] R script stderr BEGIN >>>[0m
+[0mLoading required package: TMB
+Loading required package: jsonlite
+using C++ compiler: ‘g++ (Ubuntu 13.3.0-6ubuntu2~24.04) 13.3.0’
+Warning message:
+`aes_string()` was deprecated in ggplot2 3.0.0.
+ℹ Please use tidy evaluation idioms with `aes()`.
+ℹ See also `vignette("ggplot2-in-packages")` for more information.[0m
+[93m[PID 1824826] R script stderr END <<<[0m
+[96m[PID 1824826] JSON detected, parsing...[0m
+[96m[PID 1824826] Writing model report...[0m
+[94m[PID 1824826] Objective value: 1.417[0m
+[96m[PID 1824826] Generating plots...[0m
+[94m[PID 1824826] Objective Value: 1.417[0m
+[92m[PID 1824826] Successful model run[0m
+[0m----------------------------------------------[0m
+FINAL MODEL RUN FINISHED
+Final model run successful. Objective value: 1.417
