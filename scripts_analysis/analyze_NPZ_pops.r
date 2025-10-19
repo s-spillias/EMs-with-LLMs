@@ -1287,12 +1287,12 @@ sink()
 
 message("analysis_summary_ALL.txt written with per‑LLM and per‑mechanism statistics; CSV saved: Results/ecology_analysis/per_mechanism_summary_by_llm.csv")
 # ==== END analysis_summary_ALL.txt extension ====
-
-# ==== Categorical distributions with fixed bar width per category × LLM ====
+# ==== Categorical distributions with fixed bar width per category × LLM (PROPORTIONS) ====
 suppressPackageStartupMessages({
   library(dplyr)
   library(tidyr)
   library(ggplot2)
+  library(stringr)
 })
 
 # Preconditions / helpers
@@ -1320,7 +1320,7 @@ if (length(mechanism_cols) == 0) {
   stop("No ecological mechanism columns found in ecology_all.")
 }
 
-# Categorical mapping: 0..3
+# Categorical mapping: raw scores 0..3
 score_levels <- c(0L, 1L, 2L, 3L)
 score_labels <- c(
   "absent/incorrect",
@@ -1329,7 +1329,7 @@ score_labels <- c(
   "truth match"
 )
 
-# --- Identify best performing individual per LLM (by objective value) ---
+# Identify best-performing individual per LLM (by objective value; lower is better)
 best_per_llm_cat <- ecology_all %>%
   mutate(
     llm = as.character(llm),
@@ -1341,10 +1341,6 @@ best_per_llm_cat <- ecology_all %>%
   slice_min(order_by = objective_value, n = 1, with_ties = FALSE) %>%
   ungroup() %>%
   select(llm_short, individual, Population, objective_value)
-
-cat("\nBest performers by LLM for categorical plot asterisks:\n")
-print(best_per_llm_cat)
-cat("\n")
 
 # Extract ecological scores for best performers in long format
 best_scores_long <- ecology_all %>%
@@ -1388,7 +1384,7 @@ if (nrow(df_mech_long) == 0) stop("No categorical mechanism scores available to 
 # All LLM levels we want to keep (even if absent in a particular bin)
 llm_levels <- sort(unique(df_mech_long$llm_short))
 
-# Count & COMPLETE the grid so every (mechanism × score_cat × LLM) exists (n=0 if missing)
+# Count & COMPLETE the grid, then convert to proportions within (mechanism × LLM)
 df_counts <- df_mech_long %>%
   count(mechanism, llm_short, score_cat, name = "n") %>%
   tidyr::complete(
@@ -1397,48 +1393,32 @@ df_counts <- df_mech_long %>%
     llm_short = factor(llm_levels, levels = llm_levels),
     fill = list(n = 0)
   ) %>%
-  arrange(mechanism, score_cat, llm_short)
-
-# Toggle raw counts vs proportions per (mechanism × LLM)
-normalize_counts <- FALSE # set TRUE to show proportions within each LLM per mechanism
-if (normalize_counts) {
-  df_counts <- df_counts %>%
-    group_by(mechanism, llm_short) %>%
-    mutate(n_total = sum(n), value = ifelse(n_total > 0, n / n_total, 0)) %>%
-    ungroup()
-} else {
-  df_counts <- df_counts %>%
-    mutate(value = n)
-}
+  arrange(mechanism, score_cat, llm_short) %>%
+  group_by(mechanism, llm_short) %>%
+  mutate(n_total = sum(n),
+         value = ifelse(n_total > 0, n / n_total, 0)) %>%
+  ungroup()
 
 # Color palette for LLMs
 llm_cols <- setNames(scales::hue_pal()(length(llm_levels)), llm_levels)
 
-# Use position_dodge2 with preserve = "single" to keep each bar's width fixed
+# Fixed bar width position
 pos_fixed <- position_dodge2(width = 0.8, preserve = "single", padding = 0.05)
 
-# Prepare asterisk data: create a complete grid with placeholders for all LLMs
-# First, mark which combinations should show asterisks (best performers)
+# Create asterisk data: mark best performers where their bin has a bar (> 0)
 best_markers <- best_scores_long %>%
   mutate(show_asterisk = TRUE) %>%
   select(mechanism, llm_short, score_cat, show_asterisk)
 
-# Create complete grid for asterisks (all mechanism x score_cat x llm_short combinations)
 asterisk_data <- df_counts %>%
   left_join(best_markers, by = c("mechanism", "llm_short", "score_cat")) %>%
   mutate(
     show_asterisk = ifelse(is.na(show_asterisk), FALSE, show_asterisk),
-    # Only show asterisk label where marked AND there's a bar (value > 0)
     label = ifelse(show_asterisk & value > 0, "*", ""),
-    # Position asterisk slightly above the bar (or at 0 for empty placeholders)
     y_pos = ifelse(value > 0, value * 1.05, 0)
   )
 
-cat("\nAsterisk data summary (showing asterisks):\n")
-print(asterisk_data %>% filter(show_asterisk) %>% select(mechanism, llm_short, score_cat, value, label, y_pos))
-cat("\n")
-
-# Create a dummy layer for legend entry (asterisk)
+# Dummy layer for legend entry (asterisk explanation)
 dummy_asterisk <- data.frame(
   score_cat = factor(score_labels[1], levels = score_labels),
   value = NA_real_,
@@ -1446,12 +1426,12 @@ dummy_asterisk <- data.frame(
   mechanism = mechanism_cols[1]
 )
 
+# Plot (Y = proportion)
 p_mech_dist_cat_fixed <- ggplot(
   df_counts,
   aes(x = score_cat, y = value, fill = llm_short)
 ) +
   geom_col(position = pos_fixed, width = 0.7, alpha = 0.95) +
-  # Add asterisks for best performers - use fill aesthetic to match bar positioning
   {
     if (nrow(asterisk_data) > 0) {
       geom_text(
@@ -1459,7 +1439,6 @@ p_mech_dist_cat_fixed <- ggplot(
         aes(x = score_cat, y = y_pos, label = label, fill = llm_short),
         position = pos_fixed,
         size = 6,
-        # fontface = "bold",
         color = "black",
         show.legend = FALSE
       )
@@ -1467,7 +1446,6 @@ p_mech_dist_cat_fixed <- ggplot(
       NULL
     }
   } +
-  # Add dummy point for legend (invisible, but creates legend entry)
   geom_point(
     data = dummy_asterisk,
     aes(x = score_cat, y = value, shape = llm_short),
@@ -1475,49 +1453,220 @@ p_mech_dist_cat_fixed <- ggplot(
     alpha = 0,
     show.legend = TRUE
   ) +
-  facet_wrap(~mechanism, scales = "free_y", ncol = 3,
-           labeller = labeller(mechanism = ~stringr::str_to_sentence(gsub("_", " ", gsub("equation", "-", .))))) +
+  facet_wrap(
+    ~mechanism, scales = "free_y", ncol = 3,
+    labeller = labeller(
+      mechanism = ~ stringr::str_to_sentence(gsub("_", " ", gsub("equation", "-", .)))
+    )
+  ) +
   scale_fill_manual(values = llm_cols, name = "LLM", drop = FALSE) +
   scale_shape_manual(
     values = c("Best Performer" = 8),
     name = "",
-    labels = c("Best Performer" = "*  Best Performer")
+    labels = c("Best Performer" = "* Best Performer")
   ) +
   scale_x_discrete(drop = FALSE) +
+  scale_y_continuous(labels = scales::percent_format(accuracy = 1)) +
   labs(
     x = "Raw score category",
-    y = if (normalize_counts) "Proportion within LLM" else "Count of individuals"
+    y = "Proportion of individuals"
   ) +
   theme_classic() +
   theme(
     legend.position = "bottom",
-    legend.justification = "center", # optional: center the box at the bottom
+    legend.justification = "center",
     legend.background = element_rect(fill = "white", color = "white"),
     legend.box.background = element_rect(fill = "white", color = NA),
-    legend.direction = "horizontal", # legend keys flow horizontally
-    legend.box = "horizontal", # multiple legends placed side-by-side
+    legend.direction = "horizontal",
+    legend.box = "horizontal",
     strip.text = element_text(size = 10),
     axis.text.x = element_text(angle = 30, hjust = 1),
     strip.background = element_blank(),
-    legend.spacing.x = unit(0.3, "cm"), # optional: spacing between keys
-    legend.key.width = unit(1.2, "lines") # optional: widen keys if needed
+    legend.spacing.x = unit(0.3, "cm"),
+    legend.key.width = unit(1.2, "lines")
   ) +
-    guides(
-      fill  = guide_legend(order = 1, title = "LLM", nrow = 1, byrow = TRUE),
-      shape = guide_legend(order = 2, title = NULL, nrow = 1, byrow = TRUE)
-    )
+  guides(
+    fill = guide_legend(order = 1, title = "LLM", nrow = 1, byrow = TRUE),
+    shape = guide_legend(order = 2, title = NULL, nrow = 1, byrow = TRUE)
+  )
 
-# Save
+# Save (plural filenames as requested)
 fig_dir <- "Figures"
 dir.create(fig_dir, recursive = TRUE, showWarnings = FALSE)
 ggsave(file.path(fig_dir, "ecology_mechanism.png"),
-  p_mech_dist_cat_fixed,
-  width = 11, height = 7.5, dpi = 300
-)
+       p_mech_dist_cat_fixed,
+       width = 11, height = 7.5, dpi = 300)
 ggsave(file.path(fig_dir, "ecology_mechanism.svg"),
-  p_mech_dist_cat_fixed,
-  width = 11, height = 7.5
+       p_mech_dist_cat_fixed,
+       width = 11, height = 7.5)
+
+# ==== Write proportion summaries into Results/ (raw categories + aggregated support levels) ====
+results_dir <- "Results"
+dir.create(results_dir, recursive = TRUE, showWarnings = FALSE)
+out_path <- file.path(results_dir, "ecology_mechanisms_proportions.txt")
+
+# Helper: compact numeric formatting
+fmtp <- function(x) {
+  if (length(x) == 0 || all(is.na(x))) "NA" else formatC(x, digits = 3, format = "fg", flag = "#")
+}
+
+# Build a tidy proportion table for reporting (per raw category)
+# Requires df_counts from the plotting section:
+# columns: mechanism, llm_short, score_cat, n, n_total, value (= n / n_total)
+prop_table <- df_counts %>%
+  mutate(proportion = ifelse(n_total > 0, n / n_total, NA_real_)) %>%
+  select(mechanism, llm_short, score_cat, n, n_total, proportion)
+
+sink(out_path)
+cat("Ecological mechanism score proportions (per mechanism × LLM)\n")
+cat("===========================================================\n\n")
+
+# Overall coverage
+total_rows <- prop_table %>%
+  distinct(mechanism, llm_short) %>%
+  nrow()
+cat(sprintf(
+  "Mechanisms: %d | LLMs: %d | (mechanism × LLM) pairs: %d\n\n",
+  length(unique(prop_table$mechanism)),
+  length(unique(prop_table$llm_short)),
+  total_rows
+))
+
+# ----- Per-mechanism, raw category (0..3) proportions -----
+for (m in unique(prop_table$mechanism)) {
+  cat(sprintf("Mechanism: %s\n", m))
+  cat("------------------------------\n")
+
+  # Per-LLM detail (raw categories)
+  for (L in llm_levels) {
+    d <- prop_table %>% filter(mechanism == m, llm_short == L)
+    if (nrow(d) == 0) next
+    nt <- unique(d$n_total)
+    nt <- if (length(nt) == 1) nt else NA_integer_
+    cat(sprintf("  LLM: %s (n_total = %s)\n", L, fmtp(nt)))
+    for (cat_lab in score_labels) {
+      row <- d %>% filter(score_cat == cat_lab)
+      if (nrow(row) == 1) {
+        cat(sprintf(
+          "    %-13s : count = %3s ; proportion = %s\n",
+          cat_lab, fmtp(row$n), fmtp(row$proportion)
+        ))
+      } else {
+        cat(sprintf("    %-13s : count = NA ; proportion = NA\n", cat_lab))
+      }
+    }
+  }
+
+  # Across LLMs: summary stats for raw-category proportions
+  cat("  Across LLMs (proportion statistics):\n")
+  summ <- prop_table %>%
+    filter(mechanism == m) %>%
+    group_by(score_cat) %>%
+    summarise(
+      mean_prop = mean(proportion, na.rm = TRUE),
+      sd_prop = sd(proportion, na.rm = TRUE),
+      min_prop = suppressWarnings(min(proportion, na.rm = TRUE)),
+      max_prop = suppressWarnings(max(proportion, na.rm = TRUE)),
+      .groups = "drop"
+    )
+  for (i in seq_len(nrow(summ))) {
+    cat(sprintf(
+      "    %-13s : mean=%s; sd=%s; min=%s; max=%s\n",
+      as.character(summ$score_cat[i]),
+      fmtp(summ$mean_prop[i]),
+      fmtp(summ$sd_prop[i]),
+      fmtp(summ$min_prop[i]),
+      fmtp(summ$max_prop[i])
+    ))
+  }
+  cat("\n")
+}
+
+# ----- Aggregated support levels: Well-supported vs Not supported -----
+# Mapping: alternate (2) OR truth match (3) => "well-supported"
+#          present (1) OR absent/incorrect (0) => "not supported"
+support_map <- c(
+  "absent/incorrect" = "not supported",
+  "present"          = "not supported",
+  "alternate"        = "well-supported",
+  "truth match"      = "well-supported"
 )
 
-message("Saved fixed‑width categorical distribution to Figures/ecology_mechanism_distribution_by_llm_categorical_FIXEDWIDTH.{png,svg}")
-# ==== END fixed bar width categorical distributions ====
+agg_table <- prop_table %>%
+  mutate(support = support_map[as.character(score_cat)]) %>%
+  group_by(mechanism, llm_short, support) %>%
+  summarise(
+    n       = sum(n, na.rm = TRUE),
+    n_total = suppressWarnings(max(n_total, na.rm = TRUE)),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    proportion = ifelse(is.finite(n_total) & n_total > 0, n / n_total, NA_real_)
+  )
+
+cat("Aggregated support levels (per mechanism × LLM)\n")
+cat("==============================================\n")
+cat("Definitions: well-supported = {alternate, truth match}; not supported = {present, absent/incorrect}\n\n")
+
+for (m in unique(agg_table$mechanism)) {
+  cat(sprintf("Mechanism: %s\n", m))
+  cat("------------------------------\n")
+  for (L in llm_levels) {
+    d <- agg_table %>% filter(mechanism == m, llm_short == L)
+    if (nrow(d) == 0) next
+    nt <- unique(d$n_total)
+    nt <- if (length(nt) == 1) nt else NA_integer_
+    cat(sprintf("  LLM: %s (n_total = %s)\n", L, fmtp(nt)))
+
+    ws <- d %>% filter(support == "well-supported")
+    ns <- d %>% filter(support == "not supported")
+
+    if (nrow(ws) == 1) {
+      cat(sprintf(
+        "    well-supported : count = %3s ; proportion = %s\n",
+        fmtp(ws$n), fmtp(ws$proportion)
+      ))
+    } else {
+      cat("    well-supported : count = NA ; proportion = NA\n")
+    }
+    if (nrow(ns) == 1) {
+      cat(sprintf(
+        "    not supported  : count = %3s ; proportion = %s\n",
+        fmtp(ns$n), fmtp(ns$proportion)
+      ))
+    } else {
+      cat("    not supported  : count = NA ; proportion = NA\n")
+    }
+  }
+
+  # Across LLMs: summary stats for aggregated proportions
+  cat("  Across LLMs (proportion statistics):\n")
+  summ_agg <- agg_table %>%
+    filter(mechanism == m) %>%
+    group_by(support) %>%
+    summarise(
+      mean_prop = mean(proportion, na.rm = TRUE),
+      sd_prop   = sd(proportion, na.rm = TRUE),
+      min_prop  = suppressWarnings(min(proportion, na.rm = TRUE)),
+      max_prop  = suppressWarnings(max(proportion, na.rm = TRUE)),
+      .groups   = "drop"
+    )
+  for (i in seq_len(nrow(summ_agg))) {
+    cat(sprintf(
+      "    %-14s: mean=%s; sd=%s; min=%s; max=%s\n",
+      as.character(summ_agg$support[i]),
+      fmtp(summ_agg$mean_prop[i]),
+      fmtp(summ_agg$sd_prop[i]),
+      fmtp(summ_agg$min_prop[i]),
+      fmtp(summ_agg$max_prop[i])
+    ))
+  }
+  cat("\n")
+}
+sink()
+
+message(sprintf(
+  "Saved proportion plot to %s and wrote raw + aggregated summaries to %s",
+  file.path(fig_dir, "ecology_mechanisms.png"), out_path
+))
+# ==== END PROPORTIONS + AGGREGATED SUPPORT summaries ====

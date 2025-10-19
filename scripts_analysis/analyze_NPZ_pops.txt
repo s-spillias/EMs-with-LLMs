@@ -277,7 +277,7 @@ p_timeseries <- ggplot(
 icons <- load_icons()
 p_timeseries_icons <- add_facet_icons(p_timeseries, plot_df, icons)
 
-# --- Red dots on the model dynamics (timeseries) for the global best ---
+# --- Red crosses on the model dynamics (timeseries) for the global best ---
 if (!is.na(best_pop_id)) {
   best_plot_df <- plot_df %>%
     dplyr::filter(Population == best_pop_id, Replicate != "Ground Truth", LLM != "Ground Truth")
@@ -287,7 +287,8 @@ if (!is.na(best_pop_id)) {
       aes(x = Time, y = Value),
       inherit.aes = FALSE,
       color = "red",
-      size = 0.5
+      size = 0.5,
+      shape = 4
     )
 }
 
@@ -309,7 +310,7 @@ if (!is.null(training_all_df)) {
     labs(title = "Training Progress", x = "Generation", y = "Objective Value (log)", color = "Model") +
     theme(legend.position = "none")
 
-  # --- Red dots on the best population's training curve ---
+  # --- Red crosses on the best population's training curve ---
   if (!is.na(best_pop_id)) {
     best_training_df <- training_all_df %>% dplyr::filter(Population == best_pop_id)
     p_training <- p_training +
@@ -317,7 +318,8 @@ if (!is.null(training_all_df)) {
         data = best_training_df,
         aes(x = generation, y = objective_value),
         color = "red",
-        size = 0.5
+        size = 0.5,
+        shape = 4
       )
   }
 }
@@ -367,11 +369,12 @@ if (!is.na(best_pop_id)) {
   legend_levels <- c(legend_levels, "Best Performer")
 }
 
-# 2) Data for legend points
+# 2) Data for legend points with shapes
 legend_data <- data.frame(
   x   = seq_along(legend_levels),
   y   = 1,
-  LLM = factor(legend_levels, levels = legend_levels)
+  LLM = factor(legend_levels, levels = legend_levels),
+  shape_val = ifelse(legend_levels == "Best Performer", 4, 16)  # 4 = cross, 16 = circle
 )
 
 # 3) Color map: start with GT + LLMs, then add 'Best Performer' = red when present
@@ -380,27 +383,40 @@ if (!is.na(best_pop_id)) {
   values_map <- c(values_map, "Best Performer" = "red")
 }
 
-# 4) Build the legend plot (points-only legend row)
-legend_plot <- ggplot(legend_data, aes(x = x, y = y, color = LLM)) +
-  geom_point(size = 4, show.legend = TRUE) +
+# 4) Shape map for legend
+shape_map <- setNames(legend_data$shape_val, legend_levels)
+
+# 5) Build the legend plot with explicit shape per entry
+legend_plot <- ggplot(legend_data, aes(x = x, y = y)) +
+  geom_point(aes(color = LLM, shape = LLM), size = 4, show.legend = TRUE) +
   scale_color_manual(
-    values = values_map, # includes 'Best Performer' when present
+    values = values_map,
     name   = "Model",
     breaks = legend_levels,
-    drop   = FALSE
+    drop   = FALSE,
+    guide = guide_legend(
+      nrow = 1,
+      override.aes = list(
+        shape = shape_map[legend_levels],
+        size = 4
+      )
+    )
   ) +
-  # Ensure we only keep the color legend
-  guides(
-    color = guide_legend(nrow = 1, override.aes = list(size = 3)),
-    linetype = "none", linewidth = "none", shape = "none", size = "none",
-    alpha = "none", fill = "none"
+  scale_shape_manual(
+    values = shape_map,
+    name   = "Model",
+    breaks = legend_levels,
+    drop   = FALSE,
+    guide = "none"
   ) +
   theme_void() +
   theme(
     legend.position = "bottom",
-    legend.text     = element_text(size = 11),
-    legend.title    = element_text(size = 12, face = "bold"),
-    legend.key.size = unit(1, "cm")
+    legend.text     = element_text(size = 9, margin = margin(r = 8)),
+    legend.title    = element_text(size = 10, face = "bold"),
+    legend.key.size = unit(0.7, "cm"),
+    legend.spacing.x = unit(0.3, "cm"),
+    plot.margin = margin(t = 10, r = 80, b = 10, l = 80)
   )
 
 legend_grob <- cowplot::get_legend(legend_plot)
@@ -466,7 +482,7 @@ combined_with_legend <- cowplot::plot_grid(
   upper_row,
   legend_gg,
   ncol = 1,
-  rel_heights = c(1, 0.14) # IMPORTANT: no NA here (prevents non-finite viewport sizes)
+  rel_heights = c(1, 0.16) # Adequate height for legend
 )
 
 # ---- 5) Save robustly (ggsave draws grid/cowplot content correctly) ----
@@ -792,11 +808,11 @@ llm_models <- do.call(rbind, llm_models_list)
 results_dir <- "Results/ecology_analysis"
 dir.create(results_dir, recursive = TRUE, showWarnings = FALSE)
 
-write.csv(
-  llm_models %>% arrange(llm_short),
-  file.path(results_dir, "modeling_by_llm_LINEAR_capped_fits.csv"),
-  row.names = FALSE
-)
+# write.csv(
+#   llm_models %>% arrange(llm_short),
+#   file.path(results_dir, "modeling_by_llm_LINEAR_capped_fits.csv"),
+#   row.names = FALSE
+# )
 
 overall_out <- data.frame(
   n = nrow(df_fit),
@@ -807,7 +823,7 @@ overall_out <- data.frame(
   p_value_slope = overall_sum$coefficients[2, "Pr(>|t|)"],
   stringsAsFactors = FALSE
 )
-write.csv(overall_out, file.path(results_dir, "modeling_overall_LINEAR_capped_fits.csv"), row.names = FALSE)
+# write.csv(overall_out, file.path(results_dir, "modeling_overall_LINEAR_capped_fits.csv"), row.names = FALSE)
 
 # --- Unified line predictions (clamped to [0, 1]) ---
 grid_eco <- seq(0, 1, length.out = 200)
@@ -943,7 +959,7 @@ suppressPackageStartupMessages({
 })
 
 
-results_dir <- "Results/ecology_analysis"
+results_dir <- "Results"
 dir.create(results_dir, recursive = TRUE, showWarnings = FALSE)
 
 # Safety: short_llm() should exist already; define if missing.
@@ -994,10 +1010,10 @@ mechanism_cols <- c(
 )
 mechanism_cols <- mechanism_cols[mechanism_cols %in% colnames(summary_df)]
 
-# Threshold to consider a mechanism "embedded" (you can tune this)
+# Threshold to consider a mechanism "embedded" 
 mech_high_thr <- 0.75
 
-sink(file.path(results_dir, "analysis_summary_ALL.txt"))
+sink(file.path(results_dir, "NPZ_ecology.txt"))
 
 cat("Analysis Summary (ALL NPZ populations)\n")
 cat("================\n\n")
@@ -1251,23 +1267,257 @@ for (llm_name in llm_levels) {
 
 sink()
 
-# ---- Save per‑mechanism summary CSV across all LLMs ----
-if (length(per_mech_rows) > 0) {
-  per_mech_df <- do.call(rbind, per_mech_rows)
-  write.csv(per_mech_df, file.path(results_dir, "per_mechanism_summary_by_llm.csv"), row.names = FALSE)
-} else {
-  # still create an empty file with header for consistency
-  per_mech_df <- data.frame(
-    llm_short = character(), mechanism = character(), n = integer(),
-    mean = double(), sd = double(), median = double(),
-    min = double(), max = double(),
-    n_high = integer(), high_threshold = double(),
-    best_individual = character(), best_score = double(), best_objective = double(),
-    worst_individual = character(), worst_score = double(), worst_objective = double(),
-    stringsAsFactors = FALSE
-  )
-  write.csv(per_mech_df, file.path(results_dir, "per_mechanism_summary_by_llm.csv"), row.names = FALSE)
-}
+# # ---- Save per‑mechanism summary CSV across all LLMs ----
+# if (length(per_mech_rows) > 0) {
+#   per_mech_df <- do.call(rbind, per_mech_rows)
+#   write.csv(per_mech_df, file.path(results_dir, "per_mechanism_summary_by_llm.csv"), row.names = FALSE)
+# } else {
+#   # still create an empty file with header for consistency
+#   per_mech_df <- data.frame(
+#     llm_short = character(), mechanism = character(), n = integer(),
+#     mean = double(), sd = double(), median = double(),
+#     min = double(), max = double(),
+#     n_high = integer(), high_threshold = double(),
+#     best_individual = character(), best_score = double(), best_objective = double(),
+#     worst_individual = character(), worst_score = double(), worst_objective = double(),
+#     stringsAsFactors = FALSE
+#   )
+#   write.csv(per_mech_df, file.path(results_dir, "per_mechanism_summary_by_llm.csv"), row.names = FALSE)
+# }
 
 message("analysis_summary_ALL.txt written with per‑LLM and per‑mechanism statistics; CSV saved: Results/ecology_analysis/per_mechanism_summary_by_llm.csv")
 # ==== END analysis_summary_ALL.txt extension ====
+
+# ==== Categorical distributions with fixed bar width per category × LLM ====
+suppressPackageStartupMessages({
+  library(dplyr)
+  library(tidyr)
+  library(ggplot2)
+})
+
+# Preconditions / helpers
+stopifnot(exists("ecology_all"), is.data.frame(ecology_all), nrow(ecology_all) > 0)
+if (!exists("short_llm")) {
+  short_llm <- function(x) ifelse(grepl("/", x), sub(".*/", "", x), x)
+}
+
+# Mechanism columns (reuse if already defined)
+if (!exists("mechanism_cols")) {
+  mechanism_cols <- c(
+    "nutrient_equation_uptake",
+    "nutrient_equation_recycling",
+    "nutrient_equation_mixing",
+    "phytoplankton_equation_growth",
+    "phytoplankton_equation_grazing_loss",
+    "phytoplankton_equation_mortality",
+    "phytoplankton_equation_mixing",
+    "zooplankton_equation_growth",
+    "zooplankton_equation_mortality"
+  )
+  mechanism_cols <- mechanism_cols[mechanism_cols %in% colnames(ecology_all)]
+}
+if (length(mechanism_cols) == 0) {
+  stop("No ecological mechanism columns found in ecology_all.")
+}
+
+# Categorical mapping: 0..3
+score_levels <- c(0L, 1L, 2L, 3L)
+score_labels <- c(
+  "absent/incorrect",
+  "present",
+  "alternate",
+  "truth match"
+)
+
+# --- Identify best performing individual per LLM (by objective value) ---
+best_per_llm_cat <- ecology_all %>%
+  mutate(
+    llm = as.character(llm),
+    llm_short = short_llm(llm),
+    objective_value = suppressWarnings(as.numeric(objective_value))
+  ) %>%
+  filter(is.finite(objective_value)) %>%
+  group_by(llm_short) %>%
+  slice_min(order_by = objective_value, n = 1, with_ties = FALSE) %>%
+  ungroup() %>%
+  select(llm_short, individual, Population, objective_value)
+
+cat("\nBest performers by LLM for categorical plot asterisks:\n")
+print(best_per_llm_cat)
+cat("\n")
+
+# Extract ecological scores for best performers in long format
+best_scores_long <- ecology_all %>%
+  mutate(
+    llm = as.character(llm),
+    llm_short = short_llm(llm)
+  ) %>%
+  inner_join(best_per_llm_cat, by = c("llm_short", "individual")) %>%
+  select(llm_short, individual, all_of(mechanism_cols)) %>%
+  pivot_longer(
+    cols = all_of(mechanism_cols),
+    names_to = "mechanism",
+    values_to = "score"
+  ) %>%
+  mutate(
+    score_num = suppressWarnings(as.integer(as.character(score))),
+    score_cat = factor(score_num, levels = score_levels, labels = score_labels, ordered = TRUE)
+  ) %>%
+  filter(!is.na(score_cat))
+
+# Prepare long data for all individuals
+df_mech_long <- ecology_all %>%
+  mutate(
+    llm = as.character(llm),
+    llm_short = short_llm(llm)
+  ) %>%
+  select(Population, individual, llm_short, all_of(mechanism_cols)) %>%
+  pivot_longer(
+    cols = all_of(mechanism_cols),
+    names_to = "mechanism",
+    values_to = "score"
+  ) %>%
+  mutate(
+    score_num = suppressWarnings(as.integer(as.character(score))),
+    score_cat = factor(score_num, levels = score_levels, labels = score_labels, ordered = TRUE)
+  ) %>%
+  filter(!is.na(score_cat))
+
+if (nrow(df_mech_long) == 0) stop("No categorical mechanism scores available to plot.")
+
+# All LLM levels we want to keep (even if absent in a particular bin)
+llm_levels <- sort(unique(df_mech_long$llm_short))
+
+# Count & COMPLETE the grid so every (mechanism × score_cat × LLM) exists (n=0 if missing)
+df_counts <- df_mech_long %>%
+  count(mechanism, llm_short, score_cat, name = "n") %>%
+  tidyr::complete(
+    mechanism,
+    score_cat = factor(score_labels, levels = score_labels, ordered = TRUE),
+    llm_short = factor(llm_levels, levels = llm_levels),
+    fill = list(n = 0)
+  ) %>%
+  arrange(mechanism, score_cat, llm_short)
+
+# Toggle raw counts vs proportions per (mechanism × LLM)
+normalize_counts <- FALSE # set TRUE to show proportions within each LLM per mechanism
+if (normalize_counts) {
+  df_counts <- df_counts %>%
+    group_by(mechanism, llm_short) %>%
+    mutate(n_total = sum(n), value = ifelse(n_total > 0, n / n_total, 0)) %>%
+    ungroup()
+} else {
+  df_counts <- df_counts %>%
+    mutate(value = n)
+}
+
+# Color palette for LLMs
+llm_cols <- setNames(scales::hue_pal()(length(llm_levels)), llm_levels)
+
+# Use position_dodge2 with preserve = "single" to keep each bar's width fixed
+pos_fixed <- position_dodge2(width = 0.8, preserve = "single", padding = 0.05)
+
+# Prepare asterisk data: create a complete grid with placeholders for all LLMs
+# First, mark which combinations should show asterisks (best performers)
+best_markers <- best_scores_long %>%
+  mutate(show_asterisk = TRUE) %>%
+  select(mechanism, llm_short, score_cat, show_asterisk)
+
+# Create complete grid for asterisks (all mechanism x score_cat x llm_short combinations)
+asterisk_data <- df_counts %>%
+  left_join(best_markers, by = c("mechanism", "llm_short", "score_cat")) %>%
+  mutate(
+    show_asterisk = ifelse(is.na(show_asterisk), FALSE, show_asterisk),
+    # Only show asterisk label where marked AND there's a bar (value > 0)
+    label = ifelse(show_asterisk & value > 0, "*", ""),
+    # Position asterisk slightly above the bar (or at 0 for empty placeholders)
+    y_pos = ifelse(value > 0, value * 1.05, 0)
+  )
+
+cat("\nAsterisk data summary (showing asterisks):\n")
+print(asterisk_data %>% filter(show_asterisk) %>% select(mechanism, llm_short, score_cat, value, label, y_pos))
+cat("\n")
+
+# Create a dummy layer for legend entry (asterisk)
+dummy_asterisk <- data.frame(
+  score_cat = factor(score_labels[1], levels = score_labels),
+  value = NA_real_,
+  llm_short = "Best Performer",
+  mechanism = mechanism_cols[1]
+)
+
+p_mech_dist_cat_fixed <- ggplot(
+  df_counts,
+  aes(x = score_cat, y = value, fill = llm_short)
+) +
+  geom_col(position = pos_fixed, width = 0.7, alpha = 0.95) +
+  # Add asterisks for best performers - use fill aesthetic to match bar positioning
+  {
+    if (nrow(asterisk_data) > 0) {
+      geom_text(
+        data = asterisk_data,
+        aes(x = score_cat, y = y_pos, label = label, fill = llm_short),
+        position = pos_fixed,
+        size = 6,
+        # fontface = "bold",
+        color = "black",
+        show.legend = FALSE
+      )
+    } else {
+      NULL
+    }
+  } +
+  # Add dummy point for legend (invisible, but creates legend entry)
+  geom_point(
+    data = dummy_asterisk,
+    aes(x = score_cat, y = value, shape = llm_short),
+    size = 0,
+    alpha = 0,
+    show.legend = TRUE
+  ) +
+  facet_wrap(~mechanism, scales = "free_y", ncol = 3,
+           labeller = labeller(mechanism = ~stringr::str_to_sentence(gsub("_", " ", gsub("equation", "-", .))))) +
+  scale_fill_manual(values = llm_cols, name = "LLM", drop = FALSE) +
+  scale_shape_manual(
+    values = c("Best Performer" = 8),
+    name = "",
+    labels = c("Best Performer" = "*  Best Performer")
+  ) +
+  scale_x_discrete(drop = FALSE) +
+  labs(
+    x = "Raw score category",
+    y = if (normalize_counts) "Proportion within LLM" else "Count of individuals"
+  ) +
+  theme_classic() +
+  theme(
+    legend.position = "bottom",
+    legend.justification = "center", # optional: center the box at the bottom
+    legend.background = element_rect(fill = "white", color = "white"),
+    legend.box.background = element_rect(fill = "white", color = NA),
+    legend.direction = "horizontal", # legend keys flow horizontally
+    legend.box = "horizontal", # multiple legends placed side-by-side
+    strip.text = element_text(size = 10),
+    axis.text.x = element_text(angle = 30, hjust = 1),
+    strip.background = element_blank(),
+    legend.spacing.x = unit(0.3, "cm"), # optional: spacing between keys
+    legend.key.width = unit(1.2, "lines") # optional: widen keys if needed
+  ) +
+    guides(
+      fill  = guide_legend(order = 1, title = "LLM", nrow = 1, byrow = TRUE),
+      shape = guide_legend(order = 2, title = NULL, nrow = 1, byrow = TRUE)
+    )
+
+# Save
+fig_dir <- "Figures"
+dir.create(fig_dir, recursive = TRUE, showWarnings = FALSE)
+ggsave(file.path(fig_dir, "ecology_mechanism.png"),
+  p_mech_dist_cat_fixed,
+  width = 11, height = 7.5, dpi = 300
+)
+ggsave(file.path(fig_dir, "ecology_mechanism.svg"),
+  p_mech_dist_cat_fixed,
+  width = 11, height = 7.5
+)
+
+message("Saved fixed‑width categorical distribution to Figures/ecology_mechanism_distribution_by_llm_categorical_FIXEDWIDTH.{png,svg}")
+# ==== END fixed bar width categorical distributions ====
